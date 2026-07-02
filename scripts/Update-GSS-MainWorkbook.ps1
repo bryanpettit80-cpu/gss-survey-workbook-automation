@@ -11,6 +11,7 @@ $xlUp = -4162
 $xlToLeft = -4159
 $xlPasteFormats = -4122
 $xlCalculationAutomatic = -4105
+$xlTypePDF = 0
 
 function Release-ComObject {
     param([object]$ComObject)
@@ -32,12 +33,99 @@ function Get-CellString {
     return ([string]$value).Trim()
 }
 
+function Set-CellValue {
+    param([object]$Worksheet, [int]$Row, [int]$Column, [object]$Value)
+    $cell = $null
+    try {
+        $cell = $Worksheet.Cells.Item($Row, $Column)
+        if ($null -eq $Value) {
+            $cell.Value2 = ''
+            return
+        }
+        if ($Value -is [bool]) {
+            $Value = if ($Value) { 'TRUE' } else { 'FALSE' }
+        }
+
+        try {
+            $cell.Value2 = $Value
+        }
+        catch [System.InvalidCastException] {
+            $cell.Value = $Value
+        }
+    }
+    finally {
+        Release-ComObject $cell
+    }
+}
+
 function Convert-ExcelDate {
     param([object]$Value)
     if ($null -eq $Value) { return $null }
     if ($Value -is [datetime]) { return $Value.Date }
     if ($Value -is [double] -or $Value -is [int]) { return ([datetime]::FromOADate([double]$Value)).Date }
     return ([datetime]::Parse([string]$Value)).Date
+}
+
+function Convert-ToNullableDouble {
+    param([object]$Value)
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [string] -and [string]::IsNullOrWhiteSpace($Value)) { return $null }
+    return [double]$Value
+}
+
+function Convert-ToBool {
+    param([object]$Value)
+    if ($null -eq $Value) { return $false }
+    if ($Value -is [bool]) { return $Value }
+    if ($Value -is [double] -or $Value -is [int]) { return ([double]$Value) -ne 0 }
+    return ([string]$Value).Trim() -match '^(true|yes|1)$'
+}
+
+function Test-ExcludedGssPath {
+    param([string]$Path, [string]$FolderPath)
+
+    $resolvedPath = [System.IO.Path]::GetFullPath($Path).TrimEnd('\')
+    $excludedFolders = @(
+        (Join-Path $FolderPath 'GSS Survey Workbook Automation'),
+        (Join-Path $FolderPath '_automation_runs')
+    )
+
+    foreach ($excludedFolder in $excludedFolders) {
+        $resolvedExcluded = [System.IO.Path]::GetFullPath($excludedFolder).TrimEnd('\')
+        if ($resolvedPath.Equals($resolvedExcluded, [System.StringComparison]::OrdinalIgnoreCase) -or
+            $resolvedPath.StartsWith("$resolvedExcluded\", [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
+function Get-GssFiles {
+    param([string]$FolderPath, [string]$Filter)
+
+    Get-ChildItem -LiteralPath $FolderPath -File -Filter $Filter -Recurse |
+        Where-Object { -not (Test-ExcludedGssPath $_.FullName $FolderPath) }
+}
+
+function Resolve-MainWorkbookPath {
+    param([string]$FolderPath, [string]$WorkbookName)
+
+    $directPath = Join-Path $FolderPath $WorkbookName
+    if (Test-Path -LiteralPath $directPath) {
+        return (Resolve-Path -LiteralPath $directPath).Path
+    }
+
+    $matches = @(Get-GssFiles $FolderPath $WorkbookName)
+    if ($matches.Count -eq 1) {
+        return $matches[0].FullName
+    }
+    if ($matches.Count -gt 1) {
+        $paths = ($matches | ForEach-Object { $_.FullName }) -join '; '
+        throw "Multiple main workbook matches were found. Move old copies out of the GSS Surveys folder or pass -MainWorkbookName. Matches: $paths"
+    }
+
+    throw "Main workbook not found under ${FolderPath}: $WorkbookName"
 }
 
 function Get-HeaderMap {
@@ -62,7 +150,7 @@ function Get-NormalizedSourceName {
 function Get-RollingSources {
     param([object]$Excel, [string]$FolderPath)
 
-    $candidates = Get-ChildItem -LiteralPath $FolderPath -File -Filter 'Sorensen FW*.xlsx' |
+    $candidates = Get-GssFiles $FolderPath 'Sorensen FW*.xlsx' |
         Where-Object { $_.Name -notmatch '(?i)CLEANED|Tidy|YY Trends' } |
         Sort-Object LastWriteTime -Descending
 
@@ -321,6 +409,310 @@ function Add-RawDataRows {
     return $rowsWritten
 }
 
+function Get-EntityKey {
+    param([string]$Ownership, [string]$Restaurant)
+
+    $restaurantName = $Restaurant
+    if ([string]::IsNullOrWhiteSpace($restaurantName)) {
+        $restaurantName = '(TOTAL)'
+    }
+    else {
+        $restaurantName = $restaurantName.Trim()
+    }
+
+    return "$($Ownership.Trim())|$restaurantName"
+}
+
+function Get-EntityWeekKey {
+    param([string]$EntityKey, [datetime]$WeekEnding)
+    return "$EntityKey|$($WeekEnding.ToString('yyyyMMdd'))"
+}
+
+function Get-MetricCatalogRows {
+    param([object]$MetricCatalogWorksheet)
+
+    $lastRow = $MetricCatalogWorksheet.Cells.Item($MetricCatalogWorksheet.Rows.Count, 1).End($xlUp).Row
+    $metrics = @()
+    for ($row = 2; $row -le $lastRow; $row++) {
+        $displayName = Get-CellString $MetricCatalogWorksheet $row 1
+        $rawKey = Get-CellString $MetricCatalogWorksheet $row 2
+        if ([string]::IsNullOrWhiteSpace($displayName) -or [string]::IsNullOrWhiteSpace($rawKey)) {
+            continue
+        }
+
+        $metrics += [pscustomobject]@{
+            DisplayName = $displayName
+            RawKey = $rawKey
+            LowerIsBetter = Convert-ToBool $MetricCatalogWorksheet.Cells.Item($row, 3).Value2
+            IncludeInMovers = Convert-ToBool $MetricCatalogWorksheet.Cells.Item($row, 4).Value2
+            Category = Get-CellString $MetricCatalogWorksheet $row 5
+            Owner = Get-CellString $MetricCatalogWorksheet $row 6
+        }
+    }
+
+    return $metrics
+}
+
+function Get-RawDataIndex {
+    param([object]$RawDataWorksheet)
+
+    $headers = Get-HeaderMap $RawDataWorksheet 1
+    $requiredHeaders = @('Week', 'Restaurant', 'Ownership', 'Count')
+    foreach ($header in $requiredHeaders) {
+        $key = Normalize-Header $header
+        if (-not $headers.ContainsKey($key)) {
+            throw "Raw_Data is missing required header '$header'."
+        }
+    }
+
+    $weekCol = $headers[(Normalize-Header 'Week')]
+    $restaurantCol = $headers[(Normalize-Header 'Restaurant')]
+    $ownershipCol = $headers[(Normalize-Header 'Ownership')]
+    $lastRow = $RawDataWorksheet.Cells.Item($RawDataWorksheet.Rows.Count, 1).End($xlUp).Row
+    $rowsByKey = @{}
+
+    for ($row = 2; $row -le $lastRow; $row++) {
+        $week = Convert-ExcelDate $RawDataWorksheet.Cells.Item($row, $weekCol).Value2
+        if ($null -eq $week) { continue }
+
+        $ownership = Get-CellString $RawDataWorksheet $row $ownershipCol
+        if ([string]::IsNullOrWhiteSpace($ownership)) { continue }
+
+        $restaurant = Get-CellString $RawDataWorksheet $row $restaurantCol
+        $entityKey = Get-EntityKey $ownership $restaurant
+        $rowsByKey[(Get-EntityWeekKey $entityKey $week)] = $row
+    }
+
+    return [pscustomobject]@{
+        Headers = $headers
+        RowsByKey = $rowsByKey
+    }
+}
+
+function Get-RawMetricValue {
+    param(
+        [object]$RawDataWorksheet,
+        [object]$RawIndex,
+        [string]$EntityKey,
+        [datetime]$WeekEnding,
+        [string]$MetricKey
+    )
+
+    $rowKey = Get-EntityWeekKey $EntityKey $WeekEnding
+    if (-not $RawIndex.RowsByKey.ContainsKey($rowKey)) {
+        return $null
+    }
+
+    $headerKey = Normalize-Header $MetricKey
+    if (-not $RawIndex.Headers.ContainsKey($headerKey)) {
+        throw "Raw_Data is missing metric column '$MetricKey'."
+    }
+
+    $row = $RawIndex.RowsByKey[$rowKey]
+    $col = $RawIndex.Headers[$headerKey]
+    return Convert-ToNullableDouble $RawDataWorksheet.Cells.Item($row, $col).Value2
+}
+
+function Get-AverageValue {
+    param([object[]]$Values)
+
+    $usable = @($Values | Where-Object { $null -ne $_ })
+    if ($usable.Count -eq 0) { return $null }
+    return ($usable | Measure-Object -Average).Average
+}
+
+function Get-Improvement {
+    param([object]$CurrentValue, [object]$PriorValue, [bool]$LowerIsBetter)
+
+    if ($null -eq $CurrentValue -or $null -eq $PriorValue) { return $null }
+    if ($LowerIsBetter) {
+        return ([double]$PriorValue - [double]$CurrentValue)
+    }
+    return ([double]$CurrentValue - [double]$PriorValue)
+}
+
+function Get-ThreeWeekTrend {
+    param(
+        [object]$RawDataWorksheet,
+        [object]$RawIndex,
+        [string]$EntityKey,
+        [datetime]$LatestWeek,
+        [string]$MetricKey,
+        [bool]$LowerIsBetter,
+        [bool]$IncludeInMovers
+    )
+
+    if (-not $IncludeInMovers) {
+        return [pscustomobject]@{ Arrow = ''; Average = $null; Persistent = '' }
+    }
+
+    $improvements = @()
+    foreach ($weekOffset in @(0, -7, -14)) {
+        $week = $LatestWeek.AddDays($weekOffset)
+        $current = Get-RawMetricValue $RawDataWorksheet $RawIndex $EntityKey $week $MetricKey
+        $prior = Get-RawMetricValue $RawDataWorksheet $RawIndex $EntityKey $week.AddDays(-7) $MetricKey
+        $improvements += Get-Improvement $current $prior $LowerIsBetter
+    }
+
+    $average = Get-AverageValue $improvements
+    if ($null -eq $average -or [math]::Abs($average) -lt 0.0000001) {
+        return [pscustomobject]@{ Arrow = ''; Average = $average; Persistent = '' }
+    }
+
+    $arrow = if ($average -gt 0) { [string][char]0x25B2 } else { [string][char]0x25BC }
+    $usable = @($improvements | Where-Object { $null -ne $_ })
+    $persistent = ''
+    if ($usable.Count -eq 3) {
+        $positiveCount = @($usable | Where-Object { $_ -gt 0 }).Count
+        $negativeCount = @($usable | Where-Object { $_ -lt 0 }).Count
+        if ($positiveCount -eq 3 -or $negativeCount -eq 3) {
+            $persistent = $average
+        }
+    }
+
+    return [pscustomobject]@{ Arrow = $arrow; Average = $average; Persistent = $persistent }
+}
+
+function Update-EmailComparisonSection {
+    param(
+        [object]$Worksheet,
+        [object]$RawDataWorksheet,
+        [object]$RawIndex,
+        [object[]]$Metrics,
+        [datetime]$LatestWeek,
+        [string]$EntityKey,
+        [string]$EntityName,
+        [int]$HeaderRow,
+        [int]$FirstMetricRow,
+        [string]$CompareEntityKey,
+        [string]$CompareEntityName
+    )
+
+    Set-CellValue $Worksheet $HeaderRow 1 'Entity'
+    Set-CellValue $Worksheet $HeaderRow 2 $EntityName
+    Set-CellValue $Worksheet $HeaderRow 4 'As Of Week'
+    Set-CellValue $Worksheet $HeaderRow 5 $LatestWeek.ToOADate()
+    $Worksheet.Cells.Item($HeaderRow, 5).NumberFormat = 'm/d/yyyy'
+    Set-CellValue $Worksheet $HeaderRow 8 $CompareEntityKey
+    Set-CellValue $Worksheet $HeaderRow 18 $LatestWeek.ToOADate()
+    $Worksheet.Cells.Item($HeaderRow, 18).NumberFormat = 'm/d/yyyy'
+    Set-CellValue $Worksheet ($HeaderRow + 1) 1 'Compare To'
+    Set-CellValue $Worksheet ($HeaderRow + 1) 2 $CompareEntityName
+
+    $latestMinus7 = $LatestWeek.AddDays(-7)
+    $latestMinus14 = $LatestWeek.AddDays(-14)
+    $latestMinus21 = $LatestWeek.AddDays(-21)
+    $priorYearWeek = $LatestWeek.AddDays(-364)
+    $currentCount = Get-RawMetricValue $RawDataWorksheet $RawIndex $EntityKey $LatestWeek 'Count'
+
+    for ($i = 0; $i -lt $Metrics.Count; $i++) {
+        $metric = $Metrics[$i]
+        $row = $FirstMetricRow + $i
+        $current = Get-RawMetricValue $RawDataWorksheet $RawIndex $EntityKey $LatestWeek $metric.RawKey
+        $priorWeek = Get-RawMetricValue $RawDataWorksheet $RawIndex $EntityKey $latestMinus7 $metric.RawKey
+        $priorYear = Get-RawMetricValue $RawDataWorksheet $RawIndex $EntityKey $priorYearWeek $metric.RawKey
+        $twoWeeksAgo = Get-RawMetricValue $RawDataWorksheet $RawIndex $EntityKey $latestMinus14 $metric.RawKey
+        $threeWeeksAgo = Get-RawMetricValue $RawDataWorksheet $RawIndex $EntityKey $latestMinus21 $metric.RawKey
+        $rollingAverage = Get-AverageValue @($current, $priorWeek, $twoWeeksAgo, $threeWeeksAgo)
+        $wowImprovement = if ($metric.DisplayName -eq 'Count') { $null } else { Get-Improvement $current $priorWeek $metric.LowerIsBetter }
+        $yoyImprovement = Get-Improvement $current $priorYear $metric.LowerIsBetter
+
+        $compareCurrent = Get-RawMetricValue $RawDataWorksheet $RawIndex $CompareEntityKey $LatestWeek $metric.RawKey
+        $comparePriorYear = Get-RawMetricValue $RawDataWorksheet $RawIndex $CompareEntityKey $priorYearWeek $metric.RawKey
+        $compareYoyImprovement = Get-Improvement $compareCurrent $comparePriorYear $metric.LowerIsBetter
+        $vsCompareCurrent = Get-Improvement $current $compareCurrent $metric.LowerIsBetter
+        $vsCompareYoy = if ($null -eq $yoyImprovement -or $null -eq $compareYoyImprovement) { $null } else { $yoyImprovement - $compareYoyImprovement }
+        $trend = Get-ThreeWeekTrend $RawDataWorksheet $RawIndex $EntityKey $LatestWeek $metric.RawKey $metric.LowerIsBetter $metric.IncludeInMovers
+        $currentBadness = if ($null -eq $current -or $metric.DisplayName -eq 'Count') { $null } elseif ($metric.LowerIsBetter) { $current } else { 100 - $current }
+        $yoyBadness = if ($null -eq $yoyImprovement -or $yoyImprovement -ge 0) { $null } else { -1 * $yoyImprovement }
+
+        Set-CellValue $Worksheet $row 1 $metric.DisplayName
+        Set-CellValue $Worksheet $row 2 $current
+        Set-CellValue $Worksheet $row 3 $wowImprovement
+        Set-CellValue $Worksheet $row 4 $yoyImprovement
+        Set-CellValue $Worksheet $row 5 $rollingAverage
+        Set-CellValue $Worksheet $row 6 $currentCount
+        Set-CellValue $Worksheet $row 7 $metric.RawKey
+        Set-CellValue $Worksheet $row 8 $metric.LowerIsBetter
+        Set-CellValue $Worksheet $row 9 $metric.IncludeInMovers
+        Set-CellValue $Worksheet $row 10 $priorWeek
+        Set-CellValue $Worksheet $row 11 $priorYear
+        Set-CellValue $Worksheet $row 12 $twoWeeksAgo
+        Set-CellValue $Worksheet $row 13 $threeWeeksAgo
+        Set-CellValue $Worksheet $row 14 $metric.Category
+        Set-CellValue $Worksheet $row 15 $metric.Owner
+        Set-CellValue $Worksheet $row 16 ''
+        Set-CellValue $Worksheet $row 17 ''
+        Set-CellValue $Worksheet $row 18 $trend.Arrow
+        Set-CellValue $Worksheet $row 19 $yoyBadness
+        Set-CellValue $Worksheet $row 20 $currentBadness
+        Set-CellValue $Worksheet $row 21 ''
+        Set-CellValue $Worksheet $row 22 ''
+        Set-CellValue $Worksheet $row 23 $trend.Average
+        Set-CellValue $Worksheet $row 24 $trend.Persistent
+
+        if ($metric.DisplayName -eq 'Count') {
+            Set-CellValue $Worksheet $row 25 ''
+            Set-CellValue $Worksheet $row 26 ''
+            Set-CellValue $Worksheet $row 27 ''
+            Set-CellValue $Worksheet $row 28 ''
+        }
+        else {
+            Set-CellValue $Worksheet $row 25 $compareCurrent
+            Set-CellValue $Worksheet $row 26 $compareYoyImprovement
+            Set-CellValue $Worksheet $row 27 $vsCompareCurrent
+            Set-CellValue $Worksheet $row 28 $vsCompareYoy
+        }
+    }
+}
+
+function Update-EmailComparisonAndExport {
+    param(
+        [object]$Workbook,
+        [object]$RawDataWorksheet,
+        [object]$LatestSource,
+        [string]$FolderPath,
+        [string]$TestDir,
+        [bool]$ApplyMode
+    )
+
+    $emailWs = $null
+    $metricWs = $null
+    try {
+        $emailWs = $Workbook.Worksheets.Item('Email Comparison')
+        $metricWs = $Workbook.Worksheets.Item('Metric_Catalog')
+        $metrics = @(Get-MetricCatalogRows $metricWs)
+        if ($metrics.Count -eq 0) {
+            throw 'Metric_Catalog did not contain any metrics for the email comparison sheet.'
+        }
+
+        $rawIndex = Get-RawDataIndex $RawDataWorksheet
+        $compareEntityKey = 'All Franchisees|(TOTAL)'
+        $compareEntityName = 'TOTAL - All Franchisees'
+        $latestWeek = $LatestSource.WeekEnding
+
+        Update-EmailComparisonSection $emailWs $RawDataWorksheet $rawIndex $metrics $latestWeek 'Sorensen|9355 Virginia Beach' '9355 Virginia Beach (Sorensen)' 3 6 $compareEntityKey $compareEntityName
+        Update-EmailComparisonSection $emailWs $RawDataWorksheet $rawIndex $metrics $latestWeek 'Sorensen|9354 Richmond' '9354 Richmond (Sorensen)' 23 26 $compareEntityKey $compareEntityName
+
+        $emailWs.PageSetup.PrintArea = '$A$1:$AB$38'
+        $emailWs.PageSetup.Orientation = 2
+        $emailWs.PageSetup.Zoom = $false
+        $emailWs.PageSetup.FitToPagesWide = 1
+        $emailWs.PageSetup.FitToPagesTall = 1
+
+        $pdfDir = if ($ApplyMode) { Join-Path $FolderPath '04 Email Comparison PDFs' } else { $TestDir }
+        New-Item -ItemType Directory -Path $pdfDir -Force | Out-Null
+        $pdfName = 'GSS Email Comparison {0}.pdf' -f $LatestSource.File.LastWriteTime.ToString('MMddyy')
+        $pdfPath = Join-Path $pdfDir $pdfName
+        $emailWs.ExportAsFixedFormat($xlTypePDF, $pdfPath)
+        return $pdfPath
+    }
+    finally {
+        Release-ComObject $metricWs
+        Release-ComObject $emailWs
+    }
+}
+
 if ([string]::IsNullOrWhiteSpace($Folder)) {
     $scriptRoot = Split-Path -Parent $PSCommandPath
     $projectRoot = Split-Path -Parent $scriptRoot
@@ -328,10 +720,7 @@ if ([string]::IsNullOrWhiteSpace($Folder)) {
 }
 
 $Folder = (Resolve-Path -LiteralPath $Folder).Path
-$mainPath = Join-Path $Folder $MainWorkbookName
-if (-not (Test-Path -LiteralPath $mainPath)) {
-    throw "Main workbook not found: $mainPath"
-}
+$mainPath = Resolve-MainWorkbookPath $Folder $MainWorkbookName
 
 $automationDir = Join-Path $Folder '_automation_runs'
 $logDir = Join-Path $automationDir 'logs'
@@ -347,6 +736,7 @@ $targetWb = $null
 $rawWs = $null
 $targetPath = $mainPath
 $backupPath = $null
+$emailComparisonPdfPath = $null
 
 try {
     $excel = New-Object -ComObject Excel.Application
@@ -417,16 +807,16 @@ try {
         $sourceWork += $requested
     }
 
+    if ($Apply) {
+        $base = [System.IO.Path]::GetFileNameWithoutExtension($MainWorkbookName)
+        $backupPath = Join-Path $backupDir "$base`_BACKUP_$timestamp.xlsx"
+        $targetWb.SaveCopyAs($backupPath)
+    }
+
     if ($sourceWork.Count -eq 0) {
-        $status = 'SkippedAlreadyPresent'
+        $status = 'WorkbookAlreadyCurrentEmailPdfRefreshed'
     }
     else {
-        if ($Apply) {
-            $base = [System.IO.Path]::GetFileNameWithoutExtension($MainWorkbookName)
-            $backupPath = Join-Path $backupDir "$base`_BACKUP_$timestamp.xlsx"
-            $targetWb.SaveCopyAs($backupPath)
-        }
-
         foreach ($workItem in $sourceWork) {
             $source = $workItem.Source
             $rowsForSource = @(Get-SourceRowsFromFile $excel $source)
@@ -440,10 +830,11 @@ try {
                 RowsAppended = $written
             }
         }
-
-        $excel.CalculateFullRebuild()
-        $targetWb.Save()
     }
+
+    $excel.CalculateFullRebuild()
+    $emailComparisonPdfPath = Update-EmailComparisonAndExport $targetWb $rawWs $latestSource $Folder $testDir ([bool]$Apply)
+    $targetWb.Save()
 
     $summary = [pscustomobject]@{
         Timestamp = (Get-Date).ToString('s')
@@ -456,6 +847,7 @@ try {
         PriorYearSourceWorkbook = $priorYearSource.File.FullName
         TargetWorkbook = $targetPath
         BackupWorkbook = $backupPath
+        EmailComparisonPdf = $emailComparisonPdfPath
         RowsAppended = $rowsAppended
         WeeksAppended = $weeksAppended
         WeeksSkipped = $weeksSkipped

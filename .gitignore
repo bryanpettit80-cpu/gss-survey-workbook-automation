@@ -1,0 +1,23 @@
+# Keep this repo program-only.
+*.xlsx
+*.xlsm
+*.xls
+*.csv
+*.pdf
+*.png
+*.jpg
+*.jpeg
+
+# Generated runtime output belongs in ../_automation_runs, not Git.
+_automation_runs/
+automation/
+backups/
+logs/
+test-output/
+
+# Local/editor noise.
+Thumbs.db
+.DS_Store
+*.tmp
+*.bak
+*.log

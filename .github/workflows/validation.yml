@@ -15,3 +15,6 @@ jobs:
       - name: Run non-Excel logic tests
         shell: powershell
         run: .\scripts\Test-GSS-Logic.ps1
+      - name: Run analytics logic tests
+        shell: powershell
+        run: .\scripts\Test-GSS-Analytics.ps1

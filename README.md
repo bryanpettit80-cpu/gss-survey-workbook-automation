@@ -15,6 +15,7 @@ Program-only repository for updating the GSS survey score trends workbook stored
 - `Run-GSS-Workbook-Test.cmd` runs a copy-test only.
 - `Run-GSS-Workbook-Update.cmd` runs the same safe copy-test-then-confirm flow as the operator launcher.
 - `scripts\Update-GSS-MainWorkbook.ps1` is the updater script.
+- `scripts\Analyze-GSS-Run.ps1` creates a post-run QA and insight review.
 - `..\_automation_runs\` stores generated backups, logs, and copy-test workbooks.
 
 Survey source workbooks, PDFs, screenshots, generated backups, and the main workbook are intentionally not part of this repo.
@@ -51,12 +52,25 @@ The updater searches the organized Dropbox subfolders, so the workbook and sourc
 - Running with `-Apply` updates the main workbook and first saves a timestamped backup in `..\_automation_runs\backups`.
 - If the newest week and matching prior-year week are already present in `Raw_Data`, the updater skips the write.
 - Each run prints a short summary and writes a JSON log to `..\_automation_runs\logs`.
+- The safe launcher runs an analytics review after copy-test and live apply. If the review finds a blocker, live apply is stopped before the workbook is changed.
+
+## Analytics Review
+
+Run `scripts\Analyze-GSS-Run.ps1` to review the latest GSS update log and workbook data.
+
+The analyzer writes a review package to `..\_automation_runs\qa\run_review_YYYYMMDD_HHMMSS\`:
+
+- `review.md` with the operator-facing QA and insight summary.
+- `review.json` with structured QA results.
+- `metric_detail.csv` with Richmond and Virginia Beach metric movement.
+
+The review checks workbook/log/PDF/backup presence, the 364-day YoY pairing, expected `Raw_Data` entity rows, duplicate row keys, required metric columns, source-folder placement, sample count, and large metric declines. It also ranks current attention items and strengths using `Metric_Catalog`.
 
 ## Setup Checks
 
 - Run `scripts\Install-GSS-OperatorLauncher.ps1` to refresh the Dropbox-facing launcher from the tracked template.
 - Run `scripts\Get-GSS-SetupStatus.ps1` to check the launcher, repo path, and scheduled task wiring.
-- Run `scripts\Test-GSS-PowerShellSyntax.ps1` and `scripts\Test-GSS-Logic.ps1` before committing script changes.
+- Run `scripts\Test-GSS-PowerShellSyntax.ps1`, `scripts\Test-GSS-Logic.ps1`, and `scripts\Test-GSS-Analytics.ps1` before committing script changes.
 
 ## Requirements
 

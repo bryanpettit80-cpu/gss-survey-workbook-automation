@@ -13,3 +13,5 @@ The operator entry point is outside the repo:
 Use `scripts\Update-GSS-MainWorkbook.ps1` for code changes. Run it without `-Apply` first for a copy-only test. Live runs require Microsoft Excel on Windows and write backups/logs to `..\_automation_runs`.
 
 Keep `templates\Run GSS Update After Upload.cmd` as the canonical Dropbox-facing launcher and refresh the parent launcher with `scripts\Install-GSS-OperatorLauncher.ps1`. Leave the scheduled task disabled unless the user explicitly requests scheduled live updates.
+
+`scripts\Analyze-GSS-Run.ps1` is the deterministic post-run QA and insight analyzer. Generated review files belong under `..\_automation_runs\qa` and must not be committed.

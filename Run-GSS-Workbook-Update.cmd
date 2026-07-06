@@ -1,12 +1,12 @@
 @echo off
 setlocal
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\Update-GSS-MainWorkbook.ps1" -Folder "%~dp0.." -Apply
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\Invoke-GSS-SafeWorkbookUpdate.ps1" -Folder "%~dp0.."
 set EXITCODE=%ERRORLEVEL%
 echo.
 if "%EXITCODE%"=="0" (
-  echo GSS workbook update finished successfully.
+  echo GSS workbook launcher finished.
 ) else (
-  echo GSS workbook update failed with exit code %EXITCODE%.
+  echo GSS workbook launcher failed with exit code %EXITCODE%.
 )
 echo.
 pause

@@ -1,0 +1,17 @@
+name: validation
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  powershell:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse PowerShell scripts
+        shell: powershell
+        run: .\scripts\Test-GSS-PowerShellSyntax.ps1
+      - name: Run non-Excel logic tests
+        shell: powershell
+        run: .\scripts\Test-GSS-Logic.ps1

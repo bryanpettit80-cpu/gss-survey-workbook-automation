@@ -12,6 +12,8 @@ Program-only repository for updating the GSS survey score trends workbook stored
 - `..\05 Reference Materials\` stores training/reference files.
 - `..\06 Exports and Images\` stores screenshots and image exports.
 - `..\Run GSS Update After Upload.cmd` is the operator launcher to run after uploading the newest GSS source workbook.
+- `Run-GSS-Workbook-Test.cmd` runs a copy-test only.
+- `Run-GSS-Workbook-Update.cmd` runs the same safe copy-test-then-confirm flow as the operator launcher.
 - `scripts\Update-GSS-MainWorkbook.ps1` is the updater script.
 - `..\_automation_runs\` stores generated backups, logs, and copy-test workbooks.
 
@@ -19,7 +21,7 @@ Survey source workbooks, PDFs, screenshots, generated backups, and the main work
 
 ## What The Updater Does
 
-1. Finds the newest `Sorensen FW...` rolling workbook by the `Date Range` in cell `A1`.
+1. Finds the newest `Sorensen FW...` rolling workbook by the `Date Range` in cell `A1`, preferring `..\02 Weekly Rolling Source Workbooks\`.
 2. Finds the matching prior-year workbook for YoY comparison using newest week minus 364 days.
 3. Reads four required rows from each needed week:
    - All Franchisees total
@@ -34,17 +36,27 @@ Survey source workbooks, PDFs, screenshots, generated backups, and the main work
 
 ## Manual Run
 
-1. Upload or save the newest GSS source workbook into the GSS Surveys Dropbox folder.
+1. Upload or save the newest GSS source workbook into `..\02 Weekly Rolling Source Workbooks\`.
 2. Close the main workbook if it is open in Excel.
 3. Double-click `..\Run GSS Update After Upload.cmd`.
+4. Review the copy-test summary.
+5. Type `APPLY` only when the copy-test looks correct.
 
 The updater searches the organized Dropbox subfolders, so the workbook and source files do not need to stay in the folder root.
 
 ## Safety
 
-- Running the script without `-Apply` creates a copy-only test workbook in `..\_automation_runs\test-output`.
+- The operator launcher runs without `-Apply` first, creating a copy-only test workbook in `..\_automation_runs\test-output`.
+- Live apply runs only after the operator types `APPLY`.
 - Running with `-Apply` updates the main workbook and first saves a timestamped backup in `..\_automation_runs\backups`.
 - If the newest week and matching prior-year week are already present in `Raw_Data`, the updater skips the write.
+- Each run prints a short summary and writes a JSON log to `..\_automation_runs\logs`.
+
+## Setup Checks
+
+- Run `scripts\Install-GSS-OperatorLauncher.ps1` to refresh the Dropbox-facing launcher from the tracked template.
+- Run `scripts\Get-GSS-SetupStatus.ps1` to check the launcher, repo path, and scheduled task wiring.
+- Run `scripts\Test-GSS-PowerShellSyntax.ps1` and `scripts\Test-GSS-Logic.ps1` before committing script changes.
 
 ## Requirements
 
@@ -52,4 +64,4 @@ The updater searches the organized Dropbox subfolders, so the workbook and sourc
 - Microsoft Excel desktop app
 - PowerShell
 
-The disabled Windows scheduled task is named `GSS Survey Main Workbook Weekly Update`. Manual execution is the intended workflow.
+The disabled Windows scheduled task is named `GSS Survey Main Workbook Weekly Update`. Manual execution is the intended workflow. The scheduled-task launcher runs live apply without an interactive prompt, so leave the task disabled unless scheduled live updates are explicitly requested.

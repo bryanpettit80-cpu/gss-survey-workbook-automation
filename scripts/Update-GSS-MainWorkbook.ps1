@@ -2,7 +2,8 @@
 param(
     [string]$Folder,
     [string]$MainWorkbookName = 'Consolidated_Score_Trends_v6_ExecClean_YoY_WITH_QuickRead_WoW_YoY_FINAL_v14_UniformCF_DriversStyle_PATCHED_XMLSAFE.xlsx',
-    [switch]$Apply
+    [switch]$Apply,
+    [switch]$OutputObject
 )
 
 $ErrorActionPreference = 'Stop'
@@ -101,6 +102,17 @@ function Test-ExcludedGssPath {
     return $false
 }
 
+function Resolve-GssChildFolder {
+    param([string]$FolderPath, [string]$ChildFolderName)
+
+    $candidate = Join-Path $FolderPath $ChildFolderName
+    if (Test-Path -LiteralPath $candidate -PathType Container) {
+        return (Resolve-Path -LiteralPath $candidate).Path
+    }
+
+    return $null
+}
+
 function Get-GssFiles {
     param([string]$FolderPath, [string]$Filter)
 
@@ -111,11 +123,29 @@ function Get-GssFiles {
 function Resolve-MainWorkbookPath {
     param([string]$FolderPath, [string]$WorkbookName)
 
+    $mainWorkbookFolder = Resolve-GssChildFolder $FolderPath '01 Main Workbook'
+    if ($mainWorkbookFolder) {
+        $preferredPath = Join-Path $mainWorkbookFolder $WorkbookName
+        if (Test-Path -LiteralPath $preferredPath) {
+            return (Resolve-Path -LiteralPath $preferredPath).Path
+        }
+
+        $preferredMatches = @(Get-GssFiles $mainWorkbookFolder $WorkbookName)
+        if ($preferredMatches.Count -eq 1) {
+            return $preferredMatches[0].FullName
+        }
+        if ($preferredMatches.Count -gt 1) {
+            $paths = ($preferredMatches | ForEach-Object { $_.FullName }) -join '; '
+            throw "Multiple main workbook matches were found in '$mainWorkbookFolder'. Move old copies out of that folder or pass -MainWorkbookName. Matches: $paths"
+        }
+    }
+
     $directPath = Join-Path $FolderPath $WorkbookName
     if (Test-Path -LiteralPath $directPath) {
         return (Resolve-Path -LiteralPath $directPath).Path
     }
 
+    Write-Warning "Main workbook was not found in '01 Main Workbook'. Falling back to a recursive compatibility search under $FolderPath."
     $matches = @(Get-GssFiles $FolderPath $WorkbookName)
     if ($matches.Count -eq 1) {
         return $matches[0].FullName
@@ -150,9 +180,18 @@ function Get-NormalizedSourceName {
 function Get-RollingSources {
     param([object]$Excel, [string]$FolderPath)
 
-    $candidates = Get-GssFiles $FolderPath 'Sorensen FW*.xlsx' |
+    $sourceFolder = Resolve-GssChildFolder $FolderPath '02 Weekly Rolling Source Workbooks'
+    $searchRoot = if ($sourceFolder) { $sourceFolder } else { $FolderPath }
+    $candidates = @(Get-GssFiles $searchRoot 'Sorensen FW*.xlsx' |
         Where-Object { $_.Name -notmatch '(?i)CLEANED|Tidy|YY Trends' } |
-        Sort-Object LastWriteTime -Descending
+        Sort-Object LastWriteTime -Descending)
+
+    if ($candidates.Count -eq 0 -and $sourceFolder) {
+        Write-Warning "No rolling Sorensen source workbooks were found in '02 Weekly Rolling Source Workbooks'. Falling back to a recursive compatibility search under $FolderPath."
+        $candidates = @(Get-GssFiles $FolderPath 'Sorensen FW*.xlsx' |
+            Where-Object { $_.Name -notmatch '(?i)CLEANED|Tidy|YY Trends' } |
+            Sort-Object LastWriteTime -Descending)
+    }
 
     $sources = @()
     foreach ($candidate in $candidates) {
@@ -713,161 +752,199 @@ function Update-EmailComparisonAndExport {
     }
 }
 
-if ([string]::IsNullOrWhiteSpace($Folder)) {
-    $scriptRoot = Split-Path -Parent $PSCommandPath
-    $projectRoot = Split-Path -Parent $scriptRoot
-    $Folder = Split-Path -Parent $projectRoot
+function Write-RunSummary {
+    param([object]$Summary)
+
+    Write-Host ''
+    Write-Host 'GSS workbook update summary'
+    Write-Host ('  Mode: {0}' -f $Summary.Mode)
+    Write-Host ('  Status: {0}' -f $Summary.Status)
+    Write-Host ('  Current week: {0}' -f $Summary.CurrentWeekEnding)
+    Write-Host ('  Prior-year week: {0}' -f $Summary.PriorYearWeekEnding)
+    Write-Host ('  Rows appended: {0}' -f $Summary.RowsAppended)
+    Write-Host ('  Current source: {0}' -f $Summary.CurrentSourceWorkbook)
+    Write-Host ('  Prior-year source: {0}' -f $Summary.PriorYearSourceWorkbook)
+    Write-Host ('  Target workbook: {0}' -f $Summary.TargetWorkbook)
+    if ($Summary.BackupWorkbook) {
+        Write-Host ('  Backup workbook: {0}' -f $Summary.BackupWorkbook)
+    }
+    Write-Host ('  Email PDF: {0}' -f $Summary.EmailComparisonPdf)
+    Write-Host ('  Log: {0}' -f $Summary.LogPath)
+    Write-Host ''
 }
 
-$Folder = (Resolve-Path -LiteralPath $Folder).Path
-$mainPath = Resolve-MainWorkbookPath $Folder $MainWorkbookName
+function Invoke-GssWorkbookUpdate {
+    param(
+        [string]$FolderPath,
+        [string]$WorkbookName,
+        [switch]$ApplyMode,
+        [switch]$ReturnObject
+    )
 
-$automationDir = Join-Path $Folder '_automation_runs'
-$logDir = Join-Path $automationDir 'logs'
-$backupDir = Join-Path $automationDir 'backups'
-$testDir = Join-Path $automationDir 'test-output'
-New-Item -ItemType Directory -Path $logDir, $backupDir, $testDir -Force | Out-Null
+    if ([string]::IsNullOrWhiteSpace($FolderPath)) {
+        $scriptRoot = Split-Path -Parent $PSCommandPath
+        $projectRoot = Split-Path -Parent $scriptRoot
+        $FolderPath = Split-Path -Parent $projectRoot
+    }
 
-$timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
-$excel = $null
-$sourceWb = $null
-$sourceWs = $null
-$targetWb = $null
-$rawWs = $null
-$targetPath = $mainPath
-$backupPath = $null
-$emailComparisonPdfPath = $null
+    $FolderPath = (Resolve-Path -LiteralPath $FolderPath).Path
+    $mainPath = Resolve-MainWorkbookPath $FolderPath $WorkbookName
 
-try {
-    $excel = New-Object -ComObject Excel.Application
-    $excel.Visible = $false
-    $excel.DisplayAlerts = $false
-    $excel.EnableEvents = $false
-    $excel.AskToUpdateLinks = $false
+    $automationDir = Join-Path $FolderPath '_automation_runs'
+    $logDir = Join-Path $automationDir 'logs'
+    $backupDir = Join-Path $automationDir 'backups'
+    $testDir = Join-Path $automationDir 'test-output'
+    New-Item -ItemType Directory -Path $logDir, $backupDir, $testDir -Force | Out-Null
+
+    $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+    $excel = $null
+    $sourceWb = $null
+    $sourceWs = $null
+    $targetWb = $null
+    $rawWs = $null
+    $targetPath = $mainPath
+    $backupPath = $null
+    $emailComparisonPdfPath = $null
+
     try {
-        $excel.Calculation = $xlCalculationAutomatic
-    }
-    catch {
-        Write-Warning "Excel did not accept the automatic calculation setting before opening a workbook. Continuing; the updater will still calculate before saving."
-    }
+        $excel = New-Object -ComObject Excel.Application
+        $excel.Visible = $false
+        $excel.DisplayAlerts = $false
+        $excel.EnableEvents = $false
+        $excel.AskToUpdateLinks = $false
+        try {
+            $excel.Calculation = $xlCalculationAutomatic
+        }
+        catch {
+            Write-Warning "Excel did not accept the automatic calculation setting before opening a workbook. Continuing; the updater will still calculate before saving."
+        }
 
-    $allSources = @(Get-RollingSources $excel $Folder)
-    $latestSource = Select-LatestRollingSource $allSources
-    if ($null -eq $latestSource) {
-        throw "No latest rolling Sorensen source workbook could be selected from $Folder."
-    }
+        $allSources = @(Get-RollingSources $excel $FolderPath)
+        $latestSource = Select-LatestRollingSource $allSources
+        if ($null -eq $latestSource) {
+            throw "No latest rolling Sorensen source workbook could be selected from $FolderPath."
+        }
 
-    $priorYearWeek = $latestSource.WeekEnding.AddDays(-364)
-    $priorYearSource = Select-RollingSourceByWeek $allSources $priorYearWeek
-    if ($null -eq $priorYearSource) {
-        throw "No matching prior-year source workbook found for week ending $($priorYearWeek.ToString('yyyy-MM-dd'))."
-    }
+        $priorYearWeek = $latestSource.WeekEnding.AddDays(-364)
+        $priorYearSource = Select-RollingSourceByWeek $allSources $priorYearWeek
+        if ($null -eq $priorYearSource) {
+            throw "No matching prior-year source workbook found for week ending $($priorYearWeek.ToString('yyyy-MM-dd'))."
+        }
 
-    $requestedSources = @($priorYearSource, $latestSource) |
-        Sort-Object WeekEnding |
-        ForEach-Object {
-            [pscustomobject]@{
-                Role = if ($_.WeekEnding.Date -eq $latestSource.WeekEnding.Date) { 'CurrentWeek' } else { 'PriorYearWeek' }
-                Source = $_
+        $requestedSources = @($priorYearSource, $latestSource) |
+            Sort-Object WeekEnding |
+            ForEach-Object {
+                [pscustomobject]@{
+                    Role = if ($_.WeekEnding.Date -eq $latestSource.WeekEnding.Date) { 'CurrentWeek' } else { 'PriorYearWeek' }
+                    Source = $_
+                }
+            }
+
+        if (-not $ApplyMode) {
+            $base = [System.IO.Path]::GetFileNameWithoutExtension($WorkbookName)
+            $targetPath = Join-Path $testDir "$base`_TEST_$timestamp.xlsx"
+            Copy-Item -LiteralPath $mainPath -Destination $targetPath -Force
+        }
+
+        $targetWb = $excel.Workbooks.Open($targetPath, 0, $false)
+        if ($ApplyMode -and $targetWb.ReadOnly) {
+            throw "Main workbook opened read-only. Close it in Excel/Dropbox and run again: $mainPath"
+        }
+
+        $rawWs = $targetWb.Worksheets.Item('Raw_Data')
+
+        $status = 'Updated'
+        $rowsAppended = 0
+        $weeksAppended = @()
+        $weeksSkipped = @()
+        $sourceWork = @()
+
+        foreach ($requested in $requestedSources) {
+            $source = $requested.Source
+            $existingCount = Get-WeekRowCount $rawWs $source.WeekEnding
+            if ($existingCount -gt 0) {
+                $weeksSkipped += [pscustomobject]@{
+                    Role = $requested.Role
+                    WeekEnding = $source.WeekEnding.ToString('yyyy-MM-dd')
+                    ExistingRows = $existingCount
+                    SourceWorkbook = $source.File.FullName
+                }
+                continue
+            }
+
+            $sourceWork += $requested
+        }
+
+        if ($ApplyMode) {
+            $base = [System.IO.Path]::GetFileNameWithoutExtension($WorkbookName)
+            $backupPath = Join-Path $backupDir "$base`_BACKUP_$timestamp.xlsx"
+            $targetWb.SaveCopyAs($backupPath)
+        }
+
+        if ($sourceWork.Count -eq 0) {
+            $status = 'WorkbookAlreadyCurrentEmailPdfRefreshed'
+        }
+        else {
+            foreach ($workItem in $sourceWork) {
+                $source = $workItem.Source
+                $rowsForSource = @(Get-SourceRowsFromFile $excel $source)
+                $written = Add-RawDataRows $rawWs $rowsForSource
+                $rowsAppended += $written
+                $weeksAppended += [pscustomobject]@{
+                    Role = $workItem.Role
+                    WeekEnding = $source.WeekEnding.ToString('yyyy-MM-dd')
+                    SourceWorkbook = $source.File.FullName
+                    SourceFileNameInRawData = $source.SourceFileName
+                    RowsAppended = $written
+                }
             }
         }
 
-    if (-not $Apply) {
-        $base = [System.IO.Path]::GetFileNameWithoutExtension($MainWorkbookName)
-        $targetPath = Join-Path $testDir "$base`_TEST_$timestamp.xlsx"
-        Copy-Item -LiteralPath $mainPath -Destination $targetPath -Force
-    }
+        $excel.CalculateFullRebuild()
+        $emailComparisonPdfPath = Update-EmailComparisonAndExport $targetWb $rawWs $latestSource $FolderPath $testDir ([bool]$ApplyMode)
+        $targetWb.Save()
 
-    $targetWb = $excel.Workbooks.Open($targetPath, 0, $false)
-    if ($Apply -and $targetWb.ReadOnly) {
-        throw "Main workbook opened read-only. Close it in Excel/Dropbox and run again: $mainPath"
-    }
-
-    $rawWs = $targetWb.Worksheets.Item('Raw_Data')
-
-    $status = 'Updated'
-    $rowsAppended = 0
-    $weeksAppended = @()
-    $weeksSkipped = @()
-    $sourceWork = @()
-
-    foreach ($requested in $requestedSources) {
-        $source = $requested.Source
-        $existingCount = Get-WeekRowCount $rawWs $source.WeekEnding
-        if ($existingCount -gt 0) {
-            $weeksSkipped += [pscustomobject]@{
-                Role = $requested.Role
-                WeekEnding = $source.WeekEnding.ToString('yyyy-MM-dd')
-                ExistingRows = $existingCount
-                SourceWorkbook = $source.File.FullName
-            }
-            continue
+        $summary = [pscustomobject]@{
+            Timestamp = (Get-Date).ToString('s')
+            Mode = if ($ApplyMode) { 'ApplyToMainWorkbook' } else { 'CopyTestOnly' }
+            Status = $status
+            Folder = $FolderPath
+            CurrentWeekEnding = $latestSource.WeekEnding.ToString('yyyy-MM-dd')
+            PriorYearWeekEnding = $priorYearWeek.ToString('yyyy-MM-dd')
+            CurrentSourceWorkbook = $latestSource.File.FullName
+            PriorYearSourceWorkbook = $priorYearSource.File.FullName
+            TargetWorkbook = $targetPath
+            BackupWorkbook = $backupPath
+            EmailComparisonPdf = $emailComparisonPdfPath
+            RowsAppended = $rowsAppended
+            WeeksAppended = $weeksAppended
+            WeeksSkipped = $weeksSkipped
         }
 
-        $sourceWork += $requested
-    }
-
-    if ($Apply) {
-        $base = [System.IO.Path]::GetFileNameWithoutExtension($MainWorkbookName)
-        $backupPath = Join-Path $backupDir "$base`_BACKUP_$timestamp.xlsx"
-        $targetWb.SaveCopyAs($backupPath)
-    }
-
-    if ($sourceWork.Count -eq 0) {
-        $status = 'WorkbookAlreadyCurrentEmailPdfRefreshed'
-    }
-    else {
-        foreach ($workItem in $sourceWork) {
-            $source = $workItem.Source
-            $rowsForSource = @(Get-SourceRowsFromFile $excel $source)
-            $written = Add-RawDataRows $rawWs $rowsForSource
-            $rowsAppended += $written
-            $weeksAppended += [pscustomobject]@{
-                Role = $workItem.Role
-                WeekEnding = $source.WeekEnding.ToString('yyyy-MM-dd')
-                SourceWorkbook = $source.File.FullName
-                SourceFileNameInRawData = $source.SourceFileName
-                RowsAppended = $written
-            }
+        $logPath = Join-Path $logDir "gss_update_$timestamp.json"
+        $summary | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $logPath -Encoding UTF8
+        $summary | Add-Member -NotePropertyName LogPath -NotePropertyValue $logPath
+        Write-RunSummary $summary
+        if ($ReturnObject) {
+            return $summary
         }
     }
-
-    $excel.CalculateFullRebuild()
-    $emailComparisonPdfPath = Update-EmailComparisonAndExport $targetWb $rawWs $latestSource $Folder $testDir ([bool]$Apply)
-    $targetWb.Save()
-
-    $summary = [pscustomobject]@{
-        Timestamp = (Get-Date).ToString('s')
-        Mode = if ($Apply) { 'ApplyToMainWorkbook' } else { 'CopyTestOnly' }
-        Status = $status
-        Folder = $Folder
-        CurrentWeekEnding = $latestSource.WeekEnding.ToString('yyyy-MM-dd')
-        PriorYearWeekEnding = $priorYearWeek.ToString('yyyy-MM-dd')
-        CurrentSourceWorkbook = $latestSource.File.FullName
-        PriorYearSourceWorkbook = $priorYearSource.File.FullName
-        TargetWorkbook = $targetPath
-        BackupWorkbook = $backupPath
-        EmailComparisonPdf = $emailComparisonPdfPath
-        RowsAppended = $rowsAppended
-        WeeksAppended = $weeksAppended
-        WeeksSkipped = $weeksSkipped
+    finally {
+        if ($targetWb) { $targetWb.Close($false) }
+        if ($sourceWb) { $sourceWb.Close($false) }
+        Release-ComObject $rawWs
+        Release-ComObject $targetWb
+        Release-ComObject $sourceWs
+        Release-ComObject $sourceWb
+        if ($excel) {
+            $excel.Quit()
+            Release-ComObject $excel
+        }
+        [GC]::Collect()
+        [GC]::WaitForPendingFinalizers()
     }
-
-    $logPath = Join-Path $logDir "gss_update_$timestamp.json"
-    $summary | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $logPath -Encoding UTF8
-    $summary | Add-Member -NotePropertyName LogPath -NotePropertyValue $logPath -PassThru
 }
-finally {
-    if ($targetWb) { $targetWb.Close($false) }
-    if ($sourceWb) { $sourceWb.Close($false) }
-    Release-ComObject $rawWs
-    Release-ComObject $targetWb
-    Release-ComObject $sourceWs
-    Release-ComObject $sourceWb
-    if ($excel) {
-        $excel.Quit()
-        Release-ComObject $excel
-    }
-    [GC]::Collect()
-    [GC]::WaitForPendingFinalizers()
+
+if ($MyInvocation.InvocationName -ne '.') {
+    Invoke-GssWorkbookUpdate -FolderPath $Folder -WorkbookName $MainWorkbookName -ApplyMode:$Apply -ReturnObject:$OutputObject
 }

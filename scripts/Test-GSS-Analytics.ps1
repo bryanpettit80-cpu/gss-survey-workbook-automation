@@ -24,6 +24,8 @@ Assert-Equal (Get-DirectionAdjustedChange 90 80 $false) 10 'Higher-is-better pos
 Assert-Equal (Get-DirectionAdjustedChange 5 8 $true) 3 'Lower-is-better positive improvement'
 Assert-Equal (Test-GssYoyPairing ([datetime]'2026-07-05') ([datetime]'2025-07-06')) $true 'Valid YoY pairing'
 Assert-Equal (Test-GssYoyPairing ([datetime]'2026-07-05') ([datetime]'2025-07-05')) $false 'Invalid YoY pairing'
+Assert-Equal (Format-GssMovementNumber 2.25 1) '+2.3' 'Positive movement formatting'
+Assert-Equal (Format-GssMovementNumber -2.25 1) '-2.3' 'Negative movement formatting'
 
 $metrics = @(
     [pscustomobject]@{ DisplayName = 'Overall Experience'; RawKey = 'Overall Experience'; LowerIsBetter = $false; IncludeInMovers = $true; Category = 'Overall'; Owner = 'GM' },
@@ -75,8 +77,11 @@ $vbOverall = $detail | Where-Object { $_.Entity -eq '9355 Virginia Beach' -and $
 
 Assert-Equal $richmondOverall.WoWImprovement -5 'Metric detail WoW decline'
 Assert-Equal $richmondOverall.YoYImprovement -10 'Metric detail YoY decline'
+Assert-Equal $richmondOverall.WorstMovementLabel 'YoY' 'Weakest comparison label'
+Assert-Equal $richmondOverall.BestMovementLabel 'WoW' 'Strongest comparison label when both are negative'
 Assert-Equal $richmondDissat.WoWImprovement 3 'Lower-is-better metric detail'
 Assert-Equal $vbOverall.BestMovement 4 'Strength ranking candidate'
+Assert-Equal $vbOverall.BestMovementLabel 'YoY' 'Strength improvement label'
 
 $attention = Select-GssAttentionItems $detail 1
 Assert-Equal $attention[0].Entity '9354 Richmond' 'Attention ranking entity'

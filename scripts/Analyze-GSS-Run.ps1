@@ -299,9 +299,22 @@ function New-GssMetricDetail {
             $vsRolling = Get-DirectionAdjustedChange $currentValue $rollingAverage $metric.LowerIsBetter
             $vsSorensen = Get-DirectionAdjustedChange $currentValue $sorensenValue $metric.LowerIsBetter
             $vsAll = Get-DirectionAdjustedChange $currentValue $allValue $metric.LowerIsBetter
-            $movementValues = @($wow, $yoy) | Where-Object { $null -ne $_ }
-            $worstMovement = if ($movementValues.Count -gt 0) { ($movementValues | Measure-Object -Minimum).Minimum } else { $null }
-            $bestMovement = if ($movementValues.Count -gt 0) { ($movementValues | Measure-Object -Maximum).Maximum } else { $null }
+            $movementComparisons = @(
+                [pscustomobject]@{ Label = 'WoW'; Value = $wow },
+                [pscustomobject]@{ Label = 'YoY'; Value = $yoy }
+            ) | Where-Object { $null -ne $_.Value }
+            $worstMovement = $null
+            $worstMovementLabel = ''
+            $bestMovement = $null
+            $bestMovementLabel = ''
+            if ($movementComparisons.Count -gt 0) {
+                $worstComparison = $movementComparisons | Sort-Object Value | Select-Object -First 1
+                $bestComparison = $movementComparisons | Sort-Object @{ Expression = { $_.Value }; Descending = $true } | Select-Object -First 1
+                $worstMovement = $worstComparison.Value
+                $worstMovementLabel = $worstComparison.Label
+                $bestMovement = $bestComparison.Value
+                $bestMovementLabel = $bestComparison.Label
+            }
 
             $details += [pscustomobject]@{
                 Entity = $entity.Label
@@ -323,7 +336,9 @@ function New-GssMetricDetail {
                 VsSorensenTotal = $vsSorensen
                 VsAllFranchisees = $vsAll
                 WorstMovement = $worstMovement
+                WorstMovementLabel = $worstMovementLabel
                 BestMovement = $bestMovement
+                BestMovementLabel = $bestMovementLabel
             }
         }
     }
@@ -428,7 +443,7 @@ function Select-GssAttentionItems {
     param([object[]]$MetricDetail, [int]$Count = 5)
 
     return @($MetricDetail |
-        Where-Object { $_.WorstMovement -ne $null } |
+        Where-Object { $_.WorstMovement -ne $null -and $_.WorstMovement -lt 0 } |
         Sort-Object @{ Expression = { $_.WorstMovement }; Ascending = $true }, @{ Expression = { $_.CurrentCount }; Descending = $true } |
         Select-Object -First $Count)
 }
@@ -447,6 +462,18 @@ function Format-GssNumber {
 
     if ($null -eq $Value) { return 'n/a' }
     return ('{0:N' + $Digits + '}') -f ([double]$Value)
+}
+
+function Format-GssMovementNumber {
+    param([object]$Value, [int]$Digits = 1)
+
+    if ($null -eq $Value) { return 'n/a' }
+    $number = [double]$Value
+    $formatted = ('{0:N' + $Digits + '}') -f $number
+    if ($number -gt 0) {
+        return "+$formatted"
+    }
+    return $formatted
 }
 
 function New-GssReviewMarkdown {
@@ -488,8 +515,8 @@ function New-GssReviewMarkdown {
     }
     else {
         foreach ($item in $AttentionItems) {
-            $lines += ('- {0}: {1} current {2}; worst movement {3}; WoW {4}; YoY {5}; vs all franchisees {6}.' -f `
-                $item.Entity, $item.Metric, (Format-GssNumber $item.Current), (Format-GssNumber $item.WorstMovement), (Format-GssNumber $item.WoWImprovement), (Format-GssNumber $item.YoYImprovement), (Format-GssNumber $item.VsAllFranchisees))
+            $lines += ('- {0}: {1} current {2}; weakest comparison: {3} {4} (WoW {5}, YoY {6}); vs all franchisees {7}.' -f `
+                $item.Entity, $item.Metric, (Format-GssNumber $item.Current), $item.WorstMovementLabel, (Format-GssMovementNumber $item.WorstMovement), (Format-GssMovementNumber $item.WoWImprovement), (Format-GssMovementNumber $item.YoYImprovement), (Format-GssMovementNumber $item.VsAllFranchisees))
         }
     }
     $lines += ''
@@ -499,8 +526,8 @@ function New-GssReviewMarkdown {
     }
     else {
         foreach ($item in $StrengthItems) {
-            $lines += ('- {0}: {1} current {2}; best movement {3}; vs Sorensen total {4}.' -f `
-                $item.Entity, $item.Metric, (Format-GssNumber $item.Current), (Format-GssNumber $item.BestMovement), (Format-GssNumber $item.VsSorensenTotal))
+            $lines += ('- {0}: {1} current {2}; strongest improvement: {3} {4}; vs Sorensen total {5}.' -f `
+                $item.Entity, $item.Metric, (Format-GssNumber $item.Current), $item.BestMovementLabel, (Format-GssMovementNumber $item.BestMovement), (Format-GssMovementNumber $item.VsSorensenTotal))
         }
     }
     $lines += ''

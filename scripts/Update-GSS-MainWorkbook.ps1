@@ -787,6 +787,7 @@ function Invoke-GssWorkbookUpdate {
         $FolderPath = Split-Path -Parent $projectRoot
     }
 
+    $FolderPath = $FolderPath.Trim('"')
     $FolderPath = (Resolve-Path -LiteralPath $FolderPath).Path
     $mainPath = Resolve-MainWorkbookPath $FolderPath $WorkbookName
 

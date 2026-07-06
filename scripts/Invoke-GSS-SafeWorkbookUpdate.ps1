@@ -11,6 +11,7 @@ if ([string]::IsNullOrWhiteSpace($Folder)) {
     $Folder = Split-Path -Parent $projectRoot
 }
 
+$Folder = $Folder.Trim('"')
 $Folder = (Resolve-Path -LiteralPath $Folder).Path
 $scriptRoot = Split-Path -Parent $PSCommandPath
 $updater = Join-Path $scriptRoot 'Update-GSS-MainWorkbook.ps1'

@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$Folder,
-    [string]$MainWorkbookName = 'Consolidated_Score_Trends_v6_ExecClean_YoY_WITH_QuickRead_WoW_YoY_FINAL_v14_UniformCF_DriversStyle_PATCHED_XMLSAFE.xlsx',
+    [string]$MainWorkbookName = 'GSS Score Trends - Main.xlsx',
     [switch]$Apply,
     [switch]$OutputObject
 )

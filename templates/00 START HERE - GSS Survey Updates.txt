@@ -13,7 +13,7 @@ WEEKLY UPDATE
 5. Type APPLY only when the screen says the copy-test passed.
 
 IMPORTANT
-- The live workbook is in 01 Main Workbook.
+- The live workbook is 01 Main Workbook\GSS Score Trends - Main.xlsx.
 - Finished email PDFs are in 04 Email Comparison PDFs.
 - Do not edit GSS Survey Workbook Automation or _automation_runs.
 - The launcher makes a backup before changing the live workbook.

@@ -24,7 +24,7 @@ Finished comparison PDFs are saved in `04 Email Comparison PDFs`.
 
 ## Operator Folder Map
 
-- `01 Main Workbook`: the active workbook, with older versions in its archive subfolder.
+- `01 Main Workbook`: the active `GSS Score Trends - Main.xlsx` workbook, with older versions in its archive subfolder.
 - `02 Weekly Rolling Source Workbooks`: weekly `Sorensen FW...` source files used by the updater.
 - `03 Uploaded Survey Workbooks`: survey-detail files kept for reference; not used by the weekly updater.
 - `04 Email Comparison PDFs`: finished comparison PDFs.

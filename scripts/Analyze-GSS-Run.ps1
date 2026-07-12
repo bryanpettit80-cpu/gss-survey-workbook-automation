@@ -10,7 +10,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $scriptRoot = Split-Path -Parent $PSCommandPath
-. (Join-Path $scriptRoot 'Update-GSS-MainWorkbook.ps1')
+. (Join-Path $scriptRoot 'Gss-Common.ps1')
 
 function Resolve-GssAnalysisFolder {
     param([string]$FolderPath)
@@ -453,7 +453,7 @@ function Select-GssStrengthItems {
 
     return @($MetricDetail |
         Where-Object { $_.BestMovement -ne $null -and $_.BestMovement -gt 0 -and ($_.WorstMovement -eq $null -or $_.WorstMovement -ge 0) } |
-        Sort-Object @{ Expression = { $_.BestMovement }; Descending = $true }, @{ Expression = { $_.CurrentCount }; Descending = $true } |
+        Sort-Object @{ Expression = { $_.BestMovement }; Descending = $true }, @{ Expression = { $_.CurrentCount }; Descending = $true }, @{ Expression = { $_.Entity }; Descending = $true } |
         Select-Object -First $Count)
 }
 
@@ -461,14 +461,15 @@ function Format-GssNumber {
     param([object]$Value, [int]$Digits = 1)
 
     if ($null -eq $Value) { return 'n/a' }
-    return ('{0:N' + $Digits + '}') -f ([double]$Value)
+    $rounded = [math]::Round([double]$Value, $Digits, [System.MidpointRounding]::AwayFromZero)
+    return ('{0:N' + $Digits + '}') -f $rounded
 }
 
 function Format-GssMovementNumber {
     param([object]$Value, [int]$Digits = 1)
 
     if ($null -eq $Value) { return 'n/a' }
-    $number = [double]$Value
+    $number = [math]::Round([double]$Value, $Digits, [System.MidpointRounding]::AwayFromZero)
     $formatted = ('{0:N' + $Digits + '}') -f $number
     if ($number -gt 0) {
         return "+$formatted"

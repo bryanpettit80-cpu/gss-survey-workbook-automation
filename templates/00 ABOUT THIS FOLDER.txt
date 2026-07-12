@@ -1,0 +1,6 @@
+This folder stores uploaded survey-detail workbooks for reference.
+
+It is not the weekly input folder used by the workbook updater.
+
+For the weekly update, save the newest Sorensen FW workbook in:
+02 Weekly Rolling Source Workbooks

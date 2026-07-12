@@ -1,81 +1,79 @@
 # GSS Survey Workbook Automation
 
-Program-only repository for updating the GSS survey score trends workbook stored in Dropbox.
+This private repository contains the program that updates the GSS survey score-trends workbook in Dropbox.
 
-## Dropbox Layout
+## Weekly Update
 
-- `..\` is the live GSS Surveys folder with the manual launcher and organized subfolders.
-- `..\01 Main Workbook\` stores the live consolidated workbook and older score-trend workbooks.
-- `..\02 Weekly Rolling Source Workbooks\` stores the `Sorensen FW...` rolling source workbooks used by the updater.
-- `..\03 Uploaded Survey Workbooks\` stores the uploaded `Sorensen...` survey detail workbooks and related transformed files.
-- `..\04 Email Comparison PDFs\` stores the generated `GSS Email Comparison MMDDYY.pdf` files.
-- `..\05 Reference Materials\` stores training/reference files.
-- `..\06 Exports and Images\` stores screenshots and image exports.
-- `..\Run GSS Update After Upload.cmd` is the operator launcher to run after uploading the newest GSS source workbook.
-- `Run-GSS-Workbook-Test.cmd` runs a copy-test only.
-- `Run-GSS-Workbook-Update.cmd` runs the same safe copy-test-then-confirm flow as the operator launcher.
-- `scripts\Update-GSS-MainWorkbook.ps1` is the updater script.
-- `scripts\Analyze-GSS-Run.ps1` creates a post-run QA and insight review.
-- `..\_automation_runs\` stores generated backups, logs, and copy-test workbooks.
+Non-technical users should work from the parent `GSS Surveys` folder, not from this repository.
 
-Survey source workbooks, PDFs, screenshots, generated backups, and the main workbook are intentionally not part of this repo.
+1. Save the newest `Sorensen FW...` workbook in `02 Weekly Rolling Source Workbooks`.
+2. Close the main GSS workbook if it is open in Excel.
+3. Double-click `Run GSS Update After Upload.cmd` in the `GSS Surveys` folder.
+4. Wait for the copy-test and review to finish.
+5. Type `APPLY` only when the copy-test passes and you want to update the live workbook.
 
-## What The Updater Does
+The launcher always tests a copy first. It also creates a backup before changing the live workbook.
 
-1. Finds the newest `Sorensen FW...` rolling workbook by the `Date Range` in cell `A1`, preferring `..\02 Weekly Rolling Source Workbooks\`.
-2. Finds the matching prior-year workbook for YoY comparison using newest week minus 364 days.
-3. Reads four required rows from each needed week:
-   - All Franchisees total
-   - Sorensen total
-   - 9354 Richmond
-   - 9355 Virginia Beach
-4. Adds missing rows to `Raw_Data` columns `A:Q`.
-5. Rebuilds `Raw_Data` formulas in columns `R:S`.
-6. Refreshes the `Email Comparison` tab with driver details for 9355 Virginia Beach and 9354 Richmond.
-7. Exports `Email Comparison` to `..\04 Email Comparison PDFs\GSS Email Comparison MMDDYY.pdf`.
-8. Calculates and saves the workbook with Excel.
+## What the Final Message Means
 
-## Manual Run
+- `NO LIVE CHANGES MADE`: the process stopped safely without changing the live workbook.
+- `UPDATE COMPLETE`: the live workbook was updated and the final review passed.
+- `ATTENTION NEEDED`: stop and review the message shown on screen before using the results.
 
-1. Upload or save the newest GSS source workbook into `..\02 Weekly Rolling Source Workbooks\`.
-2. Close the main workbook if it is open in Excel.
-3. Double-click `..\Run GSS Update After Upload.cmd`.
-4. Review the copy-test summary.
-5. Type `APPLY` only when the copy-test looks correct.
+Finished comparison PDFs are saved in `04 Email Comparison PDFs`.
 
-The updater searches the organized Dropbox subfolders, so the workbook and source files do not need to stay in the folder root.
+## Operator Folder Map
 
-## Safety
+- `01 Main Workbook`: the active workbook, with older versions in its archive subfolder.
+- `02 Weekly Rolling Source Workbooks`: weekly `Sorensen FW...` source files used by the updater.
+- `03 Uploaded Survey Workbooks`: survey-detail files kept for reference; not used by the weekly updater.
+- `04 Email Comparison PDFs`: finished comparison PDFs.
+- `05 Reference Materials`: training and reference documents.
+- `06 Exports and Images`: screenshots and image exports.
+- `_automation_runs`: system-created tests, backups, logs, and QA reviews.
+- `GSS Survey Workbook Automation`: this program repository.
 
-- The operator launcher runs without `-Apply` first, creating a copy-only test workbook in `..\_automation_runs\test-output`.
-- Live apply runs only after the operator types `APPLY`.
-- Running with `-Apply` updates the main workbook and first saves a timestamped backup in `..\_automation_runs\backups`.
-- If the newest week and matching prior-year week are already present in `Raw_Data`, the updater skips the write.
-- Each run prints a short summary and writes a JSON log to `..\_automation_runs\logs`.
-- The safe launcher runs an analytics review after copy-test and live apply. If the review finds a blocker, live apply is stopped before the workbook is changed.
+## For Maintainers
 
-## Analytics Review
+The repository is intentionally program-only. Do not commit survey workbooks, PDFs, screenshots, generated workbooks, backups, logs, or business data.
 
-Run `scripts\Analyze-GSS-Run.ps1` to review the latest GSS update log and workbook data.
+### Main Scripts
 
-The analyzer writes a review package to `..\_automation_runs\qa\run_review_YYYYMMDD_HHMMSS\`:
+- `scripts\Invoke-GSS-SafeWorkbookUpdate.ps1`: canonical safe workflow used by the operator launcher.
+- `scripts\Update-GSS-MainWorkbook.ps1`: Excel updater.
+- `scripts\Analyze-GSS-Run.ps1`: deterministic post-run QA and insight review.
+- `scripts\Gss-Common.ps1`: shared conversion and path helpers.
+- `scripts\Install-GSS-OperatorLauncher.ps1`: refreshes the operator launcher and plain-language guide files.
+- `scripts\Get-GSS-SetupStatus.ps1`: checks operator files and scheduled-task state.
 
-- `review.md` with the operator-facing QA and insight summary.
-- `review.json` with structured QA results.
-- `metric_detail.csv` with Richmond and Virginia Beach metric movement.
+### What the Updater Does
 
-The review checks workbook/log/PDF/backup presence, the 364-day YoY pairing, expected `Raw_Data` entity rows, duplicate row keys, required metric columns, source-folder placement, sample count, and large metric declines. It also ranks current attention items and strengths using `Metric_Catalog`.
+1. Finds the newest `Sorensen FW...` rolling workbook by the `Date Range` in cell `A1`.
+2. Finds the matching prior-year workbook using newest week minus 364 days.
+3. Reads All Franchisees total, Sorensen total, 9354 Richmond, and 9355 Virginia Beach.
+4. Adds missing rows to `Raw_Data` and refreshes its formulas.
+5. Refreshes the `Email Comparison` worksheet and exports its PDF.
+6. Calculates and saves the workbook through Microsoft Excel.
 
-## Setup Checks
+### Safety and Output
 
-- Run `scripts\Install-GSS-OperatorLauncher.ps1` to refresh the Dropbox-facing launcher from the tracked template.
-- Run `scripts\Get-GSS-SetupStatus.ps1` to check the launcher, repo path, and scheduled task wiring.
-- Run `scripts\Test-GSS-PowerShellSyntax.ps1`, `scripts\Test-GSS-Logic.ps1`, and `scripts\Test-GSS-Analytics.ps1` before committing script changes.
+- Copy-tests go to `..\_automation_runs\test-output`.
+- Live backups go to `..\_automation_runs\backups`.
+- JSON logs go to `..\_automation_runs\logs`.
+- QA packages go to `..\_automation_runs\qa\run_review_YYYYMMDD_HHMMSS`.
+- A blocked copy-test review prevents live apply.
+- Existing current/prior-year rows are skipped rather than duplicated.
 
-## Requirements
+### Validation
 
-- Windows
-- Microsoft Excel desktop app
-- PowerShell
+Run these before committing script changes:
 
-The disabled Windows scheduled task is named `GSS Survey Main Workbook Weekly Update`. Manual execution is the intended workflow. The scheduled-task launcher runs live apply without an interactive prompt, so leave the task disabled unless scheduled live updates are explicitly requested.
+```powershell
+.\scripts\Test-GSS-PowerShellSyntax.ps1
+.\scripts\Test-GSS-Logic.ps1
+.\scripts\Test-GSS-Analytics.ps1
+```
+
+Requirements are Windows, Microsoft Excel desktop, and PowerShell.
+
+The Windows task `GSS Survey Main Workbook Weekly Update` is intentionally disabled. Manual execution is the supported workflow unless scheduled live updates are explicitly approved.

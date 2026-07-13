@@ -102,5 +102,19 @@ $runLog = [pscustomobject]@{
 $qa = Get-GssRunQa $runLog 'C:\GSS Surveys' 'C:\missing.xlsx' $rawRows $metrics $headers $detail $current $priorYear
 Assert-Equal $qa.Status 'Blocked' 'QA blocker status'
 Assert-True (@($qa.Blockers | Where-Object { $_ -like 'Main workbook is missing*' }).Count -eq 1) 'QA missing workbook blocker'
+Assert-True (@($qa.Warnings | Where-Object { $_ -like 'QA Checks sheet is missing*' }).Count -eq 1) 'Legacy missing QA sheet warning'
+
+$attentionQa = Get-GssRunQa $runLog 'C:\GSS Surveys' 'C:\missing.xlsx' $rawRows $metrics $headers $detail $current $priorYear $true 'ATTENTION'
+Assert-True (@($attentionQa.Blockers | Where-Object { $_ -like 'Workbook QA Checks reports ATTENTION*' }).Count -eq 1) 'Workbook ATTENTION is a blocker'
+
+$readyQa = Get-GssRunQa $runLog 'C:\GSS Surveys' 'C:\missing.xlsx' $rawRows $metrics $headers $detail $current $priorYear $true 'READY'
+Assert-True (@($readyQa.Blockers | Where-Object { $_ -like 'Workbook QA*' }).Count -eq 0) 'Workbook READY adds no QA blocker'
+Assert-True (@($readyQa.Warnings | Where-Object { $_ -like 'QA Checks*' }).Count -eq 0) 'Workbook READY adds no QA warning'
+
+$invalidQa = Get-GssRunQa $runLog 'C:\GSS Surveys' 'C:\missing.xlsx' $rawRows $metrics $headers $detail $current $priorYear $true '#VALUE!'
+Assert-True (@($invalidQa.Blockers | Where-Object { $_ -like 'Workbook QA Checks returned an invalid status*' }).Count -eq 1) 'Invalid workbook QA is a blocker'
+
+$pathRunLog = [pscustomobject]@{ TargetWorkbook = 'C:\GSS Surveys\_automation_runs\test-output\guarded-copy.xlsx' }
+Assert-Equal (Resolve-GssAnalysisWorkbookPath $pathRunLog 'C:\GSS Surveys' 'main.xlsx') 'C:\GSS Surveys\_automation_runs\test-output\guarded-copy.xlsx' 'Analyzer uses logged copy-test workbook'
 
 Write-Host 'GSS analytics logic tests passed.'

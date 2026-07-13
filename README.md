@@ -52,8 +52,10 @@ The repository is intentionally program-only. Do not commit survey workbooks, PD
 2. Finds the matching prior-year workbook using newest week minus 364 days.
 3. Reads All Franchisees total, Sorensen total, 9354 Richmond, and 9355 Virginia Beach.
 4. Adds missing rows to `Raw_Data` and refreshes its formulas.
-5. Refreshes the `Email Comparison` worksheet and exports its PDF.
-6. Calculates and saves the workbook through Microsoft Excel.
+5. Refreshes the visible `QA Checks` sheet, report status banners, and print layouts.
+6. Refreshes the `Email Comparison` worksheet and exports its PDF.
+7. Reapplies passwordless worksheet and workbook-structure protection, leaving only the two dashboard selectors editable.
+8. Calculates and saves the workbook through Microsoft Excel.
 
 ### Safety and Output
 
@@ -73,6 +75,8 @@ Run these before committing script changes:
 .\scripts\Test-GSS-Logic.ps1
 .\scripts\Test-GSS-Analytics.ps1
 ```
+
+For local Excel integration verification, run `Test-GSS-WorkbookIntegration.ps1` against a copy-test workbook. This check is intentionally not part of GitHub Actions because the hosted runner does not provide desktop Excel.
 
 Requirements are Windows, Microsoft Excel desktop, and PowerShell.
 

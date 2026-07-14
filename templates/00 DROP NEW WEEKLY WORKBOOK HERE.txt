@@ -1,0 +1,6 @@
+Save the newest Sorensen FW workbook in this folder.
+
+Then close the main workbook and double-click this file in the GSS Surveys folder:
+Run GSS Update After Upload.cmd
+
+Do not rename or remove older weekly workbooks. The updater uses them for comparisons.

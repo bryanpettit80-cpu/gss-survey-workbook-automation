@@ -3,14 +3,24 @@ param(
     [string]$Folder,
     [string]$LogPath,
     [int]$LookbackWeeks = 8,
-    [string]$MainWorkbookName = 'Consolidated_Score_Trends_v6_ExecClean_YoY_WITH_QuickRead_WoW_YoY_FINAL_v14_UniformCF_DriversStyle_PATCHED_XMLSAFE.xlsx',
+    [string]$MainWorkbookName = 'GSS Score Trends - Main.xlsx',
     [switch]$OutputObject
 )
 
 $ErrorActionPreference = 'Stop'
 
 $scriptRoot = Split-Path -Parent $PSCommandPath
-. (Join-Path $scriptRoot 'Update-GSS-MainWorkbook.ps1')
+. (Join-Path $scriptRoot 'Gss-Common.ps1')
+
+$xlUp = -4162
+$xlToLeft = -4159
+
+function Release-ComObject {
+    param([object]$ComObject)
+    if ($null -ne $ComObject) {
+        [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($ComObject)
+    }
+}
 
 function Resolve-GssAnalysisFolder {
     param([string]$FolderPath)
@@ -50,6 +60,20 @@ function Read-GssRunLog {
     }
 
     return Get-Content -Raw -LiteralPath $Path | ConvertFrom-Json
+}
+
+function Resolve-GssAnalysisWorkbookPath {
+    param(
+        [object]$RunLog,
+        [string]$FolderPath,
+        [string]$WorkbookName
+    )
+
+    if ($RunLog.TargetWorkbook -and -not [string]::IsNullOrWhiteSpace([string]$RunLog.TargetWorkbook)) {
+        return [System.IO.Path]::GetFullPath([string]$RunLog.TargetWorkbook)
+    }
+
+    return Resolve-MainWorkbookPath $FolderPath $WorkbookName
 }
 
 function Get-DirectionAdjustedChange {
@@ -165,6 +189,8 @@ function Read-GssWorkbookData {
     $workbook = $null
     $rawWs = $null
     $metricWs = $null
+    $qaWs = $null
+    $qaStatusCell = $null
     try {
         $excel = New-Object -ComObject Excel.Application
         $excel.Visible = $false
@@ -175,6 +201,18 @@ function Read-GssWorkbookData {
         $workbook = $excel.Workbooks.Open($WorkbookPath, 0, $true)
         $rawWs = $workbook.Worksheets.Item('Raw_Data')
         $metricWs = $workbook.Worksheets.Item('Metric_Catalog')
+        $qaSheetPresent = $false
+        $workbookQaStatus = $null
+        try {
+            $qaWs = $workbook.Worksheets.Item('QA Checks')
+            $qaSheetPresent = $true
+            $qaStatusCell = $qaWs.Range('B2')
+            $workbookQaStatus = $qaStatusCell.Value2
+        }
+        catch {
+            $qaSheetPresent = $false
+            $workbookQaStatus = $null
+        }
 
         $rawTable = Read-GssWorksheetTable $rawWs
         $metricTable = Read-GssWorksheetTable $metricWs
@@ -217,10 +255,14 @@ function Read-GssWorkbookData {
             Headers = $rawTable.Headers
             RawRows = $rawRows
             Metrics = $metrics
+            QaSheetPresent = $qaSheetPresent
+            WorkbookQaStatus = $workbookQaStatus
         }
     }
     finally {
         if ($workbook) { $workbook.Close($false) }
+        Release-ComObject $qaStatusCell
+        Release-ComObject $qaWs
         Release-ComObject $metricWs
         Release-ComObject $rawWs
         Release-ComObject $workbook
@@ -356,7 +398,9 @@ function Get-GssRunQa {
         [string[]]$Headers,
         [object[]]$MetricDetail,
         [datetime]$CurrentWeek,
-        [datetime]$PriorYearWeek
+        [datetime]$PriorYearWeek,
+        [bool]$QaSheetPresent = $false,
+        [object]$WorkbookQaStatus = $null
     )
 
     $blockers = @()
@@ -378,6 +422,22 @@ function Get-GssRunQa {
     }
     if (-not (Test-GssYoyPairing $CurrentWeek $PriorYearWeek)) {
         $blockers += "Current week and prior-year week are not 364 days apart."
+    }
+
+    if (-not $QaSheetPresent) {
+        $warnings += 'QA Checks sheet is missing. This is allowed only for a legacy workbook; run the current updater to add workbook guardrails.'
+    }
+    else {
+        $normalizedWorkbookQaStatus = if ($null -eq $WorkbookQaStatus) { '' } else { ([string]$WorkbookQaStatus).Trim().ToUpperInvariant() }
+        if ([string]::IsNullOrWhiteSpace($normalizedWorkbookQaStatus)) {
+            $warnings += 'QA Checks status is blank. Run the current updater to recalculate workbook QA.'
+        }
+        elseif ($normalizedWorkbookQaStatus -eq 'ATTENTION') {
+            $blockers += 'Workbook QA Checks reports ATTENTION. Open QA Checks and resolve every flagged item before using the reports.'
+        }
+        elseif ($normalizedWorkbookQaStatus -ne 'READY') {
+            $blockers += "Workbook QA Checks returned an invalid status: $normalizedWorkbookQaStatus"
+        }
     }
 
     $expectedFolder = Join-Path $FolderPath '02 Weekly Rolling Source Workbooks'
@@ -453,7 +513,7 @@ function Select-GssStrengthItems {
 
     return @($MetricDetail |
         Where-Object { $_.BestMovement -ne $null -and $_.BestMovement -gt 0 -and ($_.WorstMovement -eq $null -or $_.WorstMovement -ge 0) } |
-        Sort-Object @{ Expression = { $_.BestMovement }; Descending = $true }, @{ Expression = { $_.CurrentCount }; Descending = $true } |
+        Sort-Object @{ Expression = { $_.BestMovement }; Descending = $true }, @{ Expression = { $_.CurrentCount }; Descending = $true }, @{ Expression = { $_.Entity }; Descending = $true } |
         Select-Object -First $Count)
 }
 
@@ -461,14 +521,15 @@ function Format-GssNumber {
     param([object]$Value, [int]$Digits = 1)
 
     if ($null -eq $Value) { return 'n/a' }
-    return ('{0:N' + $Digits + '}') -f ([double]$Value)
+    $rounded = [math]::Round([double]$Value, $Digits, [System.MidpointRounding]::AwayFromZero)
+    return ('{0:N' + $Digits + '}') -f $rounded
 }
 
 function Format-GssMovementNumber {
     param([object]$Value, [int]$Digits = 1)
 
     if ($null -eq $Value) { return 'n/a' }
-    $number = [double]$Value
+    $number = [math]::Round([double]$Value, $Digits, [System.MidpointRounding]::AwayFromZero)
     $formatted = ('{0:N' + $Digits + '}') -f $number
     if ($number -gt 0) {
         return "+$formatted"
@@ -491,6 +552,7 @@ function New-GssReviewMarkdown {
     $lines += "Current week: $($Result.Run.CurrentWeekEnding)"
     $lines += "Prior-year week: $($Result.Run.PriorYearWeekEnding)"
     $lines += "Rows appended: $($Result.Run.RowsAppended)"
+    $lines += "Workbook QA: $($Result.WorkbookQaStatus)"
     $lines += ''
     $lines += '## Output Check'
     $lines += "- Workbook: $($Result.Run.TargetWorkbook)"
@@ -576,12 +638,12 @@ function Invoke-GssRunAnalysis {
     }
 
     $runLog = Read-GssRunLog $RunLogPath
-    $workbookPath = Resolve-MainWorkbookPath $FolderPath $WorkbookName
+    $workbookPath = Resolve-GssAnalysisWorkbookPath $runLog $FolderPath $WorkbookName
     $workbookData = Read-GssWorkbookData $workbookPath
     $currentWeek = [datetime]::Parse($runLog.CurrentWeekEnding).Date
     $priorYearWeek = [datetime]::Parse($runLog.PriorYearWeekEnding).Date
     $metricDetail = @(New-GssMetricDetail $workbookData.RawRows $workbookData.Metrics $currentWeek $priorYearWeek $Weeks)
-    $qa = Get-GssRunQa $runLog $FolderPath $workbookPath $workbookData.RawRows $workbookData.Metrics $workbookData.Headers $metricDetail $currentWeek $priorYearWeek
+    $qa = Get-GssRunQa $runLog $FolderPath $workbookPath $workbookData.RawRows $workbookData.Metrics $workbookData.Headers $metricDetail $currentWeek $priorYearWeek $workbookData.QaSheetPresent $workbookData.WorkbookQaStatus
     $attentionItems = Select-GssAttentionItems $metricDetail
     $strengthItems = Select-GssStrengthItems $metricDetail
 
@@ -594,6 +656,7 @@ function Invoke-GssRunAnalysis {
 
     $result = [pscustomobject]@{
         OverallStatus = $qa.Status
+        WorkbookQaStatus = $workbookData.WorkbookQaStatus
         GeneratedAt = (Get-Date).ToString('s')
         Folder = $FolderPath
         ReviewFolder = $reviewFolder

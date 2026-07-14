@@ -1,0 +1,28 @@
+GSS SURVEY UPDATE - QUICK GUIDE
+================================
+
+Use this folder after the newest weekly GSS workbook has been received.
+
+WEEKLY UPDATE
+1. Save the newest Sorensen FW workbook in:
+   02 Weekly Rolling Source Workbooks
+2. Close the main GSS workbook if it is open in Excel.
+3. Double-click:
+   Run GSS Update After Upload.cmd
+4. Wait for the copy-test and review to finish.
+5. Type APPLY only when the screen says the copy-test passed.
+
+IMPORTANT
+- The live workbook is 01 Main Workbook\GSS Score Trends - Main.xlsx.
+- Finished email PDFs are in 04 Email Comparison PDFs.
+- Do not edit GSS Survey Workbook Automation or _automation_runs.
+- The launcher makes a backup before changing the live workbook.
+- If the screen says ATTENTION NEEDED, stop and ask for technical help.
+
+FOLDER MAP
+01 Main Workbook                 Active workbook and archived prior versions
+02 Weekly Rolling Source Workbooks  Weekly Sorensen FW source files
+03 Uploaded Survey Workbooks     Uploaded survey-detail files and archive
+04 Email Comparison PDFs         Finished comparison PDFs
+05 Reference Materials           Training and reference documents
+06 Exports and Images            Screenshots and image exports

@@ -161,11 +161,15 @@ try {
     for ($sheetIndex = 1; $sheetIndex -le $workbook.Worksheets.Count; $sheetIndex++) {
         $worksheet = $null
         $usedRange = $null
+        $outsideUsedRangeCell = $null
         try {
             $worksheet = $workbook.Worksheets.Item($sheetIndex)
             Assert-GssIntegration ([bool]$worksheet.ProtectContents) "Worksheet $($worksheet.Name) must be protected."
             $formulaErrorCount += Get-GssErrorCellCount $worksheet $xlCellTypeFormulas
             $constantErrorCount += Get-GssErrorCellCount $worksheet $xlCellTypeConstants
+
+            $outsideUsedRangeCell = $worksheet.Cells.Item($worksheet.Rows.Count, $worksheet.Columns.Count)
+            Assert-GssIntegration ([bool]$outsideUsedRangeCell.Locked) "$($worksheet.Name) cells outside UsedRange must remain locked."
 
             $usedRange = $worksheet.UsedRange
             if ($worksheet.Name -eq 'Exec_Dashboard') {
@@ -194,6 +198,7 @@ try {
             }
         }
         finally {
+            Release-ComObject $outsideUsedRangeCell
             Release-ComObject $usedRange
             Release-ComObject $worksheet
         }

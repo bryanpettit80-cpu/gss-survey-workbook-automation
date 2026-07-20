@@ -25,6 +25,25 @@ function Assert-True {
     }
 }
 
+function Assert-ThrowsLike {
+    param(
+        [scriptblock]$Action,
+        [string]$ExpectedMessage,
+        [string]$Name
+    )
+
+    try {
+        & $Action
+    }
+    catch {
+        if ($_.Exception.Message -like $ExpectedMessage) {
+            return
+        }
+        throw "Assertion failed for $Name. Expected error like '$ExpectedMessage'; actual '$($_.Exception.Message)'."
+    }
+    throw "Assertion failed for $Name. Expected an error, but no error was thrown."
+}
+
 function New-TestSource {
     param([string]$Path, [datetime]$WeekEnding, [datetime]$LastWriteTime)
 
@@ -72,6 +91,7 @@ Assert-Equal (($layout | Where-Object Sheet -eq 'Email Comparison').PrintArea) '
 $guardrails = Get-GssGuardrailPlan
 Assert-Equal $guardrails.ProtectWorkbookStructure $true 'Workbook structure protection plan'
 Assert-Equal $guardrails.ProtectAllWorksheets $true 'Worksheet protection plan'
+Assert-Equal $guardrails.LockScope 'AllCells' 'Worksheet lock scope'
 Assert-Equal ($guardrails.UnlockedCells -join ',') 'Exec_Dashboard!C3,Exec_Dashboard!F3' 'Only dashboard selectors unlocked'
 Assert-Equal $guardrails.ValidationShowError $true 'Validation errors enabled'
 Assert-Equal $guardrails.IntentionalGapIsBlocker $false 'Intentional 2025 gap is informational'
@@ -79,7 +99,33 @@ Assert-Equal $guardrails.IntentionalGapIsBlocker $false 'Intentional 2025 gap is
 $qaPlan = @(Get-GssQaCheckPlan 5 14 5096)
 Assert-Equal $qaPlan.Count 7 'QA check count'
 Assert-True (($qaPlan | Where-Object Row -eq 7).Formula -like '*UPPER*Entities*TRUE*') 'Active entity text TRUE normalization'
+Assert-True (($qaPlan | Where-Object Row -eq 7).Formula.Contains('="1"')) 'Active entity numeric 1 normalization'
+Assert-True (($qaPlan | Where-Object Row -eq 11).Formula.Contains('="1"')) 'Dashboard selector numeric 1 normalization'
 Assert-True (($qaPlan | Where-Object Row -eq 7).Formula -like '*MMULT*') 'Current-period blank metric detection'
+Assert-True (($qaPlan | Where-Object Row -eq 8).Formula -like '*$B$3-7>DATE(2025,7,6)*$B$3-7<DATE(2025,10,5)*') 'Prior-week intentional gap exemption'
+Assert-True (($qaPlan | Where-Object Row -eq 8).DetailFormula -like '*Intentional 2025 history gap*') 'Prior-week intentional gap detail'
+Assert-True (-not (($qaPlan | Where-Object Row -eq 7).Formula -like '*DATE(2025,7,6)*')) 'Current week still requires complete data'
 Assert-True (($qaPlan | Where-Object Row -eq 12).Formula -like '*>=8*') 'Capacity reserves two weekly loads'
+
+$capacityAtLimit = Get-GssRawDataCapacityPlan 5088 8 5096
+Assert-Equal $capacityAtLimit.AvailableRows 8 'Capacity rows available'
+Assert-Equal $capacityAtLimit.ProjectedLastRow 5096 'Capacity projected last row'
+Assert-Equal $capacityAtLimit.Fits $true 'Capacity accepts exact formula bound'
+$capacityOverLimit = Get-GssRawDataCapacityPlan 5089 8 5096
+Assert-Equal $capacityOverLimit.Fits $false 'Capacity rejects rows beyond formula bound'
+Assert-ThrowsLike { Assert-GssRawDataCapacity 5089 8 5096 } '*only 7 row(s) remain through row 5096*No rows were appended.*' 'Capacity failure occurs before append'
+
+$updaterSource = Get-Content -LiteralPath (Join-Path $scriptRoot 'Update-GSS-MainWorkbook.ps1') -Raw
+$capacityCallIndex = $updaterSource.IndexOf('$capacityPlan = Assert-GssRawDataCapacity')
+$guardrailRemovalIndex = $updaterSource.IndexOf('Remove-GssWorkbookGuardrails $targetWb')
+$appendCallIndex = $updaterSource.IndexOf('$written = Add-RawDataRows')
+Assert-True ($capacityCallIndex -ge 0 -and $capacityCallIndex -lt $guardrailRemovalIndex) 'Capacity preflight precedes workbook mutation'
+Assert-True ($capacityCallIndex -lt $appendCallIndex) 'Capacity preflight precedes Raw_Data append'
+
+$allCellsAcquireIndex = $updaterSource.IndexOf('$allCells = $worksheet.Cells')
+$allCellsLockIndex = $updaterSource.IndexOf('$allCells.Locked = $true')
+$dashboardUnlockIndex = $updaterSource.IndexOf('Set-GssDashboardValidation $Workbook $Configuration')
+Assert-True ($allCellsAcquireIndex -ge 0 -and $allCellsAcquireIndex -lt $allCellsLockIndex) 'Guardrails acquire all worksheet cells before locking'
+Assert-True ($allCellsLockIndex -lt $dashboardUnlockIndex) 'All worksheet cells are locked before dashboard selectors are unlocked'
 
 Write-Host 'GSS non-Excel logic tests passed.'

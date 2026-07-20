@@ -94,8 +94,10 @@ function Get-GssQaCheckPlan {
         [int]$RawDataLastRow = $gssRawDataLastFormulaRow
     )
 
-    $activeCount = 'SUMPRODUCT(--(UPPER(''Entities''!$E$2:$E${ENTITY_LAST}&"")="TRUE"))'.Replace('${ENTITY_LAST}', [string]$EntityLastRow)
-    $entityRows = 'SUMPRODUCT(--(UPPER(''Entities''!$E$2:$E${ENTITY_LAST}&"")="TRUE"),--(COUNTIFS(''Raw_Data''!$R$2:$R${RAW_LAST},''Entities''!$D$2:$D${ENTITY_LAST},''Raw_Data''!$B$2:$B${RAW_LAST},${WEEK})=1))'.Replace('${ENTITY_LAST}', [string]$EntityLastRow).Replace('${RAW_LAST}', [string]$RawDataLastRow)
+    $activeEntityRange = '''Entities''!$E$2:$E${ENTITY_LAST}'.Replace('${ENTITY_LAST}', [string]$EntityLastRow)
+    $activeFlagPredicate = '((UPPER(${ACTIVE_RANGE}&"")="TRUE")+(UPPER(${ACTIVE_RANGE}&"")="YES")+(UPPER(${ACTIVE_RANGE}&"")="1")>0)'.Replace('${ACTIVE_RANGE}', $activeEntityRange)
+    $activeCount = 'SUMPRODUCT(--${ACTIVE_FLAG})'.Replace('${ACTIVE_FLAG}', $activeFlagPredicate)
+    $entityRows = 'SUMPRODUCT(--${ACTIVE_FLAG},--(COUNTIFS(''Raw_Data''!$R$2:$R${RAW_LAST},''Entities''!$D$2:$D${ENTITY_LAST},''Raw_Data''!$B$2:$B${RAW_LAST},${WEEK})=1))'.Replace('${ACTIVE_FLAG}', $activeFlagPredicate).Replace('${ENTITY_LAST}', [string]$EntityLastRow).Replace('${RAW_LAST}', [string]$RawDataLastRow)
     $blankMetrics = 'SUMPRODUCT(--(''Raw_Data''!$B$2:$B${RAW_LAST}=${WEEK}),MMULT(--(''Raw_Data''!$E$2:$Q${RAW_LAST}=""),TRANSPOSE(COLUMN(''Raw_Data''!$E$1:$Q$1)^0)))'.Replace('${RAW_LAST}', [string]$RawDataLastRow)
 
     $checks = @()
@@ -107,18 +109,25 @@ function Get-GssQaCheckPlan {
     }
 
     $periods = @(
-        [pscustomobject]@{ Row = 7; Name = 'Current-week entity and metric completeness'; Week = '$B$3' },
-        [pscustomobject]@{ Row = 8; Name = 'Prior-week entity and metric completeness'; Week = '$B$3-7' },
-        [pscustomobject]@{ Row = 9; Name = 'Prior-year entity and metric completeness'; Week = '$B$3-364' }
+        [pscustomobject]@{ Row = 7; Name = 'Current-week entity and metric completeness'; Week = '$B$3'; AllowIntentionalGap = $false },
+        [pscustomobject]@{ Row = 8; Name = 'Prior-week entity and metric completeness'; Week = '$B$3-7'; AllowIntentionalGap = $true },
+        [pscustomobject]@{ Row = 9; Name = 'Prior-year entity and metric completeness'; Week = '$B$3-364'; AllowIntentionalGap = $false }
     )
     foreach ($period in $periods) {
         $rowCheck = $entityRows.Replace('${WEEK}', $period.Week)
         $blankCheck = $blankMetrics.Replace('${WEEK}', $period.Week)
+        $formula = '=IF(AND(${ROW_CHECK}=${ACTIVE_COUNT},${BLANK_CHECK}=0),"READY","ATTENTION")'.Replace('${ROW_CHECK}', $rowCheck).Replace('${ACTIVE_COUNT}', $activeCount).Replace('${BLANK_CHECK}', $blankCheck)
+        $detailFormula = '=${ROW_CHECK}&" of "&${ACTIVE_COUNT}&" active entities; "&${BLANK_CHECK}&" blank required metric value(s)"'.Replace('${ROW_CHECK}', $rowCheck).Replace('${ACTIVE_COUNT}', $activeCount).Replace('${BLANK_CHECK}', $blankCheck)
+        if ($period.AllowIntentionalGap) {
+            $intentionalGap = 'AND(${WEEK}>DATE(2025,7,6),${WEEK}<DATE(2025,10,5))'.Replace('${WEEK}', $period.Week)
+            $formula = '=IF(${INTENTIONAL_GAP},"READY",IF(AND(${ROW_CHECK}=${ACTIVE_COUNT},${BLANK_CHECK}=0),"READY","ATTENTION"))'.Replace('${INTENTIONAL_GAP}', $intentionalGap).Replace('${ROW_CHECK}', $rowCheck).Replace('${ACTIVE_COUNT}', $activeCount).Replace('${BLANK_CHECK}', $blankCheck)
+            $detailFormula = '=IF(${INTENTIONAL_GAP},"Intentional 2025 history gap",${ROW_CHECK}&" of "&${ACTIVE_COUNT}&" active entities; "&${BLANK_CHECK}&" blank required metric value(s)")'.Replace('${INTENTIONAL_GAP}', $intentionalGap).Replace('${ROW_CHECK}', $rowCheck).Replace('${ACTIVE_COUNT}', $activeCount).Replace('${BLANK_CHECK}', $blankCheck)
+        }
         $checks += [pscustomobject]@{
             Row = $period.Row
             Name = $period.Name
-            Formula = '=IF(AND(${ROW_CHECK}=${ACTIVE_COUNT},${BLANK_CHECK}=0),"READY","ATTENTION")'.Replace('${ROW_CHECK}', $rowCheck).Replace('${ACTIVE_COUNT}', $activeCount).Replace('${BLANK_CHECK}', $blankCheck)
-            DetailFormula = '=${ROW_CHECK}&" of "&${ACTIVE_COUNT}&" active entities; "&${BLANK_CHECK}&" blank required metric value(s)"'.Replace('${ROW_CHECK}', $rowCheck).Replace('${ACTIVE_COUNT}', $activeCount).Replace('${BLANK_CHECK}', $blankCheck)
+            Formula = $formula
+            DetailFormula = $detailFormula
         }
     }
 
@@ -131,7 +140,7 @@ function Get-GssQaCheckPlan {
     $checks += [pscustomobject]@{
         Row = 11
         Name = 'Dashboard selector validity'
-        Formula = '=IF(AND(SUMPRODUCT(--(''Entities''!$A$2:$A${ENTITY_LAST}=''Exec_Dashboard''!$C$3),--(UPPER(''Entities''!$E$2:$E${ENTITY_LAST}&"")="TRUE"))=1,COUNTIF(''Metric_Catalog''!$A$2:$A${METRIC_LAST},''Exec_Dashboard''!$F$3)=1),"READY","ATTENTION")'.Replace('${ENTITY_LAST}', [string]$EntityLastRow).Replace('${METRIC_LAST}', [string]$MetricLastRow)
+        Formula = '=IF(AND(SUMPRODUCT(--(''Entities''!$A$2:$A${ENTITY_LAST}=''Exec_Dashboard''!$C$3),--${ACTIVE_FLAG})=1,COUNTIF(''Metric_Catalog''!$A$2:$A${METRIC_LAST},''Exec_Dashboard''!$F$3)=1),"READY","ATTENTION")'.Replace('${ENTITY_LAST}', [string]$EntityLastRow).Replace('${METRIC_LAST}', [string]$MetricLastRow).Replace('${ACTIVE_FLAG}', $activeFlagPredicate)
         DetailFormula = '="Entity: "&''Exec_Dashboard''!$C$3&"; Metric: "&''Exec_Dashboard''!$F$3'
     }
     $checks += [pscustomobject]@{
@@ -162,6 +171,7 @@ function Get-GssGuardrailPlan {
     return [pscustomobject]@{
         ProtectWorkbookStructure = $true
         ProtectAllWorksheets = $true
+        LockScope = 'AllCells'
         UnlockedCells = @('Exec_Dashboard!C3', 'Exec_Dashboard!F3')
         ValidationShowError = $true
         IntentionalGapIsBlocker = $false
@@ -406,6 +416,43 @@ function Get-InsertRowForWeek {
         }
     }
     return ($lastRow + 1)
+}
+
+function Get-GssRawDataCapacityPlan {
+    param(
+        [int]$LastRawDataRow,
+        [int]$RowsToAppend,
+        [int]$LastModeledRow = $gssRawDataLastFormulaRow
+    )
+
+    if ($LastRawDataRow -lt 1) { throw 'LastRawDataRow must include at least the Raw_Data header row.' }
+    if ($RowsToAppend -lt 0) { throw 'RowsToAppend cannot be negative.' }
+    if ($LastModeledRow -lt 1) { throw 'LastModeledRow must be positive.' }
+
+    $availableRows = [Math]::Max(0, $LastModeledRow - $LastRawDataRow)
+    $projectedLastRow = $LastRawDataRow + $RowsToAppend
+    return [pscustomobject]@{
+        LastRawDataRow = $LastRawDataRow
+        RowsToAppend = $RowsToAppend
+        AvailableRows = $availableRows
+        ProjectedLastRow = $projectedLastRow
+        LastModeledRow = $LastModeledRow
+        Fits = $projectedLastRow -le $LastModeledRow
+    }
+}
+
+function Assert-GssRawDataCapacity {
+    param(
+        [int]$LastRawDataRow,
+        [int]$RowsToAppend,
+        [int]$LastModeledRow = $gssRawDataLastFormulaRow
+    )
+
+    $plan = Get-GssRawDataCapacityPlan $LastRawDataRow $RowsToAppend $LastModeledRow
+    if (-not $plan.Fits) {
+        throw "Raw_Data modeled capacity is insufficient. $RowsToAppend row(s) are ready to append, but only $($plan.AvailableRows) row(s) remain through row $LastModeledRow. No rows were appended."
+    }
+    return $plan
 }
 
 function Add-RawDataRows {
@@ -881,14 +928,14 @@ function Set-GssWorkbookGuardrails {
 
     for ($index = 1; $index -le $Workbook.Worksheets.Count; $index++) {
         $worksheet = $null
-        $usedRange = $null
+        $allCells = $null
         try {
             $worksheet = $Workbook.Worksheets.Item($index)
-            $usedRange = $worksheet.UsedRange
-            $usedRange.Locked = $true
+            $allCells = $worksheet.Cells
+            $allCells.Locked = $true
         }
         finally {
-            Release-ComObject $usedRange
+            Release-ComObject $allCells
             Release-ComObject $worksheet
         }
     }
@@ -1337,6 +1384,22 @@ function Invoke-GssWorkbookUpdate {
             $sourceWork += $requested
         }
 
+        $preparedSourceWork = @()
+        $rowsRequired = 0
+        foreach ($workItem in $sourceWork) {
+            $rowsForSource = @(Get-SourceRowsFromFile $excel $workItem.Source)
+            $preparedSourceWork += [pscustomobject]@{
+                WorkItem = $workItem
+                Rows = $rowsForSource
+            }
+            $rowsRequired += $rowsForSource.Count
+        }
+
+        if ($rowsRequired -gt 0) {
+            $lastRawDataRow = $rawWs.Cells.Item($rawWs.Rows.Count, 1).End($xlUp).Row
+            $capacityPlan = Assert-GssRawDataCapacity $lastRawDataRow $rowsRequired $gssRawDataLastFormulaRow
+        }
+
         if ($ApplyMode) {
             $base = [System.IO.Path]::GetFileNameWithoutExtension($WorkbookName)
             $backupPath = Join-Path $backupDir "$base`_BACKUP_$timestamp.xlsx"
@@ -1349,9 +1412,10 @@ function Invoke-GssWorkbookUpdate {
             $status = 'WorkbookAlreadyCurrentGuardrailsRefreshed'
         }
         else {
-            foreach ($workItem in $sourceWork) {
+            foreach ($prepared in $preparedSourceWork) {
+                $workItem = $prepared.WorkItem
                 $source = $workItem.Source
-                $rowsForSource = @(Get-SourceRowsFromFile $excel $source)
+                $rowsForSource = @($prepared.Rows)
                 $written = Add-RawDataRows $rawWs $rowsForSource
                 $rowsAppended += $written
                 $weeksAppended += [pscustomobject]@{

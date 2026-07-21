@@ -20,12 +20,15 @@ $analyzer = Join-Path $scriptRoot 'Analyze-GSS-Run.ps1'
 Write-Host ''
 Write-Host 'STEP 1 OF 3 - Testing the update'
 Write-Host 'The live workbook is not being changed.'
-& $updater -Folder $Folder
+$copyRun = & $updater -Folder $Folder -OutputObject
+if (-not $copyRun -or [string]::IsNullOrWhiteSpace([string]$copyRun.LogPath)) {
+    throw 'The copy-test updater did not return its exact run log path.'
+}
 
 Write-Host ''
 Write-Host 'STEP 2 OF 3 - Checking the test results'
-$copyReview = & $analyzer -Folder $Folder -OutputObject
-if ($copyReview.OverallStatus -eq 'Blocked') {
+$copyReview = & $analyzer -Folder $Folder -LogPath $copyRun.LogPath -OutputObject
+if ($copyReview.WorkbookStatus -eq 'Blocked') {
     Write-Host ''
     Write-Host 'ATTENTION NEEDED - NO LIVE CHANGES MADE'
     Write-Host 'The test review found a problem. The live workbook was not updated.'
@@ -48,11 +51,14 @@ if ($confirmation -ne 'APPLY') {
 
 Write-Host ''
 Write-Host 'Updating the live workbook now. A backup will be saved first.'
-& $updater -Folder $Folder -Apply
+$liveRun = & $updater -Folder $Folder -Apply -OutputObject
+if (-not $liveRun -or [string]::IsNullOrWhiteSpace([string]$liveRun.LogPath)) {
+    throw 'The live updater did not return its exact run log path.'
+}
 
 Write-Host 'Checking the completed live update.'
-$liveReview = & $analyzer -Folder $Folder -OutputObject
-if ($liveReview.OverallStatus -eq 'Blocked') {
+$liveReview = & $analyzer -Folder $Folder -LogPath $liveRun.LogPath -OutputObject -PublishEmailPackage
+if ($liveReview.WorkbookStatus -eq 'Blocked') {
     Write-Host ''
     Write-Host 'ATTENTION NEEDED'
     Write-Host 'The live update ran, but the final review found a problem.'
@@ -64,3 +70,11 @@ Write-Host ''
 Write-Host 'UPDATE COMPLETE'
 Write-Host 'The live workbook was updated and the final review passed.'
 Write-Host "Review details: $($liveReview.MarkdownPath)"
+if ($liveReview.EmailReadiness -eq 'Ready' -and $liveReview.EmailPackage) {
+    Write-Host "Email package ready: $($liveReview.EmailPackage.PackagePath)"
+}
+else {
+    Write-Host 'EMAIL PACKAGE NOT READY'
+    Write-Host 'The workbook update succeeded, but drafting is blocked until the email-readiness issue is resolved.'
+    foreach ($blocker in @($liveReview.Qa.EmailBlockers)) { Write-Host "  - $blocker" }
+}

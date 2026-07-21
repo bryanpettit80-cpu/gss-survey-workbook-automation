@@ -4,13 +4,15 @@ param(
     [string]$LogPath,
     [int]$LookbackWeeks = 8,
     [string]$MainWorkbookName = 'GSS Score Trends - Main.xlsx',
-    [switch]$OutputObject
+    [switch]$OutputObject,
+    [switch]$PublishEmailPackage
 )
 
 $ErrorActionPreference = 'Stop'
 
 $scriptRoot = Split-Path -Parent $PSCommandPath
 . (Join-Path $scriptRoot 'Gss-Common.ps1')
+. (Join-Path $scriptRoot 'Gss-EmailPackage.ps1')
 
 $xlUp = -4162
 $xlToLeft = -4159
@@ -70,7 +72,7 @@ function Resolve-GssAnalysisWorkbookPath {
     )
 
     if ($RunLog.TargetWorkbook -and -not [string]::IsNullOrWhiteSpace([string]$RunLog.TargetWorkbook)) {
-        return [System.IO.Path]::GetFullPath([string]$RunLog.TargetWorkbook)
+        return Resolve-GssDropboxPath -Path ([string]$RunLog.TargetWorkbook) -FolderPath $FolderPath
     }
 
     return Resolve-MainWorkbookPath $FolderPath $WorkbookName
@@ -328,22 +330,23 @@ function New-GssMetricDetail {
             $sorensenValue = Get-GssMetricValue $sorensenRow $metric.RawKey
             $allValue = Get-GssMetricValue $allRow $metric.RawKey
 
-            $lookbackValues = @()
-            for ($i = 0; $i -lt $LookbackWeeks; $i++) {
-                $lookbackRow = Get-GssRow $rowsByKey $entity.EntityKey $CurrentWeek.AddDays(-7 * $i)
-                $lookbackValues += Get-GssMetricValue $lookbackRow $metric.RawKey
-            }
-            $rollingAverage = Get-Mean $lookbackValues
+            # Every Raw_Data value is already a 13-week rolling result. Never average
+            # multiple rolling rows together; compare adjacent rolling windows directly.
+            $twoWindowsAgoRow = Get-GssRow $rowsByKey $entity.EntityKey $CurrentWeek.AddDays(-14)
+            $threeWindowsAgoRow = Get-GssRow $rowsByKey $entity.EntityKey $CurrentWeek.AddDays(-21)
+            $twoWindowsAgoValue = Get-GssMetricValue $twoWindowsAgoRow $metric.RawKey
+            $threeWindowsAgoValue = Get-GssMetricValue $threeWindowsAgoRow $metric.RawKey
             $currentCount = Get-GssMetricValue $currentRow 'Count'
 
             $wow = Get-DirectionAdjustedChange $currentValue $priorWeekValue $metric.LowerIsBetter
             $yoy = Get-DirectionAdjustedChange $currentValue $priorYearValue $metric.LowerIsBetter
-            $vsRolling = Get-DirectionAdjustedChange $currentValue $rollingAverage $metric.LowerIsBetter
             $vsSorensen = Get-DirectionAdjustedChange $currentValue $sorensenValue $metric.LowerIsBetter
             $vsAll = Get-DirectionAdjustedChange $currentValue $allValue $metric.LowerIsBetter
+            $previousStep = Get-DirectionAdjustedChange $priorWeekValue $twoWindowsAgoValue $metric.LowerIsBetter
+            $earlierStep = Get-DirectionAdjustedChange $twoWindowsAgoValue $threeWindowsAgoValue $metric.LowerIsBetter
             $movementComparisons = @(
-                [pscustomobject]@{ Label = 'WoW'; Value = $wow },
-                [pscustomobject]@{ Label = 'YoY'; Value = $yoy }
+                [pscustomobject]@{ Label = 'PreviousRollingWindow'; Value = $wow },
+                [pscustomobject]@{ Label = 'PriorYearRollingWindow'; Value = $yoy }
             ) | Where-Object { $null -ne $_.Value }
             $worstMovement = $null
             $worstMovementLabel = ''
@@ -358,8 +361,60 @@ function New-GssMetricDetail {
                 $bestMovementLabel = $bestComparison.Label
             }
 
+            $candidateComparisons = @()
+            if ($null -ne $wow -and [math]::Abs([double]$wow) -ge 1) {
+                $candidateComparisons += [pscustomobject]@{ Label = 'PreviousRollingWindow'; Value = [double]$wow; ActionThresholdMet = ([math]::Abs([double]$wow) -ge 2); TieOrder = 0 }
+            }
+            if ($null -ne $yoy -and [math]::Abs([double]$yoy) -ge 2) {
+                $candidateComparisons += [pscustomobject]@{ Label = 'PriorYearRollingWindow'; Value = [double]$yoy; ActionThresholdMet = ([math]::Abs([double]$yoy) -ge 5); TieOrder = 1 }
+            }
+            $evaluatedCandidates = @()
+            foreach ($candidateComparison in $candidateComparisons) {
+                $directionSign = if ($candidateComparison.Value -gt 0) { 1 } else { -1 }
+                $recentSteps = @($wow, $previousStep, $earlierStep) | Where-Object { $null -ne $_ }
+                $sameDirectionSteps = @($recentSteps | Where-Object { ([math]::Sign([double]$_)) -eq $directionSign })
+                $isPersistent = ($null -ne $wow -and ([math]::Sign([double]$wow)) -eq $directionSign -and $sameDirectionSteps.Count -ge 2)
+                $candidateCorroboration = @()
+                if ($isPersistent) { $candidateCorroboration += 'persistence' }
+                if ($null -ne $vsAll -and [math]::Abs([double]$vsAll) -ge 1 -and ([math]::Sign([double]$vsAll)) -eq $directionSign) {
+                    $candidateCorroboration += 'franchise_gap'
+                }
+                $evaluatedCandidates += [pscustomobject]@{
+                    Label = $candidateComparison.Label
+                    Value = $candidateComparison.Value
+                    ActionThresholdMet = $candidateComparison.ActionThresholdMet
+                    TieOrder = $candidateComparison.TieOrder
+                    Persistent = $isPersistent
+                    Corroboration = $candidateCorroboration
+                    IsAction = ([bool]$candidateComparison.ActionThresholdMet -or $candidateCorroboration.Count -gt 0)
+                }
+            }
+            # Choose among eligible action comparisons first. This prevents a larger,
+            # sub-threshold comparison in the opposite direction from hiding a valid action.
+            $actionCandidates = @($evaluatedCandidates | Where-Object { $_.IsAction })
+            $candidatePool = if ($actionCandidates.Count -gt 0) { $actionCandidates } else { $evaluatedCandidates }
+            $candidate = $candidatePool |
+                Sort-Object @{ Expression = { [bool]$_.ActionThresholdMet }; Descending = $true }, @{ Expression = { [math]::Abs($_.Value) }; Descending = $true }, TieOrder |
+                Select-Object -First 1
+            $candidateDirection = $null
+            $persistentMovement = $false
+            $corroboration = @()
+            $baseAction = $false
+            if ($candidate) {
+                $candidateDirection = if ($candidate.Value -gt 0) { 'Improvement' } else { 'Opportunity' }
+                $persistentMovement = [bool]$candidate.Persistent
+                $corroboration = @($candidate.Corroboration)
+                $baseAction = [bool]$candidate.IsAction
+            }
+
+            $restaurantIdMatch = [regex]::Match($entity.Label, '^\s*(\d{4})\b')
+            $restaurantId = if ($restaurantIdMatch.Success) { $restaurantIdMatch.Groups[1].Value } else { Normalize-Header $entity.Label }
+            $evidenceMaterial = "$($entity.EntityKey)|$($metric.RawKey)|$($CurrentWeek.ToString('yyyy-MM-dd'))"
+
             $details += [pscustomobject]@{
+                EvidenceId = 'metric-' + (Get-GssStringSha256 $evidenceMaterial).Substring(0, 16)
                 Entity = $entity.Label
+                RestaurantId = $restaurantId
                 EntityKey = $entity.EntityKey
                 WeekEnding = $CurrentWeek.ToString('yyyy-MM-dd')
                 Metric = $metric.DisplayName
@@ -370,13 +425,25 @@ function New-GssMetricDetail {
                 Current = $currentValue
                 PriorWeek = $priorWeekValue
                 PriorYear = $priorYearValue
-                RollingAverage = $rollingAverage
+                RollingAverage = $null
+                PreviousRollingWindow = $priorWeekValue
                 CurrentCount = $currentCount
                 WoWImprovement = $wow
+                ChangeVsPreviousRollingWindow = $wow
                 YoYImprovement = $yoy
-                VsRollingAverage = $vsRolling
+                ChangeVsPriorYearRollingWindow = $yoy
+                VsRollingAverage = $null
                 VsSorensenTotal = $vsSorensen
                 VsAllFranchisees = $vsAll
+                PreviousStepImprovement = $previousStep
+                EarlierStepImprovement = $earlierStep
+                IsCandidate = ($null -ne $candidate)
+                CandidateDirection = $candidateDirection
+                CandidateComparison = if ($candidate) { $candidate.Label } else { $null }
+                CandidateMagnitude = if ($candidate) { [math]::Abs([double]$candidate.Value) } else { $null }
+                PersistentMovement = $persistentMovement
+                Corroboration = $corroboration
+                BaseActionItem = $baseAction
                 WorstMovement = $worstMovement
                 WorstMovementLabel = $worstMovementLabel
                 BestMovement = $bestMovement
@@ -403,7 +470,9 @@ function Get-GssRunQa {
         [object]$WorkbookQaStatus = $null
     )
 
-    $blockers = @()
+    $workbookBlockers = @()
+    $analysisBlockers = @()
+    $emailBlockers = @()
     $warnings = @()
     $rowsByKey = @{}
     foreach ($row in $RawRows) {
@@ -412,16 +481,30 @@ function Get-GssRunQa {
     }
 
     if (-not (Test-Path -LiteralPath $WorkbookPath -PathType Leaf)) {
-        $blockers += "Main workbook is missing: $WorkbookPath"
+        $workbookBlockers += "Main workbook is missing: $WorkbookPath"
     }
-    if ($RunLog.EmailComparisonPdf -and -not (Test-Path -LiteralPath $RunLog.EmailComparisonPdf -PathType Leaf)) {
-        $blockers += "Email comparison PDF is missing: $($RunLog.EmailComparisonPdf)"
+    if ($RunLog.EmailComparisonPdf) {
+        try {
+            $resolvedPdf = Resolve-GssDropboxPath -Path ([string]$RunLog.EmailComparisonPdf) -FolderPath $FolderPath -RequireFile
+        }
+        catch {
+            $emailBlockers += $_.Exception.Message
+        }
     }
-    if ($RunLog.Mode -eq 'ApplyToMainWorkbook' -and (-not $RunLog.BackupWorkbook -or -not (Test-Path -LiteralPath $RunLog.BackupWorkbook -PathType Leaf))) {
-        $blockers += "Live apply backup workbook is missing."
+    else {
+        $emailBlockers += 'Email comparison PDF is not recorded in the run log.'
+    }
+    if ($RunLog.Mode -eq 'ApplyToMainWorkbook') {
+        if (-not $RunLog.BackupWorkbook) {
+            $workbookBlockers += 'Live apply backup workbook is missing.'
+        }
+        else {
+            try { $null = Resolve-GssDropboxPath -Path ([string]$RunLog.BackupWorkbook) -FolderPath $FolderPath -RequireFile }
+            catch { $workbookBlockers += 'Live apply backup workbook is missing.' }
+        }
     }
     if (-not (Test-GssYoyPairing $CurrentWeek $PriorYearWeek)) {
-        $blockers += "Current week and prior-year week are not 364 days apart."
+        $workbookBlockers += "Reporting date and prior-year rolling date are not 364 days apart."
     }
 
     if (-not $QaSheetPresent) {
@@ -433,17 +516,27 @@ function Get-GssRunQa {
             $warnings += 'QA Checks status is blank. Run the current updater to recalculate workbook QA.'
         }
         elseif ($normalizedWorkbookQaStatus -eq 'ATTENTION') {
-            $blockers += 'Workbook QA Checks reports ATTENTION. Open QA Checks and resolve every flagged item before using the reports.'
+            $workbookBlockers += 'Workbook QA Checks reports ATTENTION. Open QA Checks and resolve every flagged item before using the reports.'
         }
         elseif ($normalizedWorkbookQaStatus -ne 'READY') {
-            $blockers += "Workbook QA Checks returned an invalid status: $normalizedWorkbookQaStatus"
+            $workbookBlockers += "Workbook QA Checks returned an invalid status: $normalizedWorkbookQaStatus"
         }
     }
 
-    $expectedFolder = Join-Path $FolderPath '02 Weekly Rolling Source Workbooks'
     foreach ($sourcePath in @($RunLog.CurrentSourceWorkbook, $RunLog.PriorYearSourceWorkbook)) {
-        if ($sourcePath -and -not ([System.IO.Path]::GetFullPath($sourcePath).StartsWith([System.IO.Path]::GetFullPath($expectedFolder), [System.StringComparison]::OrdinalIgnoreCase))) {
-            $warnings += "Source workbook is outside 02 Weekly Rolling Source Workbooks: $sourcePath"
+        if (-not $sourcePath) {
+            $emailBlockers += 'A rolling source workbook is not recorded in the run log.'
+            continue
+        }
+        try {
+            $resolvedSource = Resolve-GssDropboxPath -Path ([string]$sourcePath) -FolderPath $FolderPath -RequireFile
+            $relativeSource = ConvertTo-GssDropboxRelativePath -Path $resolvedSource -FolderPath $FolderPath
+            if (-not $relativeSource.StartsWith('02 Weekly Rolling Source Workbooks/', [System.StringComparison]::OrdinalIgnoreCase)) {
+                $emailBlockers += "Rolling source workbook is outside 02 Weekly Rolling Source Workbooks: $relativeSource"
+            }
+        }
+        catch {
+            $emailBlockers += $_.Exception.Message
         }
     }
 
@@ -452,19 +545,19 @@ function Get-GssRunQa {
         foreach ($entity in $requiredEntities) {
             $key = Get-GssEntityWeekKey $entity.EntityKey $week
             if (-not $rowsByKey.ContainsKey($key)) {
-                $blockers += "Missing Raw_Data row for $($entity.Label) on $($week.ToString('yyyy-MM-dd'))."
+                $workbookBlockers += "Missing Raw_Data row for $($entity.Label) on $($week.ToString('yyyy-MM-dd'))."
             }
         }
     }
 
     $duplicateRowKeys = @($RawRows | Group-Object RowKey | Where-Object { $_.Name -and $_.Count -gt 1 })
     foreach ($duplicate in $duplicateRowKeys) {
-        $blockers += "Duplicate Raw_Data RowKey: $($duplicate.Name)"
+        $workbookBlockers += "Duplicate Raw_Data RowKey: $($duplicate.Name)"
     }
 
     foreach ($metric in $Metrics) {
         if (-not $Headers.Contains($metric.RawKey)) {
-            $blockers += "Raw_Data is missing Metric_Catalog column: $($metric.RawKey)"
+            $workbookBlockers += "Raw_Data is missing Metric_Catalog column: $($metric.RawKey)"
         }
     }
 
@@ -482,7 +575,8 @@ function Get-GssRunQa {
         }
     }
 
-    $status = if ($blockers.Count -gt 0) {
+    $workbookStatus = if ($workbookBlockers.Count -gt 0) { 'Blocked' } else { 'Ready' }
+    $analysisStatus = if ($analysisBlockers.Count -gt 0) {
         'Blocked'
     }
     elseif ($warnings.Count -gt 0) {
@@ -491,10 +585,18 @@ function Get-GssRunQa {
     else {
         'Ready'
     }
+    $emailReadiness = if ($emailBlockers.Count -gt 0) { 'Blocked' } else { 'Ready' }
+    $status = if ($workbookStatus -eq 'Blocked') { 'Blocked' } elseif ($analysisStatus -ne 'Ready' -or $emailReadiness -ne 'Ready') { 'Review' } else { 'Ready' }
 
     return [pscustomobject]@{
         Status = $status
-        Blockers = $blockers
+        WorkbookStatus = $workbookStatus
+        AnalysisStatus = $analysisStatus
+        EmailReadiness = $emailReadiness
+        WorkbookBlockers = @($workbookBlockers | Select-Object -Unique)
+        AnalysisBlockers = @($analysisBlockers | Select-Object -Unique)
+        EmailBlockers = @($emailBlockers | Select-Object -Unique)
+        Blockers = @($workbookBlockers + $analysisBlockers + $emailBlockers | Select-Object -Unique)
         Warnings = @($warnings | Select-Object -Unique)
     }
 }
@@ -515,6 +617,79 @@ function Select-GssStrengthItems {
         Where-Object { $_.BestMovement -ne $null -and $_.BestMovement -gt 0 -and ($_.WorstMovement -eq $null -or $_.WorstMovement -ge 0) } |
         Sort-Object @{ Expression = { $_.BestMovement }; Descending = $true }, @{ Expression = { $_.CurrentCount }; Descending = $true }, @{ Expression = { $_.Entity }; Descending = $true } |
         Select-Object -First $Count)
+}
+
+function Get-GssMetricFeedbackCategory {
+    param([object]$MetricDetail)
+
+    $name = (Normalize-Header "$($MetricDetail.Category) $($MetricDetail.Metric) $($MetricDetail.RawMetric)")
+    if ($name -match 'pace') { return 'pace' }
+    if ($name -match 'value') { return 'value' }
+    if ($name -match 'culinary|steak|food') { return 'culinary' }
+    if ($name -match 'service') { return 'service' }
+    if ($name -match 'manager|overall|experience') { return 'hospitality/recovery' }
+    return $null
+}
+
+function Select-GssRestaurantFindings {
+    param(
+        [object[]]$MetricDetail,
+        [object[]]$GuestThemes = @()
+    )
+
+    $results = @()
+    foreach ($entity in @(Get-RequiredGssEntities | Where-Object { $_.IncludeInInsights })) {
+        $restaurantIdMatch = [regex]::Match($entity.Label, '^\s*(\d{4})\b')
+        $restaurantId = if ($restaurantIdMatch.Success) { $restaurantIdMatch.Groups[1].Value } else { Normalize-Header $entity.Label }
+        $actionItems = @()
+        foreach ($detail in @($MetricDetail | Where-Object { $_.RestaurantId -eq $restaurantId -and $_.IsCandidate })) {
+            $copy = $detail | Select-Object *
+            $corroboration = @($copy.Corroboration)
+            $feedbackCategory = Get-GssMetricFeedbackCategory $copy
+            if ($feedbackCategory) {
+                $matchingThemes = @($GuestThemes | Where-Object { $_.restaurant_id -eq $restaurantId -and $_.category -eq $feedbackCategory })
+                foreach ($theme in $matchingThemes) {
+                    $supportsDirection = if ($copy.CandidateDirection -eq 'Opportunity') {
+                        [int]$theme.concern_count -ge 2
+                    }
+                    else {
+                        [int]$theme.positive_count -ge 2
+                    }
+                    if ($supportsDirection) { $corroboration += "guest_feedback:$($theme.theme_id)" }
+                }
+            }
+            $copy.Corroboration = @($corroboration | Select-Object -Unique)
+            $isAction = [bool]$copy.BaseActionItem -or @($copy.Corroboration | Where-Object { $_ -like 'guest_feedback:*' }).Count -gt 0
+            $copy | Add-Member -NotePropertyName IsActionItem -NotePropertyValue $isAction -Force
+            $directionSign = if ($copy.CandidateDirection -eq 'Improvement') { 1 } else { -1 }
+            $eligibleMagnitudes = @()
+            foreach ($value in @($copy.ChangeVsPreviousRollingWindow, $copy.YoYImprovement)) {
+                if ($null -ne $value -and [math]::Sign([double]$value) -eq $directionSign) { $eligibleMagnitudes += [math]::Abs([double]$value) }
+            }
+            $score = if ($eligibleMagnitudes.Count -gt 0) { ($eligibleMagnitudes | Measure-Object -Maximum).Maximum } else { 0 }
+            $score += (0.01 * @($copy.Corroboration).Count)
+            $copy | Add-Member -NotePropertyName ActionScore -NotePropertyValue $score -Force
+            if ($isAction) { $actionItems += $copy }
+        }
+
+        $opportunities = @($actionItems |
+            Where-Object { $_.CandidateDirection -eq 'Opportunity' } |
+            Sort-Object @{ Expression = { $_.ActionScore }; Descending = $true }, @{ Expression = { $_.CurrentCount }; Descending = $true }, Metric |
+            Select-Object -First 2)
+        $opportunityIds = @($opportunities.EvidenceId)
+        $strengths = @($actionItems |
+            Where-Object { $_.CandidateDirection -eq 'Improvement' -and $_.EvidenceId -notin $opportunityIds } |
+            Sort-Object @{ Expression = { $_.ActionScore }; Descending = $true }, @{ Expression = { $_.CurrentCount }; Descending = $true }, Metric |
+            Select-Object -First 1)
+        $results += [pscustomobject]@{
+            RestaurantId = $restaurantId
+            Restaurant = $entity.Label
+            Name = ([regex]::Replace($entity.Label, '^\s*\d{4}\s+', '')).Trim()
+            Strengths = $strengths
+            Opportunities = $opportunities
+        }
+    }
+    return $results
 }
 
 function Format-GssNumber {
@@ -548,9 +723,12 @@ function New-GssReviewMarkdown {
     $lines += '# GSS Run Review'
     $lines += ''
     $lines += "Status: $($Result.OverallStatus)"
+    $lines += "Workbook status: $($Result.WorkbookStatus)"
+    $lines += "Analysis status: $($Result.AnalysisStatus)"
+    $lines += "Email readiness: $($Result.EmailReadiness)"
     $lines += "Run mode: $($Result.Run.Mode)"
-    $lines += "Current week: $($Result.Run.CurrentWeekEnding)"
-    $lines += "Prior-year week: $($Result.Run.PriorYearWeekEnding)"
+    $lines += "13-week rolling through: $($Result.Run.CurrentWeekEnding)"
+    $lines += "Prior-year rolling through: $($Result.Run.PriorYearWeekEnding)"
     $lines += "Rows appended: $($Result.Run.RowsAppended)"
     $lines += "Workbook QA: $($Result.WorkbookQaStatus)"
     $lines += ''
@@ -577,8 +755,8 @@ function New-GssReviewMarkdown {
     }
     else {
         foreach ($item in $AttentionItems) {
-            $lines += ('- {0}: {1} current {2}; weakest comparison: {3} {4} (WoW {5}, YoY {6}); vs all franchisees {7}.' -f `
-                $item.Entity, $item.Metric, (Format-GssNumber $item.Current), $item.WorstMovementLabel, (Format-GssMovementNumber $item.WorstMovement), (Format-GssMovementNumber $item.WoWImprovement), (Format-GssMovementNumber $item.YoYImprovement), (Format-GssMovementNumber $item.VsAllFranchisees))
+            $lines += ('- {0}: {1} 13-week rolling value {2}; change versus previous rolling window {3}; change versus prior-year rolling window {4}; versus all franchisees {5}.' -f `
+                $item.Entity, $item.Metric, (Format-GssNumber $item.Current), (Format-GssMovementNumber $item.ChangeVsPreviousRollingWindow), (Format-GssMovementNumber $item.YoYImprovement), (Format-GssMovementNumber $item.VsAllFranchisees))
         }
     }
     $lines += ''
@@ -588,8 +766,8 @@ function New-GssReviewMarkdown {
     }
     else {
         foreach ($item in $StrengthItems) {
-            $lines += ('- {0}: {1} current {2}; strongest improvement: {3} {4}; vs Sorensen total {5}.' -f `
-                $item.Entity, $item.Metric, (Format-GssNumber $item.Current), $item.BestMovementLabel, (Format-GssMovementNumber $item.BestMovement), (Format-GssMovementNumber $item.VsSorensenTotal))
+            $lines += ('- {0}: {1} 13-week rolling value {2}; change versus previous rolling window {3}; change versus prior-year rolling window {4}; versus Sorensen total {5}.' -f `
+                $item.Entity, $item.Metric, (Format-GssNumber $item.Current), (Format-GssMovementNumber $item.ChangeVsPreviousRollingWindow), (Format-GssMovementNumber $item.YoYImprovement), (Format-GssMovementNumber $item.VsSorensenTotal))
         }
     }
     $lines += ''
@@ -597,6 +775,8 @@ function New-GssReviewMarkdown {
     $lines += "- Detail CSV: $($Result.DetailCsvPath)"
     $lines += "- JSON: $($Result.JsonPath)"
     $lines += "- Review folder: $($Result.ReviewFolder)"
+    $lines += ''
+    $lines += 'These comparisons are directional. They do not establish statistical significance or causation.'
     $lines += ''
 
     return ($lines -join [Environment]::NewLine)
@@ -608,7 +788,7 @@ function Write-GssAnalysisSummary {
     Write-Host ''
     Write-Host 'GSS analytics review summary'
     Write-Host ('  Status: {0}' -f $Result.OverallStatus)
-    Write-Host ('  Current week: {0}' -f $Result.Run.CurrentWeekEnding)
+    Write-Host ('  13-week rolling through: {0}' -f $Result.Run.CurrentWeekEnding)
     Write-Host ('  Rows appended: {0}' -f $Result.Run.RowsAppended)
     Write-Host ('  Review: {0}' -f $Result.MarkdownPath)
     if ($Result.Qa.Blockers.Count -gt 0) {
@@ -626,7 +806,8 @@ function Invoke-GssRunAnalysis {
         [string]$RunLogPath,
         [int]$Weeks,
         [string]$WorkbookName,
-        [switch]$ReturnObject
+        [switch]$ReturnObject,
+        [switch]$PublishPackage
     )
 
     $FolderPath = Resolve-GssAnalysisFolder $FolderPath
@@ -644,8 +825,9 @@ function Invoke-GssRunAnalysis {
     $priorYearWeek = [datetime]::Parse($runLog.PriorYearWeekEnding).Date
     $metricDetail = @(New-GssMetricDetail $workbookData.RawRows $workbookData.Metrics $currentWeek $priorYearWeek $Weeks)
     $qa = Get-GssRunQa $runLog $FolderPath $workbookPath $workbookData.RawRows $workbookData.Metrics $workbookData.Headers $metricDetail $currentWeek $priorYearWeek $workbookData.QaSheetPresent $workbookData.WorkbookQaStatus
-    $attentionItems = Select-GssAttentionItems $metricDetail
-    $strengthItems = Select-GssStrengthItems $metricDetail
+    $restaurantFindings = @(Select-GssRestaurantFindings -MetricDetail $metricDetail)
+    $attentionItems = @($restaurantFindings | ForEach-Object { $_.Opportunities })
+    $strengthItems = @($restaurantFindings | ForEach-Object { $_.Strengths })
 
     $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
     $reviewFolder = Join-Path (Join-Path (Join-Path $FolderPath '_automation_runs') 'qa') "run_review_$timestamp"
@@ -656,6 +838,9 @@ function Invoke-GssRunAnalysis {
 
     $result = [pscustomobject]@{
         OverallStatus = $qa.Status
+        WorkbookStatus = $qa.WorkbookStatus
+        AnalysisStatus = $qa.AnalysisStatus
+        EmailReadiness = if ($PublishPackage) { $qa.EmailReadiness } else { 'NotEvaluated' }
         WorkbookQaStatus = $workbookData.WorkbookQaStatus
         GeneratedAt = (Get-Date).ToString('s')
         Folder = $FolderPath
@@ -668,11 +853,35 @@ function Invoke-GssRunAnalysis {
         Qa = $qa
         TopAttention = $attentionItems
         TopStrengths = $strengthItems
+        RestaurantFindings = $restaurantFindings
+        MetricDetail = $metricDetail
+        EmailPackage = $null
         RawDataSummary = [pscustomobject]@{
             RowCount = $workbookData.RawRows.Count
             WeekCount = @($workbookData.RawRows | Select-Object -ExpandProperty Week -Unique).Count
             MetricCount = $workbookData.Metrics.Count
         }
+    }
+
+    if ($PublishPackage) {
+        try {
+            $package = New-GssEmailPackage -FolderPath $FolderPath -RunLog $runLog -AnalysisResult $result
+            $result.EmailPackage = $package
+            $result.EmailReadiness = $package.EmailReadiness
+            $result.Qa.EmailReadiness = $package.EmailReadiness
+        }
+        catch {
+            $packageBlocker = $_.Exception.Message
+            $result.EmailReadiness = 'Blocked'
+            $result.Qa.EmailReadiness = 'Blocked'
+            $result.Qa.EmailBlockers = @($result.Qa.EmailBlockers) + $packageBlocker
+            $result.Qa.Blockers = @($result.Qa.Blockers) + $packageBlocker
+            if ($result.WorkbookStatus -ne 'Blocked') { $result.OverallStatus = 'Review' }
+        }
+        $attentionItems = @($result.RestaurantFindings | ForEach-Object { $_.Opportunities })
+        $strengthItems = @($result.RestaurantFindings | ForEach-Object { $_.Strengths })
+        $result.TopAttention = $attentionItems
+        $result.TopStrengths = $strengthItems
     }
 
     $markdown = New-GssReviewMarkdown $result $attentionItems $strengthItems
@@ -687,5 +896,5 @@ function Invoke-GssRunAnalysis {
 }
 
 if ($MyInvocation.InvocationName -ne '.') {
-    Invoke-GssRunAnalysis -FolderPath $Folder -RunLogPath $LogPath -Weeks $LookbackWeeks -WorkbookName $MainWorkbookName -ReturnObject:$OutputObject
+    Invoke-GssRunAnalysis -FolderPath $Folder -RunLogPath $LogPath -Weeks $LookbackWeeks -WorkbookName $MainWorkbookName -ReturnObject:$OutputObject -PublishPackage:$PublishEmailPackage
 }

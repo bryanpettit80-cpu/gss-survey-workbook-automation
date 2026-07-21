@@ -109,9 +109,9 @@ function Get-GssQaCheckPlan {
     }
 
     $periods = @(
-        [pscustomobject]@{ Row = 7; Name = 'Current-week entity and metric completeness'; Week = '$B$3'; AllowIntentionalGap = $false },
-        [pscustomobject]@{ Row = 8; Name = 'Prior-week entity and metric completeness'; Week = '$B$3-7'; AllowIntentionalGap = $true },
-        [pscustomobject]@{ Row = 9; Name = 'Prior-year entity and metric completeness'; Week = '$B$3-364'; AllowIntentionalGap = $false }
+        [pscustomobject]@{ Row = 7; Name = 'Current rolling-window entity and metric completeness'; Week = '$B$3'; AllowIntentionalGap = $false },
+        [pscustomobject]@{ Row = 8; Name = 'Previous rolling-window entity and metric completeness'; Week = '$B$3-7'; AllowIntentionalGap = $true },
+        [pscustomobject]@{ Row = 9; Name = 'Prior-year rolling-window entity and metric completeness'; Week = '$B$3-364'; AllowIntentionalGap = $false }
     )
     foreach ($period in $periods) {
         $rowCheck = $entityRows.Replace('${WEEK}', $period.Week)
@@ -620,12 +620,12 @@ function Set-GssReadmeContent {
         Set-CellValue $worksheet 7 1 '3) Wait for the copy-test to finish. Type APPLY only when the copy-test passes and you want to update the live workbook.'
         Set-CellValue $worksheet 8 1 '4) Reopen this workbook and check QA Checks. Use the reports when the overall status is READY.'
         Set-CellValue $worksheet 9 1 'The automation recalculates the workbook, refreshes the email PDF, protects formulas, and creates a backup before live changes. Do not paste into Raw_Data manually.'
-        Set-CellValue $worksheet 12 1 '1) Quick_Read_WoW: review the latest week-over-week scorecard across all active entities.'
-        Set-CellValue $worksheet 13 1 '2) Quick_Read_YoY: review the same view against the matching prior-year week.'
+        Set-CellValue $worksheet 12 1 '1) Previous rolling-window view (legacy tab name: Quick_Read_WoW): compare each 13-week rolling result with the previous rolling window across all active entities.'
+        Set-CellValue $worksheet 13 1 '2) Quick_Read_YoY: compare the same 13-week rolling result with the matching prior-year rolling window.'
         Set-CellValue $worksheet 14 1 '3) Exec_Dashboard: use the Entity and Metric dropdowns to drill into one story.'
         Set-CellValue $worksheet 15 1 '4) Drivers_Detail: review every metric for the entity selected on Exec_Dashboard.'
-        Set-CellValue $worksheet 18 1 '• Quick_Read_WoW: positive values mean improvement. A blank is surfaced by QA Checks when required source data is missing.'
-        Set-CellValue $worksheet 19 1 '• Quick_Read_YoY: compares CurrentWeek to CurrentWeek-364. The confirmed 2025 history break is informational, not an error.'
+        Set-CellValue $worksheet 18 1 '• Previous rolling-window view (legacy tab name: Quick_Read_WoW): positive change versus the previous rolling window means directional improvement. A blank is surfaced by QA Checks when required source data is missing.'
+        Set-CellValue $worksheet 19 1 '• Quick_Read_YoY: compares the reporting-date rolling result with the rolling result ending 364 days earlier. The confirmed 2025 history break is informational, not an error.'
         Set-CellValue $worksheet 20 1 '• Exec_Dashboard: selector-driven view. The same selections drive Drivers_Detail and the movers table.'
         Set-CellValue $worksheet 21 1 '• QA Checks: the visible READY/ATTENTION gate checks row keys, period completeness, headers, selectors, and remaining capacity.'
         Set-CellValue $worksheet 26 1 'Data hygiene rules (checked automatically):'
@@ -634,7 +634,7 @@ function Set-GssReadmeContent {
         Set-CellValue $worksheet 32 1 '• Dropdown rejects a choice: select an active entity or a metric shown in the dropdown list.'
         Set-CellValue $worksheet 34 1 '• Current model capacity is Raw_Data rows 2:5096. QA Checks warns before fewer than two weekly loads (8 rows) remain.'
 
-        Set-CellFormula $worksheet 3 1 '="Workbook status: "&''QA Checks''!$B$2&" | Latest data week: "&TEXT(''QA Checks''!$B$3,"m/d/yyyy")'
+        Set-CellFormula $worksheet 3 1 '="Workbook status: "&''QA Checks''!$B$2&" | 13-week rolling through: "&TEXT(''QA Checks''!$B$3,"m/d/yyyy")'
 
         $contentRange = $worksheet.Range('A1:A34')
         $contentRange.WrapText = $true
@@ -707,7 +707,7 @@ function Set-GssWorkbookBanners {
         Set-GssBanner $worksheet 'A4:Q4' '="Workbook status: "&''QA Checks''!$B$2&" | Positive = improvement (direction-adjusted for dissatisfaction). Blank = missing data."' -Merge
         Release-ComObject $worksheet
         $worksheet = $Workbook.Worksheets.Item('Quick_Read_YoY')
-        Set-GssBanner $worksheet 'A4:Q4' '="Workbook status: "&''QA Checks''!$B$2&" | Positive = improvement versus the matching prior-year week. Blank = missing data."' -Merge
+        Set-GssBanner $worksheet 'A4:Q4' '="Workbook status: "&''QA Checks''!$B$2&" | Positive = directional improvement versus the matching prior-year rolling window. Blank = missing data."' -Merge
         Release-ComObject $worksheet
         $worksheet = $Workbook.Worksheets.Item('Exec_Dashboard')
         Set-GssBanner $worksheet 'A2:F2' '="Workbook status: "&''QA Checks''!$B$2&" | Change the two dropdowns below to explore the reports."' -Merge
@@ -756,7 +756,7 @@ function Update-GssQaSheet {
         Set-CellValue $qaWs 1 1 'GSS Workbook QA Checks'
         Set-CellValue $qaWs 2 1 'Overall workbook status'
         Set-CellFormula $qaWs 2 2 '=IFERROR(IF(COUNTIF($B$6:$B$12,"READY")=ROWS($B$6:$B$12),"READY","ATTENTION"),"ATTENTION")'
-        Set-CellValue $qaWs 3 1 'Latest data week'
+        Set-CellValue $qaWs 3 1 '13-week rolling through'
         Set-CellFormula $qaWs 3 2 "=MAX('Raw_Data'!`$B`$2:`$B`$$gssRawDataLastFormulaRow)"
         $qaWs.Cells.Item(3, 2).NumberFormat = 'm/d/yyyy'
         Set-CellValue $qaWs 4 1 'Confirmed history note'
@@ -1125,7 +1125,7 @@ function Update-EmailComparisonSection {
 
     Set-CellValue $Worksheet $HeaderRow 1 'Entity'
     Set-CellValue $Worksheet $HeaderRow 2 $EntityName
-    Set-CellValue $Worksheet $HeaderRow 4 'As Of Week'
+    Set-CellValue $Worksheet $HeaderRow 4 '13-Week Rolling Through'
     Set-CellValue $Worksheet $HeaderRow 5 $LatestWeek.ToOADate()
     $Worksheet.Cells.Item($HeaderRow, 5).NumberFormat = 'm/d/yyyy'
     Set-CellValue $Worksheet $HeaderRow 8 $CompareEntityKey
@@ -1133,6 +1133,10 @@ function Update-EmailComparisonSection {
     $Worksheet.Cells.Item($HeaderRow, 18).NumberFormat = 'm/d/yyyy'
     Set-CellValue $Worksheet ($HeaderRow + 1) 1 'Compare To'
     Set-CellValue $Worksheet ($HeaderRow + 1) 2 $CompareEntityName
+    Set-CellValue $Worksheet ($HeaderRow + 2) 2 '13-Week Rolling Result'
+    Set-CellValue $Worksheet ($HeaderRow + 2) 3 'Change vs Previous Rolling Window'
+    Set-CellValue $Worksheet ($HeaderRow + 2) 4 'Change vs Prior-Year Rolling Window'
+    Set-CellValue $Worksheet ($HeaderRow + 2) 5 ''
 
     $latestMinus7 = $LatestWeek.AddDays(-7)
     $latestMinus14 = $LatestWeek.AddDays(-14)
@@ -1148,7 +1152,7 @@ function Update-EmailComparisonSection {
         $priorYear = Get-RawMetricValue $RawDataWorksheet $RawIndex $EntityKey $priorYearWeek $metric.RawKey
         $twoWeeksAgo = Get-RawMetricValue $RawDataWorksheet $RawIndex $EntityKey $latestMinus14 $metric.RawKey
         $threeWeeksAgo = Get-RawMetricValue $RawDataWorksheet $RawIndex $EntityKey $latestMinus21 $metric.RawKey
-        $rollingAverage = Get-AverageValue @($current, $priorWeek, $twoWeeksAgo, $threeWeeksAgo)
+        $rollingAverage = $null
         $wowImprovement = if ($metric.DisplayName -eq 'Count') { $null } else { Get-Improvement $current $priorWeek $metric.LowerIsBetter }
         $yoyImprovement = Get-Improvement $current $priorYear $metric.LowerIsBetter
 
@@ -1246,7 +1250,7 @@ function Export-EmailComparisonPdf {
         $emailWs = $Workbook.Worksheets.Item('Email Comparison')
         $pdfDir = if ($ApplyMode) { Join-Path $FolderPath '04 Email Comparison PDFs' } else { $TestDir }
         New-Item -ItemType Directory -Path $pdfDir -Force | Out-Null
-        $pdfName = 'GSS Email Comparison {0}.pdf' -f $LatestSource.File.LastWriteTime.ToString('MMddyy')
+        $pdfName = 'GSS Email Comparison {0}.pdf' -f $LatestSource.WeekEnding.ToString('MMddyy')
         $pdfPath = Join-Path $pdfDir $pdfName
         $emailWs.ExportAsFixedFormat($xlTypePDF, $pdfPath)
         return $pdfPath
@@ -1265,8 +1269,8 @@ function Write-RunSummary {
     Write-Host ('  Status: {0}' -f $Summary.Status)
     Write-Host ('  Workbook QA: {0}' -f $Summary.WorkbookStatus)
     Write-Host ('  Guardrails applied: {0}' -f $Summary.GuardrailsApplied)
-    Write-Host ('  Current week: {0}' -f $Summary.CurrentWeekEnding)
-    Write-Host ('  Prior-year week: {0}' -f $Summary.PriorYearWeekEnding)
+    Write-Host ('  13-week rolling through: {0}' -f $Summary.CurrentWeekEnding)
+    Write-Host ('  Prior-year rolling through: {0}' -f $Summary.PriorYearWeekEnding)
     Write-Host ('  Rows appended: {0}' -f $Summary.RowsAppended)
     Write-Host ('  Current source: {0}' -f $Summary.CurrentSourceWorkbook)
     Write-Host ('  Prior-year source: {0}' -f $Summary.PriorYearSourceWorkbook)
@@ -1445,6 +1449,42 @@ function Invoke-GssWorkbookUpdate {
         }
         $targetWb.Save()
 
+        # Excel keeps the saved workbook exclusively open until the COM workbook
+        # is closed. Release it before calculating file evidence so a copy-test
+        # and a live run hash the exact bytes that were persisted.
+        $targetWb.Close($false)
+        Release-ComObject $rawWs
+        $rawWs = $null
+        Release-ComObject $targetWb
+        $targetWb = $null
+
+        $fileEvidence = @(
+            [pscustomobject]@{
+                Role = 'rolling_workbook'
+                RelativePath = ConvertTo-GssDropboxRelativePath -Path $latestSource.File.FullName -FolderPath $FolderPath
+                ByteSize = [long](Get-Item -LiteralPath $latestSource.File.FullName).Length
+                Sha256 = Get-GssSha256 $latestSource.File.FullName
+            },
+            [pscustomobject]@{
+                Role = 'prior_year_rolling_workbook'
+                RelativePath = ConvertTo-GssDropboxRelativePath -Path $priorYearSource.File.FullName -FolderPath $FolderPath
+                ByteSize = [long](Get-Item -LiteralPath $priorYearSource.File.FullName).Length
+                Sha256 = Get-GssSha256 $priorYearSource.File.FullName
+            },
+            [pscustomobject]@{
+                Role = 'live_workbook'
+                RelativePath = ConvertTo-GssDropboxRelativePath -Path $targetPath -FolderPath $FolderPath
+                ByteSize = [long](Get-Item -LiteralPath $targetPath).Length
+                Sha256 = Get-GssSha256 $targetPath
+            },
+            [pscustomobject]@{
+                Role = 'comparison_pdf'
+                RelativePath = ConvertTo-GssDropboxRelativePath -Path $emailComparisonPdfPath -FolderPath $FolderPath
+                ByteSize = [long](Get-Item -LiteralPath $emailComparisonPdfPath).Length
+                Sha256 = Get-GssSha256 $emailComparisonPdfPath
+            }
+        )
+
         $summary = [pscustomobject]@{
             Timestamp = (Get-Date).ToString('s')
             Mode = if ($ApplyMode) { 'ApplyToMainWorkbook' } else { 'CopyTestOnly' }
@@ -1454,11 +1494,21 @@ function Invoke-GssWorkbookUpdate {
             Folder = $FolderPath
             CurrentWeekEnding = $latestSource.WeekEnding.ToString('yyyy-MM-dd')
             PriorYearWeekEnding = $priorYearWeek.ToString('yyyy-MM-dd')
+            ReportingPeriodLabel = "13-week rolling through $($latestSource.WeekEnding.ToString('yyyy-MM-dd'))"
+            RollingPeriodStart = $latestSource.WeekEnding.AddDays(-90).ToString('yyyy-MM-dd')
+            RollingPeriodEnd = $latestSource.WeekEnding.ToString('yyyy-MM-dd')
+            PreviousRollingWindowEnding = $latestSource.WeekEnding.AddDays(-7).ToString('yyyy-MM-dd')
+            ComparisonLabel = 'change versus previous rolling window'
             CurrentSourceWorkbook = $latestSource.File.FullName
+            CurrentSourceRelativePath = ConvertTo-GssDropboxRelativePath -Path $latestSource.File.FullName -FolderPath $FolderPath
             PriorYearSourceWorkbook = $priorYearSource.File.FullName
+            PriorYearSourceRelativePath = ConvertTo-GssDropboxRelativePath -Path $priorYearSource.File.FullName -FolderPath $FolderPath
             TargetWorkbook = $targetPath
+            TargetWorkbookRelativePath = ConvertTo-GssDropboxRelativePath -Path $targetPath -FolderPath $FolderPath
             BackupWorkbook = $backupPath
             EmailComparisonPdf = $emailComparisonPdfPath
+            EmailComparisonPdfRelativePath = ConvertTo-GssDropboxRelativePath -Path $emailComparisonPdfPath -FolderPath $FolderPath
+            FileEvidence = $fileEvidence
             RowsAppended = $rowsAppended
             WeeksAppended = $weeksAppended
             WeeksSkipped = $weeksSkipped

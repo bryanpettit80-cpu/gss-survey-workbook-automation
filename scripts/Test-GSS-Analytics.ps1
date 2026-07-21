@@ -77,11 +77,11 @@ $vbOverall = $detail | Where-Object { $_.Entity -eq '9355 Virginia Beach' -and $
 
 Assert-Equal $richmondOverall.WoWImprovement -5 'Metric detail WoW decline'
 Assert-Equal $richmondOverall.YoYImprovement -10 'Metric detail YoY decline'
-Assert-Equal $richmondOverall.WorstMovementLabel 'YoY' 'Weakest comparison label'
-Assert-Equal $richmondOverall.BestMovementLabel 'WoW' 'Strongest comparison label when both are negative'
+Assert-Equal $richmondOverall.WorstMovementLabel 'PriorYearRollingWindow' 'Weakest comparison label'
+Assert-Equal $richmondOverall.BestMovementLabel 'PreviousRollingWindow' 'Strongest comparison label when both are negative'
 Assert-Equal $richmondDissat.WoWImprovement 3 'Lower-is-better metric detail'
 Assert-Equal $vbOverall.BestMovement 4 'Strength ranking candidate'
-Assert-Equal $vbOverall.BestMovementLabel 'YoY' 'Strength improvement label'
+Assert-Equal $vbOverall.BestMovementLabel 'PriorYearRollingWindow' 'Strength improvement label'
 
 $attention = Select-GssAttentionItems $detail 1
 Assert-Equal $attention[0].Entity '9354 Richmond' 'Attention ranking entity'
@@ -116,5 +116,88 @@ Assert-True (@($invalidQa.Blockers | Where-Object { $_ -like 'Workbook QA Checks
 
 $pathRunLog = [pscustomobject]@{ TargetWorkbook = 'C:\GSS Surveys\_automation_runs\test-output\guarded-copy.xlsx' }
 Assert-Equal (Resolve-GssAnalysisWorkbookPath $pathRunLog 'C:\GSS Surveys' 'main.xlsx') 'C:\GSS Surveys\_automation_runs\test-output\guarded-copy.xlsx' 'Analyzer uses logged copy-test workbook'
+
+function Get-BoundaryMetricDetail {
+    param(
+        [double]$CurrentValue,
+        [double]$PreviousValue,
+        [double]$PriorYearValue,
+        [bool]$LowerIsBetter = $false
+    )
+    $metricSet = @([pscustomobject]@{ DisplayName = 'Service'; RawKey = 'Service'; LowerIsBetter = $LowerIsBetter; IncludeInMovers = $true; Category = 'Service'; Owner = 'FOH' })
+    $rows = @(
+        [pscustomobject]@{ EntityKey = 'Sorensen|9354 Richmond'; Week = $current; RowKey = 'current'; Values = [pscustomobject]@{ Service = $CurrentValue; Count = 120 } },
+        [pscustomobject]@{ EntityKey = 'Sorensen|9354 Richmond'; Week = $current.AddDays(-7); RowKey = 'previous'; Values = [pscustomobject]@{ Service = $PreviousValue; Count = 120 } },
+        [pscustomobject]@{ EntityKey = 'Sorensen|9354 Richmond'; Week = $priorYear; RowKey = 'prior-year'; Values = [pscustomobject]@{ Service = $PriorYearValue; Count = 120 } },
+        [pscustomobject]@{ EntityKey = 'Sorensen|(TOTAL)'; Week = $current; RowKey = 'sorensen'; Values = [pscustomobject]@{ Service = $CurrentValue; Count = 240 } },
+        [pscustomobject]@{ EntityKey = 'All Franchisees|(TOTAL)'; Week = $current; RowKey = 'all'; Values = [pscustomobject]@{ Service = $CurrentValue; Count = 1000 } }
+    )
+    return @(New-GssMetricDetail $rows $metricSet $current $priorYear 4)[0]
+}
+
+Assert-Equal (Get-BoundaryMetricDetail 80 79.001 80).IsCandidate $false 'Previous-window candidate below one point'
+Assert-Equal (Get-BoundaryMetricDetail 80 79 80).IsCandidate $true 'Previous-window candidate at one point'
+Assert-Equal (Get-BoundaryMetricDetail 80 78.001 80).BaseActionItem $false 'Previous-window action below two points'
+Assert-Equal (Get-BoundaryMetricDetail 80 78 80).BaseActionItem $true 'Previous-window action at two points'
+Assert-Equal (Get-BoundaryMetricDetail 80 80 78.001).IsCandidate $false 'Prior-year candidate below two points'
+Assert-Equal (Get-BoundaryMetricDetail 80 80 78).IsCandidate $true 'Prior-year candidate at two points'
+Assert-Equal (Get-BoundaryMetricDetail 80 80 75.001).BaseActionItem $false 'Prior-year action below five points'
+Assert-Equal (Get-BoundaryMetricDetail 80 80 75).BaseActionItem $true 'Prior-year action at five points'
+$lowerBoundary = Get-BoundaryMetricDetail 4 6 4 $true
+Assert-Equal $lowerBoundary.ChangeVsPreviousRollingWindow 2 'Lower-is-better direction adjustment at action boundary'
+Assert-Equal $lowerBoundary.CandidateDirection 'Improvement' 'Lower-is-better improvement direction'
+$mixedDirection = Get-BoundaryMetricDetail 80 77 84
+Assert-Equal $mixedDirection.CandidateDirection 'Improvement' 'Eligible previous-window action is not hidden by larger sub-threshold YoY decline'
+Assert-Equal $mixedDirection.CandidateComparison 'PreviousRollingWindow' 'Mixed-direction eligible comparison selection'
+
+function New-TestFindingItem {
+    param([string]$RestaurantId, [string]$MetricName, [string]$Direction, [double]$Score, [bool]$BaseAction = $true)
+    return [pscustomobject]@{
+        EvidenceId = "metric-$RestaurantId-$MetricName"
+        RestaurantId = $RestaurantId
+        Entity = if ($RestaurantId -eq '9354') { '9354 Richmond' } else { '9355 Virginia Beach' }
+        Metric = $MetricName
+        RawMetric = $MetricName
+        Category = if ($MetricName -like 'Service*') { 'Service' } else { 'Overall' }
+        LowerIsBetter = $false
+        Current = 80
+        CurrentCount = 120
+        ChangeVsPreviousRollingWindow = if ($Direction -eq 'Improvement') { $Score } else { -$Score }
+        YoYImprovement = 0
+        VsAllFranchisees = 0
+        VsSorensenTotal = 0
+        PersistentMovement = $false
+        IsCandidate = $true
+        CandidateDirection = $Direction
+        CandidateMagnitude = $Score
+        Corroboration = @()
+        BaseActionItem = $BaseAction
+    }
+}
+
+$capDetail = @(
+    (New-TestFindingItem '9354' 'Opp A' 'Opportunity' 6),
+    (New-TestFindingItem '9354' 'Opp B' 'Opportunity' 5),
+    (New-TestFindingItem '9354' 'Opp C' 'Opportunity' 4),
+    (New-TestFindingItem '9354' 'Strength A' 'Improvement' 4),
+    (New-TestFindingItem '9354' 'Strength B' 'Improvement' 3),
+    (New-TestFindingItem '9355' 'Opp D' 'Opportunity' 3),
+    (New-TestFindingItem '9355' 'Strength C' 'Improvement' 2)
+)
+$capped = @(Select-GssRestaurantFindings $capDetail)
+$richmondFindings = $capped | Where-Object RestaurantId -eq '9354'
+$beachFindings = $capped | Where-Object RestaurantId -eq '9355'
+Assert-Equal @($richmondFindings.Opportunities).Count 2 'Richmond opportunity cap'
+Assert-Equal @($richmondFindings.Strengths).Count 1 'Richmond strength cap'
+Assert-Equal @($beachFindings.Opportunities).Count 1 'Virginia Beach independent opportunity ranking'
+Assert-Equal @($beachFindings.Strengths).Count 1 'Virginia Beach independent strength ranking'
+
+$guestCandidate = New-TestFindingItem '9354' 'Service Candidate' 'Opportunity' 1.2 $false
+$withoutGuest = @(Select-GssRestaurantFindings @($guestCandidate)) | Where-Object RestaurantId -eq '9354'
+Assert-Equal @($withoutGuest.Opportunities).Count 0 'Sub-action candidate is omitted without corroboration'
+$guestTheme = [pscustomobject]@{ restaurant_id = '9354'; category = 'service'; concern_count = 2; positive_count = 0; theme_id = 'theme-9354-service' }
+$withGuest = @(Select-GssRestaurantFindings @($guestCandidate) @($guestTheme)) | Where-Object RestaurantId -eq '9354'
+Assert-Equal @($withGuest.Opportunities).Count 1 'Guest feedback elevates a candidate to action item'
+Assert-True (@($withGuest.Opportunities[0].Corroboration | Where-Object { $_ -eq 'guest_feedback:theme-9354-service' }).Count -eq 1) 'Guest corroboration evidence ID retained'
 
 Write-Host 'GSS analytics logic tests passed.'

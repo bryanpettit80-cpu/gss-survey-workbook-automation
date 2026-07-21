@@ -21,12 +21,13 @@ The launcher always tests a copy first. It also creates a backup before changing
 - `ATTENTION NEEDED`: stop and review the message shown on screen before using the results.
 
 Finished comparison PDFs are saved in `04 Email Comparison PDFs`.
+They are named for the report week, not the file-modification date. After a successful live apply, the launcher also publishes a portable package for the AOL draft writer. A copy-test never publishes an email package.
 
 ## Operator Folder Map
 
 - `01 Main Workbook`: the active `GSS Score Trends - Main.xlsx` workbook, with older versions in its archive subfolder.
 - `02 Weekly Rolling Source Workbooks`: weekly `Sorensen FW...` source files used by the updater.
-- `03 Uploaded Survey Workbooks`: survey-detail files kept for reference; not used by the weekly updater.
+- `03 Uploaded Survey Workbooks`: current and archived guest-detail exports used only for the post-apply email package; missing or corrupt detail data does not block an otherwise safe workbook update, but it does block drafting.
 - `04 Email Comparison PDFs`: finished comparison PDFs.
 - `05 Reference Materials`: training and reference documents.
 - `06 Exports and Images`: screenshots and image exports.
@@ -42,6 +43,7 @@ The repository is intentionally program-only. Do not commit survey workbooks, PD
 - `scripts\Invoke-GSS-SafeWorkbookUpdate.ps1`: canonical safe workflow used by the operator launcher.
 - `scripts\Update-GSS-MainWorkbook.ps1`: Excel updater.
 - `scripts\Analyze-GSS-Run.ps1`: deterministic post-run QA and insight review.
+- `scripts\Gss-EmailPackage.ps1`: portable, privacy-sanitized email-package publisher.
 - `scripts\Gss-Common.ps1`: shared conversion and path helpers.
 - `scripts\Install-GSS-OperatorLauncher.ps1`: refreshes the operator launcher and plain-language guide files.
 - `scripts\Get-GSS-SetupStatus.ps1`: checks operator files and scheduled-task state.
@@ -63,6 +65,8 @@ The repository is intentionally program-only. Do not commit survey workbooks, PD
 - Live backups go to `..\_automation_runs\backups`.
 - JSON logs go to `..\_automation_runs\logs`.
 - QA packages go to `..\_automation_runs\qa\run_review_YYYYMMDD_HHMMSS`.
+- Ready email packages go to `..\_automation_runs\email_outbox\<package-id>` only after a successful live apply.
+- The post-run result reports `WorkbookStatus`, `AnalysisStatus`, and `EmailReadiness` separately. Only workbook blockers prevent apply; detail-data or attachment-evidence blockers prevent drafting.
 - A blocked copy-test review prevents live apply.
 - Existing current/prior-year rows are skipped rather than duplicated.
 
@@ -74,6 +78,7 @@ Run these before committing script changes:
 .\scripts\Test-GSS-PowerShellSyntax.ps1
 .\scripts\Test-GSS-Logic.ps1
 .\scripts\Test-GSS-Analytics.ps1
+.\scripts\Test-GSS-EmailPackage.ps1
 ```
 
 For local Excel integration verification, run `Test-GSS-WorkbookIntegration.ps1` against a copy-test workbook. This check is intentionally not part of GitHub Actions because the hosted runner does not provide desktop Excel.

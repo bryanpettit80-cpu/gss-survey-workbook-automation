@@ -1,6 +1,9 @@
-This folder stores uploaded survey-detail workbooks for reference.
+This folder stores the current guest-detail export and its archive.
 
-It is not the weekly input folder used by the workbook updater.
+The workbook updater does not use these files to change the score-trends workbook.
+After a successful live update, the email-package analyzer uses them to prepare
+anonymized new guest feedback and the raw detail attachment. Missing or corrupt
+detail data blocks email drafting but does not block an otherwise safe workbook update.
 
 For the weekly update, save the newest Sorensen FW workbook in:
 02 Weekly Rolling Source Workbooks

@@ -71,11 +71,17 @@ function Test-GssIntentionalCellChange {
 
     switch ($SheetName) {
         'README' { return $Row -le 34 }
+        'QA Checks' { return $Row -le 12 -and $Column -le 3 }
         'Quick_Read_WoW' { return $Row -eq 4 -and $Column -le 17 }
         'Quick_Read_YoY' { return $Row -eq 4 -and $Column -le 17 }
         'Exec_Dashboard' { return $Row -eq 2 -and $Column -le 6 }
         'Drivers_Detail' { return $Row -eq 2 -and $Column -le 4 }
-        'Email Comparison' { return $Row -eq 2 -and $Column -le 28 }
+        'Email Comparison' {
+            return ($Row -eq 2 -and $Column -le 28) -or
+                ($Row -in @(3, 23) -and $Column -eq 4) -or
+                ($Row -in @(5, 25) -and $Column -ge 2 -and $Column -le 5) -or
+                ($Column -eq 5 -and (($Row -ge 6 -and $Row -le 18) -or ($Row -ge 26 -and $Row -le 38)))
+        }
         default { return $false }
     }
 }

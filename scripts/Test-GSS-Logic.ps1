@@ -128,4 +128,24 @@ $dashboardUnlockIndex = $updaterSource.IndexOf('Set-GssDashboardValidation $Work
 Assert-True ($allCellsAcquireIndex -ge 0 -and $allCellsAcquireIndex -lt $allCellsLockIndex) 'Guardrails acquire all worksheet cells before locking'
 Assert-True ($allCellsLockIndex -lt $dashboardUnlockIndex) 'All worksheet cells are locked before dashboard selectors are unlocked'
 
+$targetSaveIndex = $updaterSource.IndexOf('$targetWb.Save()')
+$targetCloseIndex = $updaterSource.IndexOf('$targetWb.Close($false)', $targetSaveIndex)
+$fileEvidenceIndex = $updaterSource.IndexOf('$fileEvidence = @(', $targetSaveIndex)
+Assert-True ($targetSaveIndex -ge 0 -and $targetSaveIndex -lt $targetCloseIndex) 'Target workbook is saved before it is closed for hashing'
+Assert-True ($targetCloseIndex -lt $fileEvidenceIndex) 'Target workbook is closed before file evidence is hashed'
+
+$safeLauncherSource = Get-Content -LiteralPath (Join-Path $scriptRoot 'Invoke-GSS-SafeWorkbookUpdate.ps1') -Raw
+Assert-True ($safeLauncherSource.Contains('$copyRun = & $updater -Folder $Folder -OutputObject')) 'Safe launcher captures copy-test run object'
+Assert-True ($safeLauncherSource.Contains('-LogPath $copyRun.LogPath -OutputObject')) 'Safe launcher pairs copy analysis to exact log'
+Assert-True ($safeLauncherSource.Contains('$liveRun = & $updater -Folder $Folder -Apply -OutputObject')) 'Safe launcher captures live run object'
+Assert-True ($safeLauncherSource.Contains('-LogPath $liveRun.LogPath -OutputObject -PublishEmailPackage')) 'Safe launcher pairs live package to exact log'
+Assert-True ($safeLauncherSource.IndexOf('-PublishEmailPackage') -gt $safeLauncherSource.IndexOf('$liveRun = & $updater')) 'Package publishing occurs only after live apply'
+Assert-True ($updaterSource.Contains('$pdfName = ''GSS Email Comparison {0}.pdf'' -f $LatestSource.WeekEnding.ToString(''MMddyy'')')) 'PDF filename uses reporting week'
+Assert-True (-not $updaterSource.Contains('$LatestSource.File.LastWriteTime.ToString(''MMddyy'')')) 'PDF filename does not use source modification date'
+
+$portableRoot = 'C:\Users\bryan\Dropbox\Marketing\GSS Surveys'
+$otherProfilePath = "C:\Users\Other User\Dropbox\Marketing\GSS Surveys\04 Email Comparison PDFs\report.pdf"
+Assert-Equal (ConvertTo-GssDropboxRelativePath -Path $otherProfilePath -FolderPath $portableRoot) '04 Email Comparison PDFs/report.pdf' 'Cross-profile portable path recovery'
+Assert-ThrowsLike { ConvertTo-GssDropboxRelativePath -Path '..\escape.txt' -FolderPath $portableRoot } '*traversal segment*' 'Portable path traversal rejection'
+
 Write-Host 'GSS non-Excel logic tests passed.'

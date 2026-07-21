@@ -102,3 +102,77 @@ function Resolve-MainWorkbookPath {
 
     throw "Main workbook not found under ${FolderPath}: $WorkbookName"
 }
+
+function ConvertTo-GssDropboxRelativePath {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path,
+        [Parameter(Mandatory)]
+        [string]$FolderPath
+    )
+
+    $root = [System.IO.Path]::GetFullPath($FolderPath).TrimEnd('\', '/')
+    $candidate = $Path.Trim().Trim('"')
+    if ([string]::IsNullOrWhiteSpace($candidate)) {
+        throw 'A portable GSS path cannot be blank.'
+    }
+
+    if (-not [System.IO.Path]::IsPathRooted($candidate)) {
+        $relative = $candidate.Replace('/', '\').TrimStart('\')
+    }
+    else {
+        $fullCandidate = [System.IO.Path]::GetFullPath($candidate)
+        if ($fullCandidate.Equals($root, [System.StringComparison]::OrdinalIgnoreCase)) {
+            $relative = ''
+        }
+        elseif ($fullCandidate.StartsWith("$root\", [System.StringComparison]::OrdinalIgnoreCase)) {
+            $relative = $fullCandidate.Substring($root.Length + 1)
+        }
+        else {
+            # Logs can be produced on another Windows profile and then synced by Dropbox.
+            # Recover only the suffix below the canonical GSS Surveys folder.
+            $marker = '\GSS Surveys\'
+            $markerIndex = $fullCandidate.IndexOf($marker, [System.StringComparison]::OrdinalIgnoreCase)
+            if ($markerIndex -lt 0) {
+                throw "Path is outside the GSS Surveys Dropbox tree: $candidate"
+            }
+            $relative = $fullCandidate.Substring($markerIndex + $marker.Length)
+        }
+    }
+
+    $segments = @($relative -split '[\\/]' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if (@($segments | Where-Object { $_ -eq '.' -or $_ -eq '..' }).Count -gt 0) {
+        throw "Portable GSS path contains a traversal segment: $candidate"
+    }
+    return ($segments -join '/')
+}
+
+function Resolve-GssDropboxPath {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path,
+        [Parameter(Mandatory)]
+        [string]$FolderPath,
+        [switch]$RequireFile
+    )
+
+    $root = [System.IO.Path]::GetFullPath($FolderPath).TrimEnd('\', '/')
+    $relative = ConvertTo-GssDropboxRelativePath -Path $Path -FolderPath $root
+    $resolved = [System.IO.Path]::GetFullPath((Join-Path $root ($relative.Replace('/', '\'))))
+    if (-not $resolved.StartsWith("$root\", [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Resolved GSS path escaped the Dropbox root: $Path"
+    }
+    if ($RequireFile -and -not (Test-Path -LiteralPath $resolved -PathType Leaf)) {
+        throw "GSS file is missing or not fully available: $relative"
+    }
+    return $resolved
+}
+
+function Get-GssSha256 {
+    param([Parameter(Mandatory)][string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "Cannot hash missing GSS file: $Path"
+    }
+    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+}

@@ -18,3 +18,6 @@ jobs:
       - name: Run analytics logic tests
         shell: powershell
         run: .\scripts\Test-GSS-Analytics.ps1
+      - name: Run email package and privacy tests
+        shell: powershell
+        run: .\scripts\Test-GSS-EmailPackage.ps1

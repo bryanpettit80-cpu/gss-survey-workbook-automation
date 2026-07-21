@@ -319,7 +319,7 @@ function Get-GssPiiRedactionRules {
     return @(
         [pscustomobject]@{ Label = 'email'; Pattern = '(?i)\b[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}\b'; Replacement = '[REDACTED EMAIL]' },
         [pscustomobject]@{ Label = 'url'; Pattern = '(?i)(?<![@\w])(?<url>(?:(?:https?://|www\.)[^\s<>"\x27]*?|(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}(?:/[^\s<>"\x27]*?)?))(?<punct>[.,;:!?)}\]]*)(?=\s|$)'; Replacement = '[REDACTED URL]${punct}' },
-        [pscustomobject]@{ Label = 'phone'; Pattern = '(?<![\w\d])(?:(?=(?:\D*\d){10,})(?:\+\d{1,3}[\s().-]*)?(?:\d[\s().-]*){9,14}\d|\d{3}[\s.-]\d{4})(?![\w\d])'; Replacement = '[REDACTED PHONE]' },
+        [pscustomobject]@{ Label = 'phone'; Pattern = '(?<![\w\d.])(?:\+?\d{10,15}|(?:\+?\d{1,3}[\s.-]+)?(?:\(\d{2,4}\)|\d{2,4})[\s.-]+\d{2,4}[\s.-]+\d{4}|\d{3}[- ]\d{4})(?![\w\d]|\.\d)'; Replacement = '[REDACTED PHONE]' },
         [pscustomobject]@{ Label = 'booking_identifier'; Pattern = '(?i)\b(?:check|confirmation|booking|reservation|resy)\s*(?:(?:id|number|no\.?)\s*)?(?:#|:)?\s*(?=[A-Z0-9-]{4,}\b)(?=[A-Z0-9-]*\d)[A-Z0-9-]{4,}\b'; Replacement = '[REDACTED BOOKING ID]' }
     )
 }
@@ -445,6 +445,31 @@ function Read-GssFeedbackLedger {
     catch {
         throw "Feedback ledger is corrupt: $($_.Exception.Message)"
     }
+}
+
+function Invoke-GssFileSystemRetry {
+    param(
+        [Parameter(Mandatory)][scriptblock]$Operation,
+        [int]$MaxAttempts = 12,
+        [int]$DelayMilliseconds = 500
+    )
+
+    if ($MaxAttempts -lt 1) { throw 'MaxAttempts must be at least 1.' }
+    if ($DelayMilliseconds -lt 0) { throw 'DelayMilliseconds cannot be negative.' }
+
+    $lastError = $null
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        try {
+            return (& $Operation)
+        }
+        catch {
+            $lastError = $_
+            if ($attempt -lt $MaxAttempts -and $DelayMilliseconds -gt 0) {
+                Start-Sleep -Milliseconds $DelayMilliseconds
+            }
+        }
+    }
+    throw $lastError
 }
 
 function Write-GssFeedbackLedger {
@@ -1251,7 +1276,14 @@ function New-GssEmailPackage {
         Write-GssFeedbackLedger -Ledger $feedback.NextLedger -Path $LedgerPath
         # This marker is the final package-file write; the directory is then promoted atomically.
         "$($script:GssEmailPackageSchemaVersion)`n$packageId" | Set-Content -LiteralPath (Join-Path $stagingPath 'READY') -Encoding ASCII
-        Move-Item -LiteralPath $stagingPath -Destination $packagePath
+        Invoke-GssFileSystemRetry -Operation {
+            Move-Item -LiteralPath $stagingPath -Destination $packagePath
+        }
+        $null = Test-GssExistingEmailPackage `
+            -PackagePath $packagePath `
+            -PackageId $packageId `
+            -ExpectedSourceDescriptors $sourceDescriptors `
+            -ExpectedFeedbackSelectionFingerprint $feedback.SelectionFingerprint
         return [pscustomobject]@{
             EmailReadiness = 'Ready'
             PackageId = $packageId
@@ -1262,13 +1294,21 @@ function New-GssEmailPackage {
         }
     }
     catch {
+        $packageError = $_
         if (Test-Path -LiteralPath $stagingPath -PathType Container) {
             $resolvedOutbox = [System.IO.Path]::GetFullPath($outbox).TrimEnd('\') + '\'
             $resolvedStaging = [System.IO.Path]::GetFullPath($stagingPath)
             if ($resolvedStaging.StartsWith($resolvedOutbox, [System.StringComparison]::OrdinalIgnoreCase)) {
-                Remove-Item -LiteralPath $resolvedStaging -Recurse -Force
+                try {
+                    Invoke-GssFileSystemRetry -Operation {
+                        Remove-Item -LiteralPath $resolvedStaging -Recurse -Force
+                    }
+                }
+                catch {
+                    $packageError.Exception.Data['GssStagingCleanupError'] = $_.Exception.Message
+                }
             }
         }
-        throw
+        throw $packageError
     }
 }

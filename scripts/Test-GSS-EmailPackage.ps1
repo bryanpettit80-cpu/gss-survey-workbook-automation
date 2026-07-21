@@ -171,6 +171,22 @@ try {
     $controlProbe = Protect-GssFeedbackText -Text "A${unsafeC0}B${unsafeBidi}C" -KnownNames @()
     Assert-Equal $controlProbe.RedactionCount 2 'C0 and bidi controls are counted as redactions'
     Assert-True (-not [regex]::IsMatch($controlProbe.Text, (Get-GssUnsafeControlPattern))) 'C0 and bidi controls are removed before AI processing'
+    $phonePattern = @(Get-GssPiiRedactionRules | Where-Object Label -eq 'phone')[0].Pattern
+    foreach ($phoneProbe in @('212-555-0199', '555-1212', '(212) 555-0199', '212.555.0199', '2125550199', '+44 20 7946 0958')) {
+        Assert-True ([regex]::IsMatch($phoneProbe, $phonePattern)) "Phone pattern recognizes $phoneProbe"
+    }
+    foreach ($nonPhoneProbe in @('78.0952380952381', '2026-07-12', 'metric-9354-service')) {
+        Assert-True (-not [regex]::IsMatch($nonPhoneProbe, $phonePattern)) "Phone pattern rejects non-phone value $nonPhoneProbe"
+    }
+    $retryProbe = [pscustomobject]@{ Count = 0 }
+    Invoke-GssFileSystemRetry -MaxAttempts 3 -DelayMilliseconds 1 -Operation {
+        $retryProbe.Count++
+        if ($retryProbe.Count -lt 3) { throw [System.IO.IOException]::new('Synthetic transient file lock') }
+    }
+    Assert-Equal $retryProbe.Count 3 'Transient filesystem operation is retried to success'
+    Assert-ThrowsLike {
+        Invoke-GssFileSystemRetry -MaxAttempts 2 -DelayMilliseconds 1 -Operation { throw 'Synthetic permanent failure' }
+    } '*Synthetic permanent failure*' 'Filesystem retry preserves the final operation error'
 
     $inventory = Get-GssDetailInventory -FolderPath $folder -ReportingDate ([datetime]'2026-07-12')
     Assert-Equal $inventory.CurrentWorkbook.PortablePath '03 Uploaded Survey Workbooks/Sorensen Current.xlsx' 'Current detail selection by visit date'
@@ -212,7 +228,7 @@ try {
         RawMetric = 'Service'
         Category = 'Service'
         LowerIsBetter = $false
-        Current = 82.0
+        Current = 78.0952380952381
         CurrentCount = 125
         ChangeVsPreviousRollingWindow = 2.0
         YoYImprovement = 5.0
@@ -266,6 +282,7 @@ try {
     Assert-True (@($manifest.theme_ids) -contains $serviceThemeEvidence.theme_id) 'Manifest includes qualified theme ID'
     Assert-True (@($manifest.evidence_ids) -notcontains $serviceThemeEvidence.theme_id) 'Theme ID remains separate from evidence IDs'
     Assert-True (-not [string]::IsNullOrWhiteSpace([string]$analysisJson.metric_evidence[0].display_text)) 'Metric evidence has deterministic display text'
+    Assert-Equal ([double]$analysisJson.metric_evidence[0].rolling_value) ([double]$finding.Current) 'High-precision native metric survives package serialization'
     Assert-Equal $analysisJson.metric_evidence[0].direction 'higher_is_better' 'Metric evidence direction contract'
     Assert-Equal $analysisJson.restaurants[0].name 'Richmond' 'Restaurant display name omits source identifier'
     Assert-Equal @($analysisJson.portfolio_evidence).Count 1 'Portfolio reporting basis evidence exists without a portfolio finding'

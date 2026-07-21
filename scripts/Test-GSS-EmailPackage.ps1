@@ -52,7 +52,7 @@ function Add-TestZipText {
 function New-TestDetailWorkbook {
     param([string]$Path, [string[]]$Headers, [object[]]$Records, [int]$BlankFormattedRow = 0)
 
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    Add-Type -AssemblyName System.IO.Compression
     $directory = Split-Path -Parent $Path
     New-Item -ItemType Directory -Path $directory -Force | Out-Null
     $stream = [System.IO.File]::Open($Path, [System.IO.FileMode]::Create)
@@ -176,6 +176,8 @@ try {
     Assert-Equal $inventory.CurrentWorkbook.PortablePath '03 Uploaded Survey Workbooks/Sorensen Current.xlsx' 'Current detail selection by visit date'
     Assert-Equal $inventory.UniqueResponses.Count 3 'Overlapping exports deduplicate responses'
     Assert-Equal $inventory.DuplicateResponseCount 1 'Duplicate response count'
+    $knownGuestNames = @(Get-GssKnownGuestNames $inventory.AllResponseInstances)
+    Assert-True ($knownGuestNames -contains 'Casey' -and $knownGuestNames -contains 'Robin') 'Distinct same-length guest names remain in the redaction set'
 
     $pdf = Join-Path $folder '04 Email Comparison PDFs\GSS Email Comparison 071226.pdf'
     $rolling = Join-Path $folder '02 Weekly Rolling Source Workbooks\Sorensen Rolling.xlsx'
@@ -282,9 +284,17 @@ try {
         Assert-Equal (Get-GssSha256 $attachmentPath) ([string]$attachment.sha256) "Attachment hash for $($attachment.role)"
         Assert-Equal ([long](Get-Item -LiteralPath $attachmentPath).Length) ([long]$attachment.byte_size) "Attachment size for $($attachment.role)"
     }
-    $nonRaw = (Get-Content -Raw -LiteralPath $package.ManifestPath) + (Get-Content -Raw -LiteralPath (Join-Path $package.PackagePath 'analysis.json')) + (Get-Content -Raw -LiteralPath (Join-Path $package.PackagePath 'email_preview.txt')) + (Get-Content -Raw -LiteralPath (Join-Path $package.PackagePath 'email_preview.html'))
+    $portableTextByFile = [ordered]@{
+        'email_manifest.json' = Get-Content -Raw -LiteralPath $package.ManifestPath
+        'analysis.json' = Get-Content -Raw -LiteralPath (Join-Path $package.PackagePath 'analysis.json')
+        'email_preview.txt' = Get-Content -Raw -LiteralPath (Join-Path $package.PackagePath 'email_preview.txt')
+        'email_preview.html' = Get-Content -Raw -LiteralPath (Join-Path $package.PackagePath 'email_preview.html')
+    }
+    $nonRaw = @($portableTextByFile.Values) -join ''
+    Assert-True ($nonRaw -match '(?i)exact seven-day sample') 'Required methodology wording is not mistaken for a matching guest surname'
     foreach ($forbidden in @('Casey', 'Testperson', 'Robin', 'Sample', 'casey@example.invalid', '212-555-0199', '555-1212', 'https://example.invalid', 'bare.example.invalid', 'ABC123', 'ZX9876')) {
-        Assert-True (-not $nonRaw.Contains($forbidden)) "PII canary removed: $forbidden"
+        $leakedFiles = @($portableTextByFile.GetEnumerator() | Where-Object { ([string]$_.Value).Contains($forbidden) } | ForEach-Object { $_.Key })
+        Assert-True ($leakedFiles.Count -eq 0) "PII canary removed: $forbidden; leaked files: $($leakedFiles -join ', ')"
     }
     Assert-True (-not [regex]::IsMatch($nonRaw, (Get-GssUnsafeControlPattern))) 'Portable output contains no unsafe control or bidi characters'
     $ledgerText = Get-Content -Raw -LiteralPath $ledgerPath

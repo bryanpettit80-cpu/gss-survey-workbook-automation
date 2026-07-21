@@ -2,6 +2,7 @@
 param()
 
 $ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.IO.Compression.FileSystem
 $scriptRoot = Split-Path -Parent $PSCommandPath
 . (Join-Path $scriptRoot 'Analyze-GSS-Run.ps1')
 

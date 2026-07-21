@@ -309,7 +309,10 @@ function Get-GssKnownGuestNames {
             $names += @([regex]::Matches($value, "[A-Za-z][A-Za-z'-]{1,}") | ForEach-Object { $_.Value })
         }
     }
-    return @($names | Where-Object { $_.Length -ge 2 } | Sort-Object Length -Descending -Unique)
+    $uniqueNames = @($names | Where-Object { $_.Length -ge 2 } | Sort-Object -Unique)
+    return @($uniqueNames | Sort-Object `
+        @{ Expression = { $_.Length }; Descending = $true }, `
+        @{ Expression = { $_ }; Descending = $false })
 }
 
 function Get-GssPiiRedactionRules {
@@ -1228,9 +1231,17 @@ function New-GssEmailPackage {
         $aiFacingText = $analysisText + $previewText + $previewHtml
         $nonRawText = $aiFacingText + $manifestText
         if ($nonRawText -match '(?i)(?:[A-Z]:[\\/]|\\\\[^\\])') { throw 'A machine-specific path leaked into a portable package file.' }
+        # Deterministic methodology and metadata can legitimately contain an
+        # ordinary word that is also present in a guest-name field (for example,
+        # "sample"). Scan all portable text for generic PII, but scope the
+        # known-name check to guest-derived text that was actually published.
+        $sanitizedFeedbackText = @($feedback.Cards | ForEach-Object {
+            [string]$_.sanitized_text
+            [string]$_.display_text
+        }) -join "`n"
         $remainingPii = @(
             @(Get-GssRemainingPiiTypes -Text $nonRawText -KnownNames @()) +
-            @(Get-GssRemainingPiiTypes -Text $aiFacingText -KnownNames (Get-GssKnownGuestNames $inventory.AllResponseInstances)) |
+            @(Get-GssRemainingPiiTypes -Text $sanitizedFeedbackText -KnownNames (Get-GssKnownGuestNames $inventory.AllResponseInstances)) |
                 Sort-Object -Unique
         )
         if ($remainingPii.Count -gt 0) { throw "PII remained in portable package output: $($remainingPii -join ', ')" }

@@ -457,19 +457,17 @@ function Invoke-GssFileSystemRetry {
     if ($MaxAttempts -lt 1) { throw 'MaxAttempts must be at least 1.' }
     if ($DelayMilliseconds -lt 0) { throw 'DelayMilliseconds cannot be negative.' }
 
-    $lastError = $null
     for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
         try {
             return (& $Operation)
         }
         catch {
-            $lastError = $_
-            if ($attempt -lt $MaxAttempts -and $DelayMilliseconds -gt 0) {
+            if ($attempt -ge $MaxAttempts) { throw }
+            if ($DelayMilliseconds -gt 0) {
                 Start-Sleep -Milliseconds $DelayMilliseconds
             }
         }
     }
-    throw $lastError
 }
 
 function Publish-GssStagedEmailPackage {
@@ -1488,6 +1486,6 @@ function New-GssEmailPackage {
                 }
             }
         }
-        throw $packageError
+        throw
     }
 }

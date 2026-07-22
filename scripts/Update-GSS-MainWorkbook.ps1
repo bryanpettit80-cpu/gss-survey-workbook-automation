@@ -167,6 +167,17 @@ function Get-GssWorkbookLayoutPlan {
     )
 }
 
+function Get-GssEmailComparisonLayoutPlan {
+    return [pscustomobject]@{
+        WrappedTableHeaderRanges = @('C5:D5', 'C25:D25')
+        VisibleColumnWidths = @(
+            [pscustomobject]@{ Column = 2; Width = 22.0 }
+            [pscustomobject]@{ Column = 3; Width = 18.5 }
+            [pscustomobject]@{ Column = 4; Width = 22.5 }
+        )
+    }
+}
+
 function Get-GssGuardrailPlan {
     return [pscustomobject]@{
         ProtectWorkbookStructure = $true
@@ -719,6 +730,35 @@ function Set-GssWorkbookBanners {
         Set-GssBanner $worksheet 'A2:AB2' '="Workbook status: "&''QA Checks''!$B$2&" | Ready-to-share comparison output."' -Merge
     }
     finally {
+        Release-ComObject $worksheet
+    }
+}
+
+function Set-GssEmailComparisonLayout {
+    param([object]$Workbook)
+
+    $worksheet = $null
+    $range = $null
+    $plan = Get-GssEmailComparisonLayoutPlan
+    try {
+        $worksheet = $Workbook.Worksheets.Item('Email Comparison')
+
+        foreach ($address in $plan.WrappedTableHeaderRanges) {
+            $range = $worksheet.Range($address)
+            $range.WrapText = $true
+            Release-ComObject $range
+            $range = $null
+        }
+
+        foreach ($column in $plan.VisibleColumnWidths) {
+            $range = $worksheet.Columns.Item($column.Column)
+            $range.ColumnWidth = $column.Width
+            Release-ComObject $range
+            $range = $null
+        }
+    }
+    finally {
+        Release-ComObject $range
         Release-ComObject $worksheet
     }
 }
@@ -1437,6 +1477,7 @@ function Invoke-GssWorkbookUpdate {
         Update-GssQaSheet $targetWb $configuration
         Set-GssReadmeContent $targetWb
         Set-GssWorkbookBanners $targetWb
+        Set-GssEmailComparisonLayout $targetWb
         Set-GssWorkbookPrintLayouts $targetWb $configuration
         $excel.CalculateFullRebuild()
         $workbookStatus = Get-GssWorkbookStatus $targetWb

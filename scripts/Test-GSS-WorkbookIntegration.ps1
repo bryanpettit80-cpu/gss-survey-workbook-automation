@@ -269,6 +269,29 @@ try {
         }
     }
 
+    $emailLayout = Get-GssEmailComparisonLayoutPlan
+    $emailWorksheet = $null
+    $range = $null
+    try {
+        $emailWorksheet = $workbook.Worksheets.Item('Email Comparison')
+        foreach ($address in $emailLayout.WrappedTableHeaderRanges) {
+            $range = $emailWorksheet.Range($address)
+            Assert-GssIntegration ([bool]$range.WrapText) "Email Comparison $address must wrap text."
+            Release-ComObject $range
+            $range = $null
+        }
+        foreach ($column in $emailLayout.VisibleColumnWidths) {
+            $range = $emailWorksheet.Columns.Item($column.Column)
+            Assert-GssIntegration ([math]::Abs(([double]$range.ColumnWidth) - $column.Width) -lt 0.1) "Email Comparison column $($column.Column) width is incorrect."
+            Release-ComObject $range
+            $range = $null
+        }
+    }
+    finally {
+        Release-ComObject $range
+        Release-ComObject $emailWorksheet
+    }
+
     foreach ($banner in @(
         [pscustomobject]@{ Sheet = 'README'; Address = 'A3' },
         [pscustomobject]@{ Sheet = 'Quick_Read_WoW'; Address = 'A4' },

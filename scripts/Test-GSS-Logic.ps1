@@ -88,6 +88,10 @@ Assert-Equal (($layout | Where-Object Sheet -eq 'Drivers_Detail').PrintArea) '$A
 Assert-Equal (($layout | Where-Object Sheet -eq 'Exec_Dashboard').PrintArea) '$A$1:$AD$57' 'Dashboard print area includes chart'
 Assert-Equal (($layout | Where-Object Sheet -eq 'Email Comparison').PrintArea) '$A$1:$AB$38' 'Email comparison print area'
 
+$emailComparisonLayout = Get-GssEmailComparisonLayoutPlan
+Assert-Equal ($emailComparisonLayout.WrappedTableHeaderRanges -join ',') 'C5:D5,C25:D25' 'Email comparison table headers wrap'
+Assert-Equal (($emailComparisonLayout.VisibleColumnWidths | ForEach-Object { '{0}:{1}' -f $_.Column, $_.Width }) -join ',') '2:22,3:18.5,4:22.5' 'Email comparison visible column widths'
+
 $guardrails = Get-GssGuardrailPlan
 Assert-Equal $guardrails.ProtectWorkbookStructure $true 'Workbook structure protection plan'
 Assert-Equal $guardrails.ProtectAllWorksheets $true 'Worksheet protection plan'

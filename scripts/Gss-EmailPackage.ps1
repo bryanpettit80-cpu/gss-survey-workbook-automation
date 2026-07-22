@@ -319,7 +319,7 @@ function Get-GssPiiRedactionRules {
     return @(
         [pscustomobject]@{ Label = 'email'; Pattern = '(?i)\b[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}\b'; Replacement = '[REDACTED EMAIL]' },
         [pscustomobject]@{ Label = 'url'; Pattern = '(?i)(?<![@\w])(?<url>(?:(?:https?://|www\.)[^\s<>"\x27]*?|(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}(?:/[^\s<>"\x27]*?)?))(?<punct>[.,;:!?)}\]]*)(?=\s|$)'; Replacement = '[REDACTED URL]${punct}' },
-        [pscustomobject]@{ Label = 'phone'; Pattern = '(?<![\w\d.])(?:\+?\d{10,15}|(?:\+?\d{1,3}[\s.-]+)?(?:\(\d{2,4}\)|\d{2,4})[\s.-]+\d{2,4}[\s.-]+\d{4}|\d{3}[- ]\d{4})(?![\w\d]|\.\d)'; Replacement = '[REDACTED PHONE]' },
+        [pscustomobject]@{ Label = 'phone'; Pattern = '(?<![\w\d.])(?!\d+\.\d+(?![\w\d]|\.\d))(?:\+?\d{10,15}|(?:\+?\d{1,3}[\s.-]+)?(?:\(\d{2,4}\)[\s.-]*|\d{2,4}[\s.-]+)\d{2,4}[\s.-]*\d{4}|\d{3}[- ]\d{4})(?![\w\d]|\.\d)'; Replacement = '[REDACTED PHONE]' },
         [pscustomobject]@{ Label = 'booking_identifier'; Pattern = '(?i)\b(?:check|confirmation|booking|reservation|resy)\s*(?:(?:id|number|no\.?)\s*)?(?:#|:)?\s*(?=[A-Z0-9-]{4,}\b)(?=[A-Z0-9-]*\d)[A-Z0-9-]{4,}\b'; Replacement = '[REDACTED BOOKING ID]' }
     )
 }
@@ -470,6 +470,49 @@ function Invoke-GssFileSystemRetry {
         }
     }
     throw $lastError
+}
+
+function Publish-GssStagedEmailPackage {
+    param(
+        [Parameter(Mandatory)][string]$StagingPath,
+        [Parameter(Mandatory)][string]$PackagePath,
+        [Parameter(Mandatory)][scriptblock]$ValidationOperation,
+        [int]$MaxAttempts = 12,
+        [int]$DelayMilliseconds = 500
+    )
+
+    $resolvedStaging = [System.IO.Path]::GetFullPath($StagingPath)
+    $resolvedPackage = [System.IO.Path]::GetFullPath($PackagePath)
+    $stagingParent = [System.IO.Path]::GetDirectoryName($resolvedStaging)
+    $packageParent = [System.IO.Path]::GetDirectoryName($resolvedPackage)
+    if (-not [string]::Equals($stagingParent, $packageParent, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Staging and package directories must share the same outbox parent.'
+    }
+
+    $promoted = $false
+    try {
+        Invoke-GssFileSystemRetry -MaxAttempts $MaxAttempts -DelayMilliseconds $DelayMilliseconds -Operation {
+            Move-Item -LiteralPath $resolvedStaging -Destination $resolvedPackage
+        }
+        $promoted = $true
+        return (Invoke-GssFileSystemRetry -MaxAttempts $MaxAttempts -DelayMilliseconds $DelayMilliseconds -Operation $ValidationOperation)
+    }
+    catch {
+        $publicationError = $_
+        $cleanupPath = if ($promoted) { $resolvedPackage } else { $resolvedStaging }
+        if (Test-Path -LiteralPath $cleanupPath -PathType Container) {
+            try {
+                Invoke-GssFileSystemRetry -MaxAttempts $MaxAttempts -DelayMilliseconds $DelayMilliseconds -Operation {
+                    Remove-Item -LiteralPath $cleanupPath -Recurse -Force
+                }
+            }
+            catch {
+                $key = if ($promoted) { 'GssPromotedPackageCleanupError' } else { 'GssStagingCleanupError' }
+                $publicationError.Exception.Data[$key] = $_.Exception.Message
+            }
+        }
+        throw
+    }
 }
 
 function Write-GssFeedbackLedger {
@@ -1404,14 +1447,16 @@ function New-GssEmailPackage {
         Write-GssFeedbackLedger -Ledger $feedback.NextLedger -Path $LedgerPath
         # This marker is the final package-file write; the directory is then promoted atomically.
         "$($script:GssEmailPackageSchemaVersion)`n$packageId" | Set-Content -LiteralPath (Join-Path $stagingPath 'READY') -Encoding ASCII
-        Invoke-GssFileSystemRetry -Operation {
-            Move-Item -LiteralPath $stagingPath -Destination $packagePath
-        }
-        $null = Test-GssExistingEmailPackage `
+        $null = Publish-GssStagedEmailPackage `
+            -StagingPath $stagingPath `
             -PackagePath $packagePath `
-            -PackageId $packageId `
-            -ExpectedSourceDescriptors $sourceDescriptors `
-            -ExpectedFeedbackSelectionFingerprint $feedback.SelectionFingerprint
+            -ValidationOperation {
+                Test-GssExistingEmailPackage `
+                    -PackagePath $packagePath `
+                    -PackageId $packageId `
+                    -ExpectedSourceDescriptors $sourceDescriptors `
+                    -ExpectedFeedbackSelectionFingerprint $feedback.SelectionFingerprint
+            }
         return [pscustomobject]@{
             EmailReadiness = 'Ready'
             PackageId = $packageId

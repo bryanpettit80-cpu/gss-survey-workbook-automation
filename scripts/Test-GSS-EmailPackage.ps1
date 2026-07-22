@@ -177,11 +177,20 @@ try {
     Assert-Equal $controlProbe.RedactionCount 2 'C0 and bidi controls are counted as redactions'
     Assert-True (-not [regex]::IsMatch($controlProbe.Text, (Get-GssUnsafeControlPattern))) 'C0 and bidi controls are removed before AI processing'
     $phonePattern = @(Get-GssPiiRedactionRules | Where-Object Label -eq 'phone')[0].Pattern
-    foreach ($phoneProbe in @('212-555-0199', '555-1212', '(212) 555-0199', '212.555.0199', '2125550199', '+44 20 7946 0958')) {
+    foreach ($phoneProbe in @('212-555-0199', '555-1212', '(212) 555-0199', '212.555.0199', '2125550199', '+44 20 7946 0958', '(212)5550199', '+1 (212)5550199', '212-5551212')) {
         Assert-True ([regex]::IsMatch($phoneProbe, $phonePattern)) "Phone pattern recognizes $phoneProbe"
+        $protectedPhone = Protect-GssFeedbackText -Text "Call $phoneProbe today." -KnownNames @()
+        Assert-Equal $protectedPhone.Text 'Call [REDACTED PHONE] today.' "Phone is redacted: $phoneProbe"
+        Assert-Equal $protectedPhone.RedactionCount 1 "Phone redaction is counted: $phoneProbe"
+        Assert-True ([bool]$protectedPhone.PiiScanPassed) "Post-redaction PII scan passes: $phoneProbe"
+        Assert-Equal @($protectedPhone.RemainingPiiTypes).Count 0 "No phone PII remains: $phoneProbe"
     }
-    foreach ($nonPhoneProbe in @('78.0952380952381', '2026-07-12', 'metric-9354-service')) {
+    foreach ($nonPhoneProbe in @('78.0952380952381', '78.0952381', '7.12345678', '1.123456', '1234.12345678', '2026-07-12', 'metric-9354-service')) {
         Assert-True (-not [regex]::IsMatch($nonPhoneProbe, $phonePattern)) "Phone pattern rejects non-phone value $nonPhoneProbe"
+        $protectedNonPhone = Protect-GssFeedbackText -Text $nonPhoneProbe -KnownNames @()
+        Assert-Equal $protectedNonPhone.Text $nonPhoneProbe "Non-phone value is preserved: $nonPhoneProbe"
+        Assert-Equal $protectedNonPhone.RedactionCount 0 "Non-phone value is not counted as a redaction: $nonPhoneProbe"
+        Assert-True ([bool]$protectedNonPhone.PiiScanPassed) "Non-phone value passes the PII scan: $nonPhoneProbe"
     }
     $retryProbe = [pscustomobject]@{ Count = 0 }
     Invoke-GssFileSystemRetry -MaxAttempts 3 -DelayMilliseconds 1 -Operation {
@@ -192,6 +201,46 @@ try {
     Assert-ThrowsLike {
         Invoke-GssFileSystemRetry -MaxAttempts 2 -DelayMilliseconds 1 -Operation { throw 'Synthetic permanent failure' }
     } '*Synthetic permanent failure*' 'Filesystem retry preserves the final operation error'
+
+    $promotionOutbox = Join-Path $temporaryRoot 'promotion-retry'
+    $failedStaging = Join-Path $promotionOutbox '.staging-package'
+    $failedPackage = Join-Path $promotionOutbox 'package'
+    New-Item -ItemType Directory -Path $failedStaging -Force | Out-Null
+    'ready' | Set-Content -LiteralPath (Join-Path $failedStaging 'READY') -Encoding ASCII
+    $validationProbe = [pscustomobject]@{ Count = 0 }
+    Assert-ThrowsLike {
+        Publish-GssStagedEmailPackage `
+            -StagingPath $failedStaging `
+            -PackagePath $failedPackage `
+            -MaxAttempts 3 `
+            -DelayMilliseconds 1 `
+            -ValidationOperation {
+                $validationProbe.Count++
+                if (-not (Test-Path -LiteralPath (Join-Path $failedPackage 'READY') -PathType Leaf)) {
+                    throw 'Synthetic package was not promoted before validation.'
+                }
+                throw [System.IO.IOException]::new('Synthetic promoted-package validation failure')
+            }
+    } '*Synthetic promoted-package validation failure*' 'Post-promotion validation failure is surfaced'
+    Assert-Equal $validationProbe.Count 3 'Post-promotion validation uses bounded retries'
+    Assert-True (-not (Test-Path -LiteralPath $failedStaging)) 'Failed staging directory is absent after promotion'
+    Assert-True (-not (Test-Path -LiteralPath $failedPackage)) 'Package promoted by the failing invocation is cleaned up'
+
+    New-Item -ItemType Directory -Path $failedStaging -Force | Out-Null
+    'ready' | Set-Content -LiteralPath (Join-Path $failedStaging 'READY') -Encoding ASCII
+    $validationResult = Publish-GssStagedEmailPackage `
+        -StagingPath $failedStaging `
+        -PackagePath $failedPackage `
+        -MaxAttempts 3 `
+        -DelayMilliseconds 1 `
+        -ValidationOperation {
+            if (-not (Test-Path -LiteralPath (Join-Path $failedPackage 'READY') -PathType Leaf)) {
+                throw 'Synthetic rebuilt package validation failed.'
+            }
+            'validated'
+        }
+    Assert-Equal $validationResult 'validated' 'Cleaned package path can be rebuilt and validated'
+    Assert-True (Test-Path -LiteralPath $failedPackage -PathType Container) 'Rebuilt package is promoted'
 
     $inventory = Get-GssDetailInventory -FolderPath $folder -ReportingDate ([datetime]'2026-07-12')
     Assert-Equal $inventory.CurrentWorkbook.PortablePath '03 Uploaded Survey Workbooks/Sorensen Current.xlsx' 'Current detail selection by visit date'

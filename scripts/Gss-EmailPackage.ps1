@@ -812,6 +812,132 @@ function ConvertTo-GssMetricEvidenceCard {
     }
 }
 
+function Test-GssNativeFiniteNumber {
+    param([object]$Value)
+
+    $isNativeNumber =
+        $Value -is [byte] -or
+        $Value -is [sbyte] -or
+        $Value -is [int16] -or
+        $Value -is [uint16] -or
+        $Value -is [int32] -or
+        $Value -is [uint32] -or
+        $Value -is [int64] -or
+        $Value -is [uint64] -or
+        $Value -is [single] -or
+        $Value -is [double] -or
+        $Value -is [decimal]
+    if (-not $isNativeNumber) { return $false }
+
+    $number = [double]$Value
+    return -not [double]::IsNaN($number) -and -not [double]::IsInfinity($number)
+}
+
+function Get-GssRequiredEvidenceProperty {
+    param(
+        [Parameter(Mandatory)][object]$Card,
+        [Parameter(Mandatory)][string]$PropertyName,
+        [Parameter(Mandatory)][string]$CardLabel
+    )
+
+    $property = $Card.PSObject.Properties[$PropertyName]
+    if ($null -eq $property) {
+        throw "GSS analysis evidence contract violation: $CardLabel is missing required property '$PropertyName'."
+    }
+    return $property.Value
+}
+
+function Assert-GssMetricEvidenceCardContract {
+    param(
+        [Parameter(Mandatory)][object]$Card,
+        [Parameter(Mandatory)][string]$CardLabel
+    )
+
+    foreach ($propertyName in @('evidence_id', 'restaurant_id', 'metric_key', 'metric')) {
+        $value = Get-GssRequiredEvidenceProperty -Card $Card -PropertyName $propertyName -CardLabel $CardLabel
+        if ([string]::IsNullOrWhiteSpace([string]$value)) {
+            throw "GSS analysis evidence contract violation: $CardLabel has an empty '$propertyName'."
+        }
+    }
+
+    $direction = Get-GssRequiredEvidenceProperty -Card $Card -PropertyName 'direction' -CardLabel $CardLabel
+    if ($direction -notin @('higher_is_better', 'lower_is_better')) {
+        throw "GSS analysis evidence contract violation: $CardLabel has invalid direction '$direction'."
+    }
+    $lowerIsBetter = Get-GssRequiredEvidenceProperty -Card $Card -PropertyName 'lower_is_better' -CardLabel $CardLabel
+    if ($lowerIsBetter -isnot [bool]) {
+        throw "GSS analysis evidence contract violation: $CardLabel property 'lower_is_better' must be Boolean."
+    }
+    if ([bool]$lowerIsBetter -ne ($direction -eq 'lower_is_better')) {
+        throw "GSS analysis evidence contract violation: $CardLabel direction conflicts with 'lower_is_better'."
+    }
+
+    $rollingValue = Get-GssRequiredEvidenceProperty -Card $Card -PropertyName 'rolling_value' -CardLabel $CardLabel
+    if (-not (Test-GssNativeFiniteNumber $rollingValue)) {
+        throw "GSS analysis evidence contract violation: $CardLabel property 'rolling_value' must be a native finite number."
+    }
+    foreach ($propertyName in @('change_vs_previous_window', 'change_vs_prior_year', 'vs_franchise')) {
+        $value = Get-GssRequiredEvidenceProperty -Card $Card -PropertyName $propertyName -CardLabel $CardLabel
+        if ($null -ne $value -and -not (Test-GssNativeFiniteNumber $value)) {
+            throw "GSS analysis evidence contract violation: $CardLabel property '$propertyName' must be null or a native finite number."
+        }
+    }
+}
+
+function Assert-GssThemeEvidenceCardContract {
+    param(
+        [Parameter(Mandatory)][object]$Card,
+        [Parameter(Mandatory)][string]$CardLabel
+    )
+
+    foreach ($propertyName in @('theme_id', 'restaurant_id', 'category')) {
+        $value = Get-GssRequiredEvidenceProperty -Card $Card -PropertyName $propertyName -CardLabel $CardLabel
+        if ([string]::IsNullOrWhiteSpace([string]$value)) {
+            throw "GSS analysis evidence contract violation: $CardLabel has an empty '$propertyName'."
+        }
+    }
+
+    foreach ($propertyName in @('unique_response_count', 'concern_count', 'positive_count', 'do_not_contact_count')) {
+        $value = Get-GssRequiredEvidenceProperty -Card $Card -PropertyName $propertyName -CardLabel $CardLabel
+        if (-not (Test-GssNativeFiniteNumber $value) -or [double]$value -lt 0 -or [double]$value -ne [math]::Truncate([double]$value)) {
+            throw "GSS analysis evidence contract violation: $CardLabel property '$propertyName' must be a nonnegative native integer."
+        }
+    }
+}
+
+function Test-GssAnalysisEvidenceContract {
+    param([Parameter(Mandatory)][object]$Analysis)
+
+    foreach ($propertyName in @('metric_evidence', 'theme_evidence', 'evidence_cards')) {
+        if ($null -eq $Analysis.PSObject.Properties[$propertyName]) {
+            throw "GSS analysis evidence contract violation: analysis is missing required property '$propertyName'."
+        }
+    }
+
+    $unifiedCards = @($Analysis.evidence_cards)
+    foreach ($card in @($Analysis.metric_evidence)) {
+        $evidenceId = [string](Get-GssRequiredEvidenceProperty -Card $card -PropertyName 'evidence_id' -CardLabel 'metric evidence card')
+        Assert-GssMetricEvidenceCardContract -Card $card -CardLabel "metric evidence '$evidenceId'"
+        $matches = @($unifiedCards | Where-Object { [string]$_.evidence_id -eq $evidenceId })
+        if ($matches.Count -ne 1) {
+            throw "GSS analysis evidence contract violation: metric evidence '$evidenceId' must appear exactly once in evidence_cards."
+        }
+        Assert-GssMetricEvidenceCardContract -Card $matches[0] -CardLabel "evidence_cards metric '$evidenceId'"
+    }
+
+    foreach ($card in @($Analysis.theme_evidence)) {
+        $themeId = [string](Get-GssRequiredEvidenceProperty -Card $card -PropertyName 'theme_id' -CardLabel 'theme evidence card')
+        Assert-GssThemeEvidenceCardContract -Card $card -CardLabel "theme evidence '$themeId'"
+        $matches = @($unifiedCards | Where-Object { [string]$_.theme_id -eq $themeId })
+        if ($matches.Count -ne 1) {
+            throw "GSS analysis evidence contract violation: theme evidence '$themeId' must appear exactly once in evidence_cards."
+        }
+        Assert-GssThemeEvidenceCardContract -Card $matches[0] -CardLabel "evidence_cards theme '$themeId'"
+    }
+
+    return $true
+}
+
 function New-GssEvidencePreviewText {
     param([object]$Analysis, [object]$Feedback, [datetime]$ReportingDate)
 
@@ -915,6 +1041,7 @@ function Test-GssExistingEmailPackage {
     if ([string]$analysis.feedback_selection_sha256 -ne [string]$manifest.feedback_selection_sha256) {
         throw "Existing deterministic package analysis feedback selection does not match its manifest: $PackageId"
     }
+    $null = Test-GssAnalysisEvidenceContract -Analysis $analysis
     $availableEvidenceIds = @(
         @($analysis.portfolio_evidence) + @($analysis.metric_evidence) + @($analysis.sanitized_feedback) |
             ForEach-Object { [string]$_.evidence_id } |
@@ -1140,6 +1267,7 @@ function New-GssEmailPackage {
         evidence_cards = @($portfolioEvidence) + @($metricEvidence) + @($themeEvidence) + @($feedback.Cards)
         privacy = $feedback.Privacy
     }
+    $null = Test-GssAnalysisEvidenceContract -Analysis $analysisDocument
 
     $outbox = Join-Path (Join-Path $FolderPath '_automation_runs') 'email_outbox'
     New-Item -ItemType Directory -Path $outbox -Force | Out-Null

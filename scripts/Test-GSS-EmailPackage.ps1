@@ -25,6 +25,11 @@ function Assert-ThrowsLike {
     }
 }
 
+function Copy-TestJsonObject {
+    param([Parameter(Mandatory)][object]$Value)
+    return ($Value | ConvertTo-Json -Depth 20 | ConvertFrom-Json)
+}
+
 function ConvertTo-TestExcelColumn {
     param([int]$Number)
     $value = $Number
@@ -283,7 +288,43 @@ try {
     Assert-True (@($manifest.evidence_ids) -notcontains $serviceThemeEvidence.theme_id) 'Theme ID remains separate from evidence IDs'
     Assert-True (-not [string]::IsNullOrWhiteSpace([string]$analysisJson.metric_evidence[0].display_text)) 'Metric evidence has deterministic display text'
     Assert-Equal ([double]$analysisJson.metric_evidence[0].rolling_value) ([double]$finding.Current) 'High-precision native metric survives package serialization'
+    Assert-Equal ([double]$analysisJson.metric_evidence[0].change_vs_previous_window) ([double]$finding.ChangeVsPreviousRollingWindow) 'Metric evidence previous-window delta contract'
+    Assert-Equal ([double]$analysisJson.metric_evidence[0].change_vs_prior_year) ([double]$finding.YoYImprovement) 'Metric evidence prior-year delta contract'
+    Assert-Equal ([double]$analysisJson.metric_evidence[0].vs_franchise) ([double]$finding.VsAllFranchisees) 'Metric evidence franchise delta contract'
+    Assert-Equal $analysisJson.metric_evidence[0].metric_key $finding.RawMetric 'Metric evidence key contract'
     Assert-Equal $analysisJson.metric_evidence[0].direction 'higher_is_better' 'Metric evidence direction contract'
+    Assert-True ($analysisJson.metric_evidence[0].lower_is_better -is [bool] -and -not $analysisJson.metric_evidence[0].lower_is_better) 'Metric evidence lower-is-better Boolean contract'
+    Assert-Equal ([int]$serviceThemeEvidence.unique_response_count) 2 'Theme evidence response-count contract'
+    Assert-Equal ([int]$serviceThemeEvidence.concern_count) 0 'Theme evidence concern-count contract'
+    Assert-Equal ([int]$serviceThemeEvidence.positive_count) 2 'Theme evidence positive-count contract'
+    Assert-Equal ([int]$serviceThemeEvidence.do_not_contact_count) 1 'Theme evidence do-not-contact-count contract'
+    Assert-True (Test-GssAnalysisEvidenceContract -Analysis $analysisJson) 'Serialized analysis satisfies structured evidence contract'
+
+    $nullableComparison = Copy-TestJsonObject $analysisJson
+    $nullableMetricId = [string]$nullableComparison.metric_evidence[0].evidence_id
+    $nullableComparison.metric_evidence[0].change_vs_previous_window = $null
+    ($nullableComparison.evidence_cards | Where-Object { [string]$_.evidence_id -eq $nullableMetricId }).change_vs_previous_window = $null
+    Assert-True (Test-GssAnalysisEvidenceContract -Analysis $nullableComparison) 'Nullable metric comparison remains valid'
+
+    $missingRollingValue = Copy-TestJsonObject $analysisJson
+    $missingRollingValue.metric_evidence[0].PSObject.Properties.Remove('rolling_value')
+    Assert-ThrowsLike { Test-GssAnalysisEvidenceContract -Analysis $missingRollingValue } '*rolling_value*' 'Missing rolling value violates evidence contract'
+
+    $stringRollingValue = Copy-TestJsonObject $analysisJson
+    $stringRollingValue.metric_evidence[0].rolling_value = '78.1'
+    Assert-ThrowsLike { Test-GssAnalysisEvidenceContract -Analysis $stringRollingValue } '*native finite number*' 'Quoted metric number violates evidence contract'
+
+    $directionConflict = Copy-TestJsonObject $analysisJson
+    $directionConflict.metric_evidence[0].lower_is_better = $true
+    Assert-ThrowsLike { Test-GssAnalysisEvidenceContract -Analysis $directionConflict } '*direction conflicts*' 'Metric direction and Boolean must agree'
+
+    $fractionalThemeCount = Copy-TestJsonObject $analysisJson
+    $fractionalThemeCount.theme_evidence[0].concern_count = 0.5
+    Assert-ThrowsLike { Test-GssAnalysisEvidenceContract -Analysis $fractionalThemeCount } '*nonnegative native integer*' 'Fractional theme count violates evidence contract'
+
+    $negativeThemeCount = Copy-TestJsonObject $analysisJson
+    $negativeThemeCount.theme_evidence[0].do_not_contact_count = -1
+    Assert-ThrowsLike { Test-GssAnalysisEvidenceContract -Analysis $negativeThemeCount } '*nonnegative native integer*' 'Negative theme count violates evidence contract'
     Assert-Equal $analysisJson.restaurants[0].name 'Richmond' 'Restaurant display name omits source identifier'
     Assert-Equal @($analysisJson.portfolio_evidence).Count 1 'Portfolio reporting basis evidence exists without a portfolio finding'
     Assert-Equal $analysisJson.portfolio_evidence[0].restaurant_id 'portfolio' 'Portfolio evidence uses the cross-repo restaurant identifier'

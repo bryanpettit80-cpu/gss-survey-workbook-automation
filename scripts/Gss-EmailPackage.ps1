@@ -319,7 +319,7 @@ function Get-GssPiiRedactionRules {
     return @(
         [pscustomobject]@{ Label = 'email'; Pattern = '(?i)\b[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}\b'; Replacement = '[REDACTED EMAIL]' },
         [pscustomobject]@{ Label = 'url'; Pattern = '(?i)(?<![@\w])(?<url>(?:(?:https?://|www\.)[^\s<>"\x27]*?|(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}(?:/[^\s<>"\x27]*?)?))(?<punct>[.,;:!?)}\]]*)(?=\s|$)'; Replacement = '[REDACTED URL]${punct}' },
-        [pscustomobject]@{ Label = 'phone'; Pattern = '(?<![\w\d])(?:(?=(?:\D*\d){10,})(?:\+\d{1,3}[\s().-]*)?(?:\d[\s().-]*){9,14}\d|\d{3}[\s.-]\d{4})(?![\w\d])'; Replacement = '[REDACTED PHONE]' },
+        [pscustomobject]@{ Label = 'phone'; Pattern = '(?<![\w\d.])(?:\+?\d{10,15}|(?:\+?\d{1,3}[\s.-]+)?(?:\(\d{2,4}\)|\d{2,4})[\s.-]+\d{2,4}[\s.-]+\d{4}|\d{3}[- ]\d{4})(?![\w\d]|\.\d)'; Replacement = '[REDACTED PHONE]' },
         [pscustomobject]@{ Label = 'booking_identifier'; Pattern = '(?i)\b(?:check|confirmation|booking|reservation|resy)\s*(?:(?:id|number|no\.?)\s*)?(?:#|:)?\s*(?=[A-Z0-9-]{4,}\b)(?=[A-Z0-9-]*\d)[A-Z0-9-]{4,}\b'; Replacement = '[REDACTED BOOKING ID]' }
     )
 }
@@ -445,6 +445,31 @@ function Read-GssFeedbackLedger {
     catch {
         throw "Feedback ledger is corrupt: $($_.Exception.Message)"
     }
+}
+
+function Invoke-GssFileSystemRetry {
+    param(
+        [Parameter(Mandatory)][scriptblock]$Operation,
+        [int]$MaxAttempts = 12,
+        [int]$DelayMilliseconds = 500
+    )
+
+    if ($MaxAttempts -lt 1) { throw 'MaxAttempts must be at least 1.' }
+    if ($DelayMilliseconds -lt 0) { throw 'DelayMilliseconds cannot be negative.' }
+
+    $lastError = $null
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        try {
+            return (& $Operation)
+        }
+        catch {
+            $lastError = $_
+            if ($attempt -lt $MaxAttempts -and $DelayMilliseconds -gt 0) {
+                Start-Sleep -Milliseconds $DelayMilliseconds
+            }
+        }
+    }
+    throw $lastError
 }
 
 function Write-GssFeedbackLedger {
@@ -787,6 +812,132 @@ function ConvertTo-GssMetricEvidenceCard {
     }
 }
 
+function Test-GssNativeFiniteNumber {
+    param([object]$Value)
+
+    $isNativeNumber =
+        $Value -is [byte] -or
+        $Value -is [sbyte] -or
+        $Value -is [int16] -or
+        $Value -is [uint16] -or
+        $Value -is [int32] -or
+        $Value -is [uint32] -or
+        $Value -is [int64] -or
+        $Value -is [uint64] -or
+        $Value -is [single] -or
+        $Value -is [double] -or
+        $Value -is [decimal]
+    if (-not $isNativeNumber) { return $false }
+
+    $number = [double]$Value
+    return -not [double]::IsNaN($number) -and -not [double]::IsInfinity($number)
+}
+
+function Get-GssRequiredEvidenceProperty {
+    param(
+        [Parameter(Mandatory)][object]$Card,
+        [Parameter(Mandatory)][string]$PropertyName,
+        [Parameter(Mandatory)][string]$CardLabel
+    )
+
+    $property = $Card.PSObject.Properties[$PropertyName]
+    if ($null -eq $property) {
+        throw "GSS analysis evidence contract violation: $CardLabel is missing required property '$PropertyName'."
+    }
+    return $property.Value
+}
+
+function Assert-GssMetricEvidenceCardContract {
+    param(
+        [Parameter(Mandatory)][object]$Card,
+        [Parameter(Mandatory)][string]$CardLabel
+    )
+
+    foreach ($propertyName in @('evidence_id', 'restaurant_id', 'metric_key', 'metric')) {
+        $value = Get-GssRequiredEvidenceProperty -Card $Card -PropertyName $propertyName -CardLabel $CardLabel
+        if ([string]::IsNullOrWhiteSpace([string]$value)) {
+            throw "GSS analysis evidence contract violation: $CardLabel has an empty '$propertyName'."
+        }
+    }
+
+    $direction = Get-GssRequiredEvidenceProperty -Card $Card -PropertyName 'direction' -CardLabel $CardLabel
+    if ($direction -notin @('higher_is_better', 'lower_is_better')) {
+        throw "GSS analysis evidence contract violation: $CardLabel has invalid direction '$direction'."
+    }
+    $lowerIsBetter = Get-GssRequiredEvidenceProperty -Card $Card -PropertyName 'lower_is_better' -CardLabel $CardLabel
+    if ($lowerIsBetter -isnot [bool]) {
+        throw "GSS analysis evidence contract violation: $CardLabel property 'lower_is_better' must be Boolean."
+    }
+    if ([bool]$lowerIsBetter -ne ($direction -eq 'lower_is_better')) {
+        throw "GSS analysis evidence contract violation: $CardLabel direction conflicts with 'lower_is_better'."
+    }
+
+    $rollingValue = Get-GssRequiredEvidenceProperty -Card $Card -PropertyName 'rolling_value' -CardLabel $CardLabel
+    if (-not (Test-GssNativeFiniteNumber $rollingValue)) {
+        throw "GSS analysis evidence contract violation: $CardLabel property 'rolling_value' must be a native finite number."
+    }
+    foreach ($propertyName in @('change_vs_previous_window', 'change_vs_prior_year', 'vs_franchise')) {
+        $value = Get-GssRequiredEvidenceProperty -Card $Card -PropertyName $propertyName -CardLabel $CardLabel
+        if ($null -ne $value -and -not (Test-GssNativeFiniteNumber $value)) {
+            throw "GSS analysis evidence contract violation: $CardLabel property '$propertyName' must be null or a native finite number."
+        }
+    }
+}
+
+function Assert-GssThemeEvidenceCardContract {
+    param(
+        [Parameter(Mandatory)][object]$Card,
+        [Parameter(Mandatory)][string]$CardLabel
+    )
+
+    foreach ($propertyName in @('theme_id', 'restaurant_id', 'category')) {
+        $value = Get-GssRequiredEvidenceProperty -Card $Card -PropertyName $propertyName -CardLabel $CardLabel
+        if ([string]::IsNullOrWhiteSpace([string]$value)) {
+            throw "GSS analysis evidence contract violation: $CardLabel has an empty '$propertyName'."
+        }
+    }
+
+    foreach ($propertyName in @('unique_response_count', 'concern_count', 'positive_count', 'do_not_contact_count')) {
+        $value = Get-GssRequiredEvidenceProperty -Card $Card -PropertyName $propertyName -CardLabel $CardLabel
+        if (-not (Test-GssNativeFiniteNumber $value) -or [double]$value -lt 0 -or [double]$value -ne [math]::Truncate([double]$value)) {
+            throw "GSS analysis evidence contract violation: $CardLabel property '$propertyName' must be a nonnegative native integer."
+        }
+    }
+}
+
+function Test-GssAnalysisEvidenceContract {
+    param([Parameter(Mandatory)][object]$Analysis)
+
+    foreach ($propertyName in @('metric_evidence', 'theme_evidence', 'evidence_cards')) {
+        if ($null -eq $Analysis.PSObject.Properties[$propertyName]) {
+            throw "GSS analysis evidence contract violation: analysis is missing required property '$propertyName'."
+        }
+    }
+
+    $unifiedCards = @($Analysis.evidence_cards)
+    foreach ($card in @($Analysis.metric_evidence)) {
+        $evidenceId = [string](Get-GssRequiredEvidenceProperty -Card $card -PropertyName 'evidence_id' -CardLabel 'metric evidence card')
+        Assert-GssMetricEvidenceCardContract -Card $card -CardLabel "metric evidence '$evidenceId'"
+        $matches = @($unifiedCards | Where-Object { [string]$_.evidence_id -eq $evidenceId })
+        if ($matches.Count -ne 1) {
+            throw "GSS analysis evidence contract violation: metric evidence '$evidenceId' must appear exactly once in evidence_cards."
+        }
+        Assert-GssMetricEvidenceCardContract -Card $matches[0] -CardLabel "evidence_cards metric '$evidenceId'"
+    }
+
+    foreach ($card in @($Analysis.theme_evidence)) {
+        $themeId = [string](Get-GssRequiredEvidenceProperty -Card $card -PropertyName 'theme_id' -CardLabel 'theme evidence card')
+        Assert-GssThemeEvidenceCardContract -Card $card -CardLabel "theme evidence '$themeId'"
+        $matches = @($unifiedCards | Where-Object { [string]$_.theme_id -eq $themeId })
+        if ($matches.Count -ne 1) {
+            throw "GSS analysis evidence contract violation: theme evidence '$themeId' must appear exactly once in evidence_cards."
+        }
+        Assert-GssThemeEvidenceCardContract -Card $matches[0] -CardLabel "evidence_cards theme '$themeId'"
+    }
+
+    return $true
+}
+
 function New-GssEvidencePreviewText {
     param([object]$Analysis, [object]$Feedback, [datetime]$ReportingDate)
 
@@ -890,6 +1041,7 @@ function Test-GssExistingEmailPackage {
     if ([string]$analysis.feedback_selection_sha256 -ne [string]$manifest.feedback_selection_sha256) {
         throw "Existing deterministic package analysis feedback selection does not match its manifest: $PackageId"
     }
+    $null = Test-GssAnalysisEvidenceContract -Analysis $analysis
     $availableEvidenceIds = @(
         @($analysis.portfolio_evidence) + @($analysis.metric_evidence) + @($analysis.sanitized_feedback) |
             ForEach-Object { [string]$_.evidence_id } |
@@ -1115,6 +1267,7 @@ function New-GssEmailPackage {
         evidence_cards = @($portfolioEvidence) + @($metricEvidence) + @($themeEvidence) + @($feedback.Cards)
         privacy = $feedback.Privacy
     }
+    $null = Test-GssAnalysisEvidenceContract -Analysis $analysisDocument
 
     $outbox = Join-Path (Join-Path $FolderPath '_automation_runs') 'email_outbox'
     New-Item -ItemType Directory -Path $outbox -Force | Out-Null
@@ -1251,7 +1404,14 @@ function New-GssEmailPackage {
         Write-GssFeedbackLedger -Ledger $feedback.NextLedger -Path $LedgerPath
         # This marker is the final package-file write; the directory is then promoted atomically.
         "$($script:GssEmailPackageSchemaVersion)`n$packageId" | Set-Content -LiteralPath (Join-Path $stagingPath 'READY') -Encoding ASCII
-        Move-Item -LiteralPath $stagingPath -Destination $packagePath
+        Invoke-GssFileSystemRetry -Operation {
+            Move-Item -LiteralPath $stagingPath -Destination $packagePath
+        }
+        $null = Test-GssExistingEmailPackage `
+            -PackagePath $packagePath `
+            -PackageId $packageId `
+            -ExpectedSourceDescriptors $sourceDescriptors `
+            -ExpectedFeedbackSelectionFingerprint $feedback.SelectionFingerprint
         return [pscustomobject]@{
             EmailReadiness = 'Ready'
             PackageId = $packageId
@@ -1262,13 +1422,21 @@ function New-GssEmailPackage {
         }
     }
     catch {
+        $packageError = $_
         if (Test-Path -LiteralPath $stagingPath -PathType Container) {
             $resolvedOutbox = [System.IO.Path]::GetFullPath($outbox).TrimEnd('\') + '\'
             $resolvedStaging = [System.IO.Path]::GetFullPath($stagingPath)
             if ($resolvedStaging.StartsWith($resolvedOutbox, [System.StringComparison]::OrdinalIgnoreCase)) {
-                Remove-Item -LiteralPath $resolvedStaging -Recurse -Force
+                try {
+                    Invoke-GssFileSystemRetry -Operation {
+                        Remove-Item -LiteralPath $resolvedStaging -Recurse -Force
+                    }
+                }
+                catch {
+                    $packageError.Exception.Data['GssStagingCleanupError'] = $_.Exception.Message
+                }
             }
         }
-        throw
+        throw $packageError
     }
 }

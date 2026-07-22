@@ -453,6 +453,22 @@ try {
     $package = New-GssEmailPackage -FolderPath $folder -RunLog $runLog -AnalysisResult $analysis -LedgerPath $ledgerPath
     Assert-Equal $package.EmailReadiness 'Ready' 'Package email readiness'
     Assert-True (Test-Path -LiteralPath $package.ReadyMarkerPath -PathType Leaf) 'Ready marker exists'
+    $strictUtf8 = New-Object System.Text.UTF8Encoding($false, $true)
+    foreach ($portableName in @('email_manifest.json', 'analysis.json', 'email_preview.txt', 'email_preview.html')) {
+        $portablePath = Join-Path $package.PackagePath $portableName
+        $portableBytes = [System.IO.File]::ReadAllBytes($portablePath)
+        $hasUtf8Bom = $portableBytes.Length -ge 3 -and
+            $portableBytes[0] -eq 0xEF -and
+            $portableBytes[1] -eq 0xBB -and
+            $portableBytes[2] -eq 0xBF
+        Assert-True (-not $hasUtf8Bom) "$portableName is UTF-8 without a BOM"
+        try {
+            $null = $strictUtf8.GetString($portableBytes)
+        }
+        catch [System.Text.DecoderFallbackException] {
+            throw "Assertion failed for strict UTF-8 package output: $portableName."
+        }
+    }
     $manifest = Get-Content -Raw -LiteralPath $package.ManifestPath | ConvertFrom-Json
     $analysisJson = Get-Content -Raw -LiteralPath (Join-Path $package.PackagePath 'analysis.json') | ConvertFrom-Json
     Assert-Equal $manifest.schema_version 'gss-email-package/v1' 'Package schema version'

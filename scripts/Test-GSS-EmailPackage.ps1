@@ -25,6 +25,44 @@ function Assert-ThrowsLike {
     }
 }
 
+$tokens = $null
+$parseErrors = $null
+$sourceAst = [System.Management.Automation.Language.Parser]::ParseFile(
+    (Join-Path $scriptRoot 'Gss-EmailPackage.ps1'),
+    [ref]$tokens,
+    [ref]$parseErrors
+)
+Assert-Equal @($parseErrors).Count 0 'Email package source parses cleanly'
+
+$retryFunctionAst = $sourceAst.Find({
+    param($node)
+    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -eq 'Invoke-GssFileSystemRetry'
+}, $true)
+$retryCatchAsts = @($retryFunctionAst.Body.FindAll({
+    param($node) $node -is [System.Management.Automation.Language.CatchClauseAst]
+}, $true))
+$retryRethrows = @($retryCatchAsts[0].Body.FindAll({
+    param($node) $node -is [System.Management.Automation.Language.ThrowStatementAst]
+}, $true))
+Assert-Equal $retryRethrows.Count 1 'Final retry rethrows from inside the operation catch'
+Assert-True ($null -eq $retryRethrows[0].Pipeline) 'Final retry uses bare throw'
+
+$packageFunctionAst = $sourceAst.Find({
+    param($node)
+    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -eq 'New-GssEmailPackage'
+}, $true)
+$packageTerminalThrowCatches = @($packageFunctionAst.Body.FindAll({
+    param($node)
+    $node -is [System.Management.Automation.Language.CatchClauseAst] -and
+        $node.Body.Statements.Count -gt 0 -and
+        $node.Body.Statements[-1] -is [System.Management.Automation.Language.ThrowStatementAst]
+}, $true))
+Assert-Equal $packageTerminalThrowCatches.Count 1 'Package creation has one terminal rethrow catch'
+$packageRethrow = $packageTerminalThrowCatches[0].Body.Statements[-1]
+Assert-True ($null -eq $packageRethrow.Pipeline) 'Package creation uses bare throw after cleanup'
+
 function Copy-TestJsonObject {
     param([Parameter(Mandatory)][object]$Value)
     return ($Value | ConvertTo-Json -Depth 20 | ConvertFrom-Json)
@@ -201,6 +239,27 @@ try {
     Assert-ThrowsLike {
         Invoke-GssFileSystemRetry -MaxAttempts 2 -DelayMilliseconds 1 -Operation { throw 'Synthetic permanent failure' }
     } '*Synthetic permanent failure*' 'Filesystem retry preserves the final operation error'
+    $retryContextProbe = [pscustomobject]@{ InnerError = $null }
+    $retryContextError = $null
+    try {
+        Invoke-GssFileSystemRetry -MaxAttempts 1 -DelayMilliseconds 0 -Operation {
+            try {
+                throw [System.InvalidOperationException]::new('Synthetic retry context failure')
+            }
+            catch {
+                $retryContextProbe.InnerError = $_
+                throw
+            }
+        }
+    }
+    catch {
+        $retryContextError = $_
+    }
+    Assert-True ($null -ne $retryContextError) 'Final retry error is rethrown'
+    Assert-True ([object]::ReferenceEquals($retryContextProbe.InnerError.Exception, $retryContextError.Exception)) 'Final retry preserves the original exception instance'
+    Assert-Equal $retryContextError.FullyQualifiedErrorId $retryContextProbe.InnerError.FullyQualifiedErrorId 'Final retry preserves the original error ID'
+    Assert-Equal $retryContextError.InvocationInfo.PositionMessage $retryContextProbe.InnerError.InvocationInfo.PositionMessage 'Final retry preserves the original error position'
+    Assert-Equal $retryContextError.ScriptStackTrace $retryContextProbe.InnerError.ScriptStackTrace 'Final retry preserves the original script stack'
 
     $promotionOutbox = Join-Path $temporaryRoot 'promotion-retry'
     $samePromotionPath = Join-Path $promotionOutbox 'same-path-package'
@@ -344,6 +403,53 @@ try {
         RestaurantFindings = @(Select-GssRestaurantFindings @($finding))
     }
     $ledgerPath = Join-Path $folder '_automation_runs\state\fixture_ledger.json'
+    $originalPublisher = (Get-Command Publish-GssStagedEmailPackage).ScriptBlock
+    $publicationContextProbe = [pscustomobject]@{ InnerError = $null; Lock = $null; StagingPath = $null }
+    $publicationContextError = $null
+    try {
+        Set-Item -LiteralPath Function:Publish-GssStagedEmailPackage -Value {
+            param(
+                [string]$StagingPath,
+                [string]$PackagePath,
+                [scriptblock]$ValidationOperation,
+                [int]$MaxAttempts = 12,
+                [int]$DelayMilliseconds = 500
+            )
+            $publicationContextProbe.StagingPath = $StagingPath
+            $publicationContextProbe.Lock = [System.IO.File]::Open(
+                (Join-Path $StagingPath 'READY'),
+                [System.IO.FileMode]::Open,
+                [System.IO.FileAccess]::Read,
+                [System.IO.FileShare]::None
+            )
+            try {
+                throw [System.IO.IOException]::new('Synthetic publication context failure')
+            }
+            catch {
+                $publicationContextProbe.InnerError = $_
+                throw
+            }
+        }
+        try {
+            $null = New-GssEmailPackage -FolderPath $folder -RunLog $runLog -AnalysisResult $analysis -LedgerPath $ledgerPath
+        }
+        catch {
+            $publicationContextError = $_
+        }
+    }
+    finally {
+        if ($publicationContextProbe.Lock) { $publicationContextProbe.Lock.Dispose() }
+        Set-Item -LiteralPath Function:Publish-GssStagedEmailPackage -Value $originalPublisher
+    }
+    Assert-True ($null -ne $publicationContextError) 'Publication error is rethrown after staging cleanup'
+    Assert-True ([object]::ReferenceEquals($publicationContextProbe.InnerError.Exception, $publicationContextError.Exception)) 'Publication catch preserves the original exception instance'
+    Assert-Equal $publicationContextError.FullyQualifiedErrorId $publicationContextProbe.InnerError.FullyQualifiedErrorId 'Publication catch preserves the original error ID'
+    Assert-Equal $publicationContextError.InvocationInfo.PositionMessage $publicationContextProbe.InnerError.InvocationInfo.PositionMessage 'Publication catch preserves the original error position'
+    Assert-Equal $publicationContextError.ScriptStackTrace $publicationContextProbe.InnerError.ScriptStackTrace 'Publication catch preserves the original script stack'
+    Assert-True $publicationContextError.Exception.Data.Contains('GssStagingCleanupError') 'Publication error retains staging cleanup failure detail'
+    Assert-True (Test-Path -LiteralPath $publicationContextProbe.StagingPath -PathType Container) 'Locked staging directory remains available for recovery'
+    Remove-Item -LiteralPath $publicationContextProbe.StagingPath -Recurse -Force
+
     $package = New-GssEmailPackage -FolderPath $folder -RunLog $runLog -AnalysisResult $analysis -LedgerPath $ledgerPath
     Assert-Equal $package.EmailReadiness 'Ready' 'Package email readiness'
     Assert-True (Test-Path -LiteralPath $package.ReadyMarkerPath -PathType Leaf) 'Ready marker exists'

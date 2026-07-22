@@ -23,6 +23,36 @@ function Get-GssStringSha256 {
     }
 }
 
+function Write-GssUtf8NoBomFile {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$Value
+    )
+
+    $encoding = New-Object System.Text.UTF8Encoding($false, $true)
+    [System.IO.File]::WriteAllText($Path, $Value + [Environment]::NewLine, $encoding)
+}
+
+function Assert-GssUtf8NoBomFile {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$Label
+    )
+
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
+        throw "Package output must be BOM-free UTF-8: $Label"
+    }
+
+    $strictUtf8 = New-Object System.Text.UTF8Encoding($false, $true)
+    try {
+        $null = $strictUtf8.GetString($bytes)
+    }
+    catch [System.Text.DecoderFallbackException] {
+        throw "Package output must be valid UTF-8: $Label"
+    }
+}
+
 function Get-GssZipEntryText {
     param([object]$Archive, [string]$EntryName)
 
@@ -1371,9 +1401,9 @@ function New-GssEmailPackage {
         $textPath = Join-Path $stagingPath 'email_preview.txt'
         $htmlPath = Join-Path $stagingPath 'email_preview.html'
         $manifestPath = Join-Path $stagingPath 'email_manifest.json'
-        $analysisDocument | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $analysisPath -Encoding UTF8
-        $previewText | Set-Content -LiteralPath $textPath -Encoding UTF8
-        $previewHtml | Set-Content -LiteralPath $htmlPath -Encoding UTF8
+        Write-GssUtf8NoBomFile -Path $analysisPath -Value ($analysisDocument | ConvertTo-Json -Depth 12)
+        Write-GssUtf8NoBomFile -Path $textPath -Value $previewText
+        Write-GssUtf8NoBomFile -Path $htmlPath -Value $previewHtml
 
         $sourceLogDescriptor = @($sourceDescriptors | Where-Object role -eq 'run_log')
         if ($sourceLogDescriptor.Count -ne 1) { throw 'Package source inventory must contain exactly one run_log descriptor.' }
@@ -1408,13 +1438,14 @@ function New-GssEmailPackage {
             theme_ids = @($feedback.Themes.theme_id | Sort-Object -Unique)
             privacy = $feedback.Privacy
         }
-        $manifest | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+        Write-GssUtf8NoBomFile -Path $manifestPath -Value ($manifest | ConvertTo-Json -Depth 12)
 
         foreach ($requiredName in @('email_manifest.json', 'analysis.json', 'email_preview.txt', 'email_preview.html')) {
             $requiredPath = Join-Path $stagingPath $requiredName
             if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf) -or (Get-Item -LiteralPath $requiredPath).Length -le 0) {
                 throw "Package output is empty or missing: $requiredName"
             }
+            Assert-GssUtf8NoBomFile -Path $requiredPath -Label $requiredName
         }
         foreach ($attachment in $attachments) {
             $attachmentPath = Join-Path $stagingPath $attachment.path.Replace('/', '\')

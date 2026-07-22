@@ -177,7 +177,7 @@ try {
     Assert-Equal $controlProbe.RedactionCount 2 'C0 and bidi controls are counted as redactions'
     Assert-True (-not [regex]::IsMatch($controlProbe.Text, (Get-GssUnsafeControlPattern))) 'C0 and bidi controls are removed before AI processing'
     $phonePattern = @(Get-GssPiiRedactionRules | Where-Object Label -eq 'phone')[0].Pattern
-    foreach ($phoneProbe in @('212-555-0199', '555-1212', '(212) 555-0199', '212.555.0199', '2125550199', '+44 20 7946 0958', '(212)5550199', '+1 (212)5550199', '212-5551212')) {
+    foreach ($phoneProbe in @('212-555-0199', '555-1212', '(212) 555-0199', '212.555.0199', '212.5550199', '+1 212.5550199', '2125550199', '+44 20 7946 0958', '(212)5550199', '+1 (212)5550199', '212-5551212')) {
         Assert-True ([regex]::IsMatch($phoneProbe, $phonePattern)) "Phone pattern recognizes $phoneProbe"
         $protectedPhone = Protect-GssFeedbackText -Text "Call $phoneProbe today." -KnownNames @()
         Assert-Equal $protectedPhone.Text 'Call [REDACTED PHONE] today.' "Phone is redacted: $phoneProbe"
@@ -185,7 +185,7 @@ try {
         Assert-True ([bool]$protectedPhone.PiiScanPassed) "Post-redaction PII scan passes: $phoneProbe"
         Assert-Equal @($protectedPhone.RemainingPiiTypes).Count 0 "No phone PII remains: $phoneProbe"
     }
-    foreach ($nonPhoneProbe in @('78.0952380952381', '78.0952381', '7.12345678', '1.123456', '1234.12345678', '2026-07-12', 'metric-9354-service')) {
+    foreach ($nonPhoneProbe in @('78.0952380952381', '78.0952381', '7.12345678', '1.123456', '100.0000000', '1234.12345678', '2026-07-12', 'metric-9354-service')) {
         Assert-True (-not [regex]::IsMatch($nonPhoneProbe, $phonePattern)) "Phone pattern rejects non-phone value $nonPhoneProbe"
         $protectedNonPhone = Protect-GssFeedbackText -Text $nonPhoneProbe -KnownNames @()
         Assert-Equal $protectedNonPhone.Text $nonPhoneProbe "Non-phone value is preserved: $nonPhoneProbe"
@@ -203,6 +203,46 @@ try {
     } '*Synthetic permanent failure*' 'Filesystem retry preserves the final operation error'
 
     $promotionOutbox = Join-Path $temporaryRoot 'promotion-retry'
+    $samePromotionPath = Join-Path $promotionOutbox 'same-path-package'
+    New-Item -ItemType Directory -Path $samePromotionPath -Force | Out-Null
+    'same-path-owner' | Set-Content -LiteralPath (Join-Path $samePromotionPath 'owner.txt') -Encoding ASCII
+    Assert-ThrowsLike {
+        Publish-GssStagedEmailPackage `
+            -StagingPath $samePromotionPath `
+            -PackagePath $samePromotionPath `
+            -MaxAttempts 1 `
+            -DelayMilliseconds 0 `
+            -ValidationOperation { throw 'Validation must not run for identical paths.' }
+    } '*must be different*' 'Identical staging and package paths are rejected before cleanup'
+    Assert-True (Test-Path -LiteralPath $samePromotionPath -PathType Container) 'Identical-path rejection preserves the source directory'
+    Assert-Equal (Get-Content -Raw -LiteralPath (Join-Path $samePromotionPath 'owner.txt')).Trim() 'same-path-owner' 'Identical-path rejection preserves source contents'
+
+    $concurrentStaging = Join-Path $promotionOutbox '.staging-concurrent'
+    $concurrentPackage = Join-Path $promotionOutbox 'concurrent-package'
+    New-Item -ItemType Directory -Path $concurrentStaging -Force | Out-Null
+    New-Item -ItemType Directory -Path $concurrentPackage -Force | Out-Null
+    'current-invocation' | Set-Content -LiteralPath (Join-Path $concurrentStaging 'owner.txt') -Encoding ASCII
+    'other-invocation' | Set-Content -LiteralPath (Join-Path $concurrentPackage 'owner.txt') -Encoding ASCII
+    $concurrentValidationProbe = [pscustomobject]@{ Count = 0 }
+    $concurrentPromotionError = $null
+    try {
+        Publish-GssStagedEmailPackage `
+            -StagingPath $concurrentStaging `
+            -PackagePath $concurrentPackage `
+            -MaxAttempts 1 `
+            -DelayMilliseconds 0 `
+            -ValidationOperation { $concurrentValidationProbe.Count++ }
+    }
+    catch {
+        $concurrentPromotionError = $_
+    }
+    Assert-True ($null -ne $concurrentPromotionError) 'Concurrent destination makes promotion fail'
+    Assert-Equal $concurrentValidationProbe.Count 0 'Concurrent destination is never validated as this invocation'
+    Assert-True (-not (Test-Path -LiteralPath $concurrentStaging)) 'Only this invocation staging directory is cleaned after the promotion race'
+    Assert-True (Test-Path -LiteralPath $concurrentPackage -PathType Container) 'Concurrent package is preserved'
+    Assert-Equal (Get-Content -Raw -LiteralPath (Join-Path $concurrentPackage 'owner.txt')).Trim() 'other-invocation' 'Concurrent package contents are preserved'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $concurrentPackage '.staging-concurrent'))) 'Staging directory is not nested in a concurrent package'
+
     $failedStaging = Join-Path $promotionOutbox '.staging-package'
     $failedPackage = Join-Path $promotionOutbox 'package'
     New-Item -ItemType Directory -Path $failedStaging -Force | Out-Null

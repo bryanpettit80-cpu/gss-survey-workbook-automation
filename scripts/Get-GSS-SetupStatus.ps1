@@ -7,6 +7,7 @@ $ErrorActionPreference = 'Stop'
 
 $scriptRoot = Split-Path -Parent $PSCommandPath
 $projectRoot = Split-Path -Parent $scriptRoot
+. (Join-Path $scriptRoot 'Gss-DriveBackup.ps1')
 
 if ([string]::IsNullOrWhiteSpace($Folder)) {
     $Folder = Split-Path -Parent $projectRoot
@@ -31,6 +32,73 @@ $dropGuideHash = if (Test-Path -LiteralPath $dropGuide) { (Get-FileHash -Literal
 $uploadGuideTemplateHash = if (Test-Path -LiteralPath $uploadGuideTemplate) { (Get-FileHash -LiteralPath $uploadGuideTemplate -Algorithm SHA256).Hash } else { $null }
 $uploadGuideHash = if (Test-Path -LiteralPath $uploadGuide) { (Get-FileHash -LiteralPath $uploadGuide -Algorithm SHA256).Hash } else { $null }
 
+$driveSettingsPath = Get-GssDriveBackupDefaultSettingsPath
+$driveSettingsExists = Test-Path -LiteralPath $driveSettingsPath -PathType Leaf
+$driveBackupConfigured = $false
+$driveBackupAvailable = $false
+$driveBackupRoot = $null
+$driveBackupFolderId = $null
+$driveBackupExpectedOwner = $null
+$driveBackupMarkerId = $null
+$driveBackupMarkerValid = $false
+$driveBackupVerificationLevel = $null
+$driveBackupRetention = $null
+$driveBackupRequiredBeforeApply = $false
+$driveBackupLatestCommittedRunId = $null
+$driveBackupError = $null
+$driveBackupCloudReadbackPath = $null
+$driveBackupCloudReadbackValid = $false
+$driveBackupCloudReadbackVerifiedAtUtc = $null
+$restoreDrillStatus = Get-GssDriveBackupRestoreDrillStatus
+if ($driveSettingsExists) {
+    try {
+        $driveContext = Get-GssDriveBackupRootContext -SettingsPath $driveSettingsPath
+        $driveBackupConfigured = $true
+        $driveBackupAvailable = $true
+        $driveBackupRoot = $driveContext.RootPath
+        $driveBackupFolderId = $driveContext.Settings.DriveFolderId
+        $driveBackupExpectedOwner = $driveContext.Settings.ExpectedOwner
+        $driveBackupMarkerId = $driveContext.Settings.MarkerId
+        $driveBackupMarkerValid = $true
+        $driveBackupVerificationLevel = $driveContext.Settings.VerificationLevel
+        $driveBackupRetention = "$($driveContext.Settings.RetentionWeekly) weekly + $($driveContext.Settings.RetentionMonthly) monthly; report-only deletion candidates"
+        $driveBackupRequiredBeforeApply = $driveContext.Settings.RequireBeforeApply
+        $driveBackupCloudReadbackPath = Join-Path $driveContext.RootPath 'commissioning-readback.json'
+        if (Test-Path -LiteralPath $driveBackupCloudReadbackPath -PathType Leaf) {
+            $cloudReadback = Read-GssDriveBackupJson -Path $driveBackupCloudReadbackPath
+            $driveBackupCloudReadbackValid = (
+                [string](Get-GssDriveBackupProperty $cloudReadback @('drive_folder_id')) -eq $driveContext.Settings.DriveFolderId -and
+                [string](Get-GssDriveBackupProperty $cloudReadback @('owner')) -eq $driveContext.Settings.ExpectedOwner -and
+                -not [bool](Get-GssDriveBackupProperty $cloudReadback @('shared')) -and
+                [int](Get-GssDriveBackupProperty $cloudReadback @('permission_count')) -eq 1 -and
+                [string](Get-GssDriveBackupProperty $cloudReadback @('verification')) -eq 'cloud_metadata_readback_verified'
+            )
+            $driveBackupCloudReadbackVerifiedAtUtc = [string](Get-GssDriveBackupProperty $cloudReadback @('verified_at_utc'))
+        }
+        $chainHead = Get-GssDriveBackupChainHead -RootPath $driveContext.RootPath
+        if ($chainHead) {
+            $driveBackupLatestCommittedRunId = $chainHead.RunId
+        }
+    }
+    catch {
+        $driveBackupError = $_.Exception.Message
+        try {
+            $settingsOnly = Get-GssDriveBackupSetting -SettingsPath $driveSettingsPath
+            $driveBackupConfigured = $true
+            $driveBackupRoot = $settingsOnly.DriveRootPath
+            $driveBackupFolderId = $settingsOnly.DriveFolderId
+            $driveBackupExpectedOwner = $settingsOnly.ExpectedOwner
+            $driveBackupMarkerId = $settingsOnly.MarkerId
+            $driveBackupVerificationLevel = $settingsOnly.VerificationLevel
+            $driveBackupRetention = "$($settingsOnly.RetentionWeekly) weekly + $($settingsOnly.RetentionMonthly) monthly; report-only deletion candidates"
+            $driveBackupRequiredBeforeApply = $settingsOnly.RequireBeforeApply
+        }
+        catch {
+            $driveBackupError = $_.Exception.Message
+        }
+    }
+}
+
 $status = [ordered]@{
     RepoRoot = $projectRoot
     DropboxFolder = $Folder
@@ -50,6 +118,33 @@ $status = [ordered]@{
     ScheduledTaskState = if ($task) { [string]$task.State } else { $null }
     ScheduledTaskEnabled = if ($task) { [bool]($task.Settings.Enabled) } else { $false }
     ScheduledTaskAction = if ($task) { ($task.Actions | ForEach-Object { "$($_.Execute) $($_.Arguments)" }) -join '; ' } else { $null }
+    DriveBackupSettingsPath = $driveSettingsPath
+    DriveBackupSettingsExists = $driveSettingsExists
+    DriveBackupConfigured = $driveBackupConfigured
+    DriveBackupAvailable = $driveBackupAvailable
+    DriveBackupRoot = $driveBackupRoot
+    DriveBackupFolderId = $driveBackupFolderId
+    DriveBackupExpectedOwner = $driveBackupExpectedOwner
+    DriveBackupMarkerId = $driveBackupMarkerId
+    DriveBackupMarkerValid = $driveBackupMarkerValid
+    DriveBackupVerificationLevel = $driveBackupVerificationLevel
+    DriveBackupRetention = $driveBackupRetention
+    DriveBackupRequiredBeforeApply = $driveBackupRequiredBeforeApply
+    DriveBackupLatestCommittedRunId = $driveBackupLatestCommittedRunId
+    DriveBackupError = $driveBackupError
+    DriveBackupCloudMetadataReadbackPath = $driveBackupCloudReadbackPath
+    DriveBackupCloudMetadataReadbackValid = $driveBackupCloudReadbackValid
+    DriveBackupCloudMetadataReadbackVerifiedAtUtc = $driveBackupCloudReadbackVerifiedAtUtc
+    DriveBackupRestoreDrillFrequency = $restoreDrillStatus.Frequency
+    DriveBackupRestoreDrillStatus = $restoreDrillStatus.Status
+    DriveBackupRestoreDrillLastVerifiedAtUtc = $restoreDrillStatus.LastVerifiedAtUtc
+    DriveBackupRestoreDrillLastReceiptPath = $restoreDrillStatus.LastReceiptPath
+    DriveBackupRestoreDrillLastExcelValidationReceiptPath = $restoreDrillStatus.LastExcelValidationReceiptPath
+    DriveBackupRestoreDrillNextDueDate = $restoreDrillStatus.NextDueDate
+    DriveBackupRestoreDrillLiveOverwriteAllowed = $restoreDrillStatus.LiveWorkbookOverwriteAllowed
+    DriveBackupHashOnlyVerificationCount = $restoreDrillStatus.HashOnlyVerificationCount
+    DriveBackupLatestHashOnlyVerifiedAtUtc = $restoreDrillStatus.LatestHashOnlyVerifiedAtUtc
+    DriveBackupHashOnlyVerificationSatisfiesQuarterlyDrill = $restoreDrillStatus.HashOnlyVerificationSatisfiesQuarterlyDrill
 }
 
 [pscustomobject]$status | Format-List

@@ -6,9 +6,60 @@ if (-not (Get-Command ConvertTo-GssDropboxRelativePath -ErrorAction SilentlyCont
 }
 
 $script:GssEmailPackageSchemaVersion = 'gss-email-package/v1'
-$script:GssAnalysisPolicyVersion = 'gss-analysis-policy/v1'
 $script:GssFeedbackLedgerVersion = 'gss-feedback-first-seen/v1'
 $script:GssThemeNames = @('service', 'culinary', 'pace', 'value', 'hospitality/recovery', 'recognition')
+$script:GssRestrictedClassification = 'CONTAINS PERSONAL DATA ' + [char]0x2014 + ' RESTRICTED'
+
+function Read-GssAnalysisPolicy {
+    $policyPath = Join-Path (Split-Path -Parent $scriptRoot) 'config\analysis-policy.json'
+    if (-not (Test-Path -LiteralPath $policyPath -PathType Leaf)) {
+        throw "GSS analysis policy is missing: $policyPath"
+    }
+
+    try {
+        $policy = Get-Content -Raw -LiteralPath $policyPath | ConvertFrom-Json
+    }
+    catch {
+        throw "GSS analysis policy is not valid JSON: $policyPath. $($_.Exception.Message)"
+    }
+
+    if ([string]$policy.schema_version -notmatch '^gss-analysis-policy/v\d+$') {
+        throw "GSS analysis policy has an invalid schema version: $($policy.schema_version)"
+    }
+    if ([double]$policy.thresholds.previous_window.candidate_points -ne 1 -or
+        [double]$policy.thresholds.previous_window.action_points -ne 2 -or
+        [double]$policy.thresholds.prior_year.candidate_points -ne 2 -or
+        [double]$policy.thresholds.prior_year.action_points -ne 5) {
+        throw 'GSS analysis policy must preserve the approved 1/2-point previous-window and 2/5-point prior-year thresholds.'
+    }
+    if ([int]$policy.confidence.high_minimum_responses -ne 100 -or
+        [int]$policy.confidence.developing_minimum_responses -ne 50 -or
+        [int]$policy.confidence.low_minimum_responses -ne 1 -or
+        -not [bool]$policy.confidence.developing_requires_threshold_and_corroboration -or
+        [bool]$policy.confidence.low_eligible_for_top_findings -or
+        [bool]$policy.confidence.not_scored_eligible_for_top_findings) {
+        throw 'GSS analysis policy must preserve the approved High, Developing, Low, and Not scored confidence boundaries.'
+    }
+    if ([int]$policy.rolling_windows.weeks -ne 13 -or
+        [int]$policy.rolling_windows.adjacent_overlap_weeks -ne 12) {
+        throw 'GSS analysis policy must identify 13-week rolling windows with 12 weeks of overlap between adjacent windows.'
+    }
+    if ([int]$policy.guest_feedback.minimum_unique_responses_per_theme -ne 2 -or
+        -not [bool]$policy.guest_feedback.theme_categories_are_non_exclusive) {
+        throw 'GSS analysis policy must preserve the approved two-response theme minimum and non-exclusive theme categories.'
+    }
+    if (-not [bool]$policy.review_controls.human_review_required -or
+        [bool]$policy.review_controls.automatic_sending_enabled -or
+        [bool]$policy.review_controls.causation_claimed -or
+        [bool]$policy.review_controls.statistical_significance_claimed) {
+        throw 'GSS analysis policy must require human review, keep automatic sending disabled, and make no causation or statistical-significance claim.'
+    }
+
+    return $policy
+}
+
+$script:GssAnalysisPolicy = Read-GssAnalysisPolicy
+$script:GssAnalysisPolicyVersion = [string]$script:GssAnalysisPolicy.schema_version
 
 function Get-GssStringSha256 {
     param([Parameter(Mandatory)][string]$Value)
@@ -31,6 +82,13 @@ function Write-GssUtf8NoBomFile {
 
     $encoding = New-Object System.Text.UTF8Encoding($false, $true)
     [System.IO.File]::WriteAllText($Path, $Value + [Environment]::NewLine, $encoding)
+}
+
+function Read-GssUtf8NoBomFile {
+    param([Parameter(Mandatory)][string]$Path)
+
+    $encoding = New-Object System.Text.UTF8Encoding($false, $true)
+    return [System.IO.File]::ReadAllText($Path, $encoding)
 }
 
 function Assert-GssUtf8NoBomFile {
@@ -709,15 +767,23 @@ function New-GssSanitizedFeedback {
 
     $themes = @()
     foreach ($restaurantGroup in @($internalCards | Group-Object RestaurantId)) {
+        $restaurantResponses = @($restaurantGroup.Group | Sort-Object ResponseHash -Unique)
+        $denominatorCount = $restaurantResponses.Count
+        $denominatorVisitStart = if ($denominatorCount -gt 0) { ($restaurantResponses.VisitDate | Sort-Object | Select-Object -First 1) } else { $null }
+        $denominatorVisitEnd = if ($denominatorCount -gt 0) { ($restaurantResponses.VisitDate | Sort-Object -Descending | Select-Object -First 1) } else { $null }
         foreach ($themeName in $script:GssThemeNames) {
-            $matching = @($restaurantGroup.Group | Where-Object { $_.ThemeIds -contains $themeName } | Sort-Object ResponseHash -Unique)
-            if ($matching.Count -lt 2) { continue }
+            $matching = @($restaurantResponses | Where-Object { $_.ThemeIds -contains $themeName })
+            if ($matching.Count -lt [int]$script:GssAnalysisPolicy.guest_feedback.minimum_unique_responses_per_theme) { continue }
             $slug = $themeName.Replace('/', '-').Replace(' ', '-')
             $themes += [pscustomobject][ordered]@{
                 theme_id = "theme-$($restaurantGroup.Name)-$slug"
                 restaurant_id = $restaurantGroup.Name
                 category = $themeName
                 unique_response_count = $matching.Count
+                denominator_response_count = $denominatorCount
+                visit_date_start = $denominatorVisitStart
+                visit_date_end = $denominatorVisitEnd
+                categories_are_non_exclusive = [bool]$script:GssAnalysisPolicy.guest_feedback.theme_categories_are_non_exclusive
                 concern_count = @($matching | Where-Object { $_.Sentiment -in @('concern', 'mixed') }).Count
                 positive_count = @($matching | Where-Object { $_.Sentiment -in @('positive', 'mixed') }).Count
                 do_not_contact_count = @($matching | Where-Object { $_.DoNotContact }).Count
@@ -778,11 +844,15 @@ function New-GssSanitizedFeedback {
         NextLedger = $nextLedger
         Privacy = [pscustomobject][ordered]@{
             pii_scan_passed = ($piiFailures.Count -eq 0)
+            pii_scan_scope = 'risk-reduced analysis text only; raw detail attachment is excluded'
             pii_redaction_count = $piiRedactions
             do_not_contact_response_count = @($internalCards | Where-Object { $_.DoNotContact }).Count
             do_not_contact_text_excluded = $true
             guest_name_fields_excluded = $true
             raw_detail_contains_personal_data = $true
+            package_contains_personal_data = $true
+            classification = $script:GssRestrictedClassification
+            analysis_description = 'risk-reduced'
             remaining_pii_types = @($piiFailures | Select-Object -Unique)
         }
     }
@@ -864,8 +934,9 @@ function ConvertTo-GssMetricEvidenceCard {
     param([object]$Item, [string]$Kind)
 
     $restaurantDisplayName = Get-GssRestaurantDisplayName $Item.Entity
-    $displayText = '{0}: 13-week rolling result {1}; change versus previous rolling window {2} points; change versus prior-year rolling window {3} points; versus all franchisees {4} points.' -f `
-        $Item.Metric, (Format-GssEvidenceNumber $Item.Current), (Format-GssEvidenceNumber $Item.ChangeVsPreviousRollingWindow -Signed), (Format-GssEvidenceNumber $Item.YoYImprovement -Signed), (Format-GssEvidenceNumber $Item.VsAllFranchisees -Signed)
+    $confidenceTier = if ($Item.PSObject.Properties['ConfidenceTier']) { [string]$Item.ConfidenceTier } else { 'Not scored' }
+    $displayText = '{0}: Level: 13-week rolling result {1} ({2} confidence, n={3}); Movement: {4} points versus the previous 13-week rolling window and {5} points versus prior year; Benchmark: {6} points versus all franchisees. Adjacent 13-week windows overlap by 12 weeks.' -f `
+        $Item.Metric, (Format-GssEvidenceNumber $Item.Current), $confidenceTier, (Format-GssEvidenceNumber $Item.CurrentCount), (Format-GssEvidenceNumber $Item.ChangeVsPreviousRollingWindow -Signed), (Format-GssEvidenceNumber $Item.YoYImprovement -Signed), (Format-GssEvidenceNumber $Item.VsAllFranchisees -Signed)
     return [pscustomobject][ordered]@{
         evidence_id = $Item.EvidenceId
         restaurant_id = $Item.RestaurantId
@@ -880,9 +951,26 @@ function ConvertTo-GssMetricEvidenceCard {
         finding_direction = $Item.CandidateDirection
         lower_is_better = [bool]$Item.LowerIsBetter
         rolling_value = $Item.Current
+        response_count = $Item.CurrentCount
+        confidence_tier = $confidenceTier
         change_vs_previous_window = $Item.ChangeVsPreviousRollingWindow
         change_vs_prior_year = $Item.YoYImprovement
         vs_franchise = $Item.VsAllFranchisees
+        level = [pscustomobject][ordered]@{
+            rolling_weeks = [int]$script:GssAnalysisPolicy.rolling_windows.weeks
+            value = $Item.Current
+            response_count = $Item.CurrentCount
+            confidence_tier = $confidenceTier
+        }
+        movement = [pscustomobject][ordered]@{
+            change_vs_previous_window = $Item.ChangeVsPreviousRollingWindow
+            change_vs_prior_year = $Item.YoYImprovement
+            adjacent_window_overlap_weeks = [int]$script:GssAnalysisPolicy.rolling_windows.adjacent_overlap_weeks
+        }
+        benchmark = [pscustomobject][ordered]@{
+            vs_sorensen_total = $Item.VsSorensenTotal
+            vs_all_franchisees = $Item.VsAllFranchisees
+        }
         persistent = [bool]$Item.PersistentMovement
         corroboration = @($Item.Corroboration)
         display_text = $displayText
@@ -930,7 +1018,7 @@ function Assert-GssMetricEvidenceCardContract {
         [Parameter(Mandatory)][string]$CardLabel
     )
 
-    foreach ($propertyName in @('evidence_id', 'restaurant_id', 'metric_key', 'metric')) {
+    foreach ($propertyName in @('evidence_id', 'restaurant_id', 'metric_key', 'metric', 'confidence_tier')) {
         $value = Get-GssRequiredEvidenceProperty -Card $Card -PropertyName $propertyName -CardLabel $CardLabel
         if ([string]::IsNullOrWhiteSpace([string]$value)) {
             throw "GSS analysis evidence contract violation: $CardLabel has an empty '$propertyName'."
@@ -953,11 +1041,27 @@ function Assert-GssMetricEvidenceCardContract {
     if (-not (Test-GssNativeFiniteNumber $rollingValue)) {
         throw "GSS analysis evidence contract violation: $CardLabel property 'rolling_value' must be a native finite number."
     }
-    foreach ($propertyName in @('change_vs_previous_window', 'change_vs_prior_year', 'vs_franchise')) {
+    $confidenceTier = Get-GssRequiredEvidenceProperty -Card $Card -PropertyName 'confidence_tier' -CardLabel $CardLabel
+    if ($confidenceTier -notin @('High', 'Developing', 'Low', 'Not scored')) {
+        throw "GSS analysis evidence contract violation: $CardLabel has invalid confidence tier '$confidenceTier'."
+    }
+    foreach ($propertyName in @('response_count', 'change_vs_previous_window', 'change_vs_prior_year', 'vs_franchise')) {
         $value = Get-GssRequiredEvidenceProperty -Card $Card -PropertyName $propertyName -CardLabel $CardLabel
         if ($null -ne $value -and -not (Test-GssNativeFiniteNumber $value)) {
             throw "GSS analysis evidence contract violation: $CardLabel property '$propertyName' must be null or a native finite number."
         }
+    }
+    foreach ($sectionName in @('level', 'movement', 'benchmark')) {
+        $section = Get-GssRequiredEvidenceProperty -Card $Card -PropertyName $sectionName -CardLabel $CardLabel
+        if ($null -eq $section) {
+            throw "GSS analysis evidence contract violation: $CardLabel property '$sectionName' must be an object."
+        }
+    }
+    if ([int]$Card.level.rolling_weeks -ne 13 -or [int]$Card.movement.adjacent_window_overlap_weeks -ne 12) {
+        throw "GSS analysis evidence contract violation: $CardLabel must identify 13-week windows with 12 weeks of adjacent overlap."
+    }
+    if ([string]$Card.level.confidence_tier -ne [string]$Card.confidence_tier) {
+        throw "GSS analysis evidence contract violation: $CardLabel level confidence tier conflicts with the top-level value."
     }
 }
 
@@ -974,11 +1078,20 @@ function Assert-GssThemeEvidenceCardContract {
         }
     }
 
-    foreach ($propertyName in @('unique_response_count', 'concern_count', 'positive_count', 'do_not_contact_count')) {
+    foreach ($propertyName in @('unique_response_count', 'denominator_response_count', 'concern_count', 'positive_count', 'do_not_contact_count')) {
         $value = Get-GssRequiredEvidenceProperty -Card $Card -PropertyName $propertyName -CardLabel $CardLabel
         if (-not (Test-GssNativeFiniteNumber $value) -or [double]$value -lt 0 -or [double]$value -ne [math]::Truncate([double]$value)) {
             throw "GSS analysis evidence contract violation: $CardLabel property '$propertyName' must be a nonnegative native integer."
         }
+    }
+    if ([int]$Card.unique_response_count -gt [int]$Card.denominator_response_count) {
+        throw "GSS analysis evidence contract violation: $CardLabel theme numerator exceeds its denominator."
+    }
+    foreach ($propertyName in @('visit_date_start', 'visit_date_end', 'categories_are_non_exclusive')) {
+        $null = Get-GssRequiredEvidenceProperty -Card $Card -PropertyName $propertyName -CardLabel $CardLabel
+    }
+    if ($Card.categories_are_non_exclusive -isnot [bool] -or -not [bool]$Card.categories_are_non_exclusive) {
+        throw "GSS analysis evidence contract violation: $CardLabel must identify theme categories as non-exclusive."
     }
 }
 
@@ -1020,11 +1133,13 @@ function New-GssEvidencePreviewText {
 
     $lines = @()
     $lines += "Subject: GSS Survey Report - Week Ending $($ReportingDate.ToString('MMddyy'))"
+    $lines += "CLASSIFICATION: $script:GssRestrictedClassification"
+    $lines += 'Automatic sending is disabled. Before any manual send, confirm every recipient is authorized to receive restricted guest survey data.'
     $lines += ''
     $lines += 'All,'
     $lines += ''
     $reportingDateDisplay = $ReportingDate.ToString('MMMM d, yyyy', [System.Globalization.CultureInfo]::InvariantCulture)
-    $lines += "The attached report covers 13-week rolling results through $reportingDateDisplay. Movements below compare that result with the previous rolling window and the matching prior-year rolling window."
+    $lines += "The attached restricted package covers 13-week rolling results through $reportingDateDisplay. Adjacent 13-week windows overlap by 12 weeks; movements compare the current result with that adjacent window and the matching prior-year rolling window."
     foreach ($restaurant in @($Analysis.RestaurantFindings)) {
         $lines += ''
         $lines += "$($restaurant.Restaurant):"
@@ -1032,17 +1147,17 @@ function New-GssEvidencePreviewText {
             $lines += 'No movement met the reporting thresholds.'
         }
         foreach ($item in @($restaurant.Strengths)) {
-            $lines += "Strength: $($item.Metric) was $(Format-GssEvidenceNumber $item.Current), changing $(Format-GssEvidenceNumber $item.ChangeVsPreviousRollingWindow -Signed) points versus the previous rolling window and $(Format-GssEvidenceNumber $item.YoYImprovement -Signed) points versus prior year."
+            $lines += "Strength: $($item.Metric). Level: $(Format-GssEvidenceNumber $item.Current) ($($item.ConfidenceTier) confidence, n=$(Format-GssEvidenceNumber $item.CurrentCount)). Movement: $(Format-GssEvidenceNumber $item.ChangeVsPreviousRollingWindow -Signed) points versus the previous window and $(Format-GssEvidenceNumber $item.YoYImprovement -Signed) points versus prior year. Benchmark: $(Format-GssEvidenceNumber $item.VsAllFranchisees -Signed) points versus all franchisees."
         }
         foreach ($item in @($restaurant.Opportunities)) {
-            $lines += "Opportunity: $($item.Metric) was $(Format-GssEvidenceNumber $item.Current), changing $(Format-GssEvidenceNumber $item.ChangeVsPreviousRollingWindow -Signed) points versus the previous rolling window and $(Format-GssEvidenceNumber $item.YoYImprovement -Signed) points versus prior year."
+            $lines += "Opportunity: $($item.Metric). Level: $(Format-GssEvidenceNumber $item.Current) ($($item.ConfidenceTier) confidence, n=$(Format-GssEvidenceNumber $item.CurrentCount)). Movement: $(Format-GssEvidenceNumber $item.ChangeVsPreviousRollingWindow -Signed) points versus the previous window and $(Format-GssEvidenceNumber $item.YoYImprovement -Signed) points versus prior year. Benchmark: $(Format-GssEvidenceNumber $item.VsAllFranchisees -Signed) points versus all franchisees."
         }
     }
     $lines += ''
     if ($Feedback.ResponseCount -gt 0) {
-        $lines += "New guest feedback: $($Feedback.ResponseCount) unique responses with visit dates from $($Feedback.VisitDateStart) through $($Feedback.VisitDateEnd). Themes are reported only when supported by at least two unique responses."
+        $lines += "New guest feedback: $($Feedback.ResponseCount) unique responses with visit dates from $($Feedback.VisitDateStart) through $($Feedback.VisitDateEnd). Themes are reported only when supported by at least $($script:GssAnalysisPolicy.guest_feedback.minimum_unique_responses_per_theme) unique responses."
         foreach ($theme in @($Feedback.Themes)) {
-            $lines += "- $($theme.restaurant_id) $($theme.category): $($theme.unique_response_count) unique responses."
+            $lines += "- $($theme.restaurant_id) $($theme.category): $($theme.unique_response_count) of $($theme.denominator_response_count) unique responses, visit dates $($theme.visit_date_start) through $($theme.visit_date_end). Theme categories are non-exclusive."
         }
     }
     else {
@@ -1051,9 +1166,9 @@ function New-GssEvidencePreviewText {
     $lines += ''
     $lines += 'Recommended follow-up: review the evidence-backed opportunities with the appropriate restaurant leaders and confirm local context before choosing an action.'
     $lines += ''
-    $lines += 'Bottom line: these directional comparisons identify items for review; they do not establish statistical significance or causation.'
+    $lines += 'Bottom line: this risk-reduced analysis requires human review. These directional comparisons identify items for review; they do not establish statistical significance or causation.'
     $lines += ''
-    $lines += 'Methodology: score results are 13-week rolling aggregates. Guest feedback is deduplicated across current and archived exports, anonymized in this package, and described using its actual visit-date range rather than as an exact seven-day sample.'
+    $lines += "Methodology: score results are 13-week rolling aggregates, and adjacent windows overlap by 12 weeks. Guest feedback is deduplicated across current and archived exports; published analysis text is risk-reduced through name, contact-pattern, unsafe-control, and do-not-contact handling. The raw detail attachment still contains personal data, so the entire package remains $script:GssRestrictedClassification. Feedback is described using its actual visit-date range rather than as an exact seven-day sample."
     return ($lines -join [Environment]::NewLine)
 }
 
@@ -1089,9 +1204,17 @@ function Test-GssExistingEmailPackage {
     if ($readyLines.Count -ne 2 -or $readyLines[0] -ne $script:GssEmailPackageSchemaVersion -or $readyLines[1] -ne $PackageId) {
         throw "Existing deterministic package READY marker does not match package ID: $PackageId"
     }
-    $manifest = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
+    $manifest = Read-GssUtf8NoBomFile $manifestPath | ConvertFrom-Json
     if ($manifest.schema_version -ne $script:GssEmailPackageSchemaVersion -or $manifest.package_id -ne $PackageId) {
         throw "Existing deterministic package manifest does not match package ID: $PackageId"
+    }
+    if ([string]$manifest.classification -ne $script:GssRestrictedClassification -or -not [bool]$manifest.package_contains_personal_data) {
+        throw "Existing deterministic package is missing the restricted personal-data classification: $PackageId"
+    }
+    if ([bool]$manifest.distribution_controls.automatic_sending_enabled -or
+        -not [bool]$manifest.distribution_controls.human_review_required -or
+        -not [bool]$manifest.distribution_controls.restricted_recipient_review.required_before_manual_send) {
+        throw "Existing deterministic package is missing required manual restricted-recipient review controls: $PackageId"
     }
     if ([string]$manifest.feedback_selection_sha256 -notmatch '^[a-f0-9]{64}$' -or [string]$manifest.feedback_selection_sha256 -ne $ExpectedFeedbackSelectionFingerprint) {
         throw "Existing deterministic package feedback selection does not match current package inputs: $PackageId"
@@ -1105,15 +1228,18 @@ function Test-GssExistingEmailPackage {
     if ($recomputedPackageId -ne $PackageId) {
         throw "Existing deterministic package ID does not match its attested source inventory: $PackageId"
     }
-    foreach ($requiredName in @('analysis.json', 'email_preview.txt', 'email_preview.html', 'READY')) {
+    foreach ($requiredName in @('analysis.json', 'email_preview.txt', 'email_preview.html', 'RESTRICTED.txt', 'READY')) {
         $requiredPath = Join-Path $PackagePath $requiredName
         if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf) -or (Get-Item -LiteralPath $requiredPath).Length -le 0) {
             throw "Existing deterministic package is missing required output: $requiredName"
         }
     }
-    $analysis = Get-Content -Raw -LiteralPath (Join-Path $PackagePath 'analysis.json') | ConvertFrom-Json
+    $analysis = Read-GssUtf8NoBomFile (Join-Path $PackagePath 'analysis.json') | ConvertFrom-Json
     if ($analysis.schema_version -ne $script:GssEmailPackageSchemaVersion -or $analysis.package_id -ne $PackageId) {
         throw "Existing deterministic package analysis does not match package ID: $PackageId"
+    }
+    if ([string]$analysis.classification -ne $script:GssRestrictedClassification -or -not [bool]$analysis.package_contains_personal_data) {
+        throw "Existing deterministic package analysis is missing the restricted personal-data classification: $PackageId"
     }
     if ([string]$analysis.feedback_selection_sha256 -ne [string]$manifest.feedback_selection_sha256) {
         throw "Existing deterministic package analysis feedback selection does not match its manifest: $PackageId"
@@ -1158,6 +1284,15 @@ function Test-GssExistingEmailPackage {
     if ($runLogSource.Count -ne 1 -or ([string]$manifest.source_log_path).Replace('\', '/') -ne $runLogSource[0].path) {
         throw "Existing package source_log_path does not match its run_log source: $PackageId"
     }
+    $requiredAttachmentRoles = @('comparison_pdf', 'rolling_workbook', 'detail_workbook')
+    if (@($manifest.attachments).Count -ne 3) {
+        throw "Existing package must contain exactly three attachments: $PackageId"
+    }
+    foreach ($requiredRole in $requiredAttachmentRoles) {
+        if (@($manifest.attachments | Where-Object role -eq $requiredRole).Count -ne 1) {
+            throw "Existing package must contain exactly one attachment for role '$requiredRole': $PackageId"
+        }
+    }
     foreach ($attachment in @($manifest.attachments)) {
         $path = Join-Path $PackagePath ([string]$attachment.path).Replace('/', '\')
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Existing package attachment is missing: $($attachment.role)" }
@@ -1165,6 +1300,13 @@ function Test-GssExistingEmailPackage {
         if ([long]$item.Length -ne [long]$attachment.byte_size -or (Get-GssSha256 $path) -ne [string]$attachment.sha256) {
             throw "Existing package attachment does not match its manifest: $($attachment.role)"
         }
+    }
+    $detailAttachments = @($manifest.attachments | Where-Object role -eq 'detail_workbook')
+    if ($detailAttachments.Count -ne 1 -or
+        -not [bool]$detailAttachments[0].contains_personal_data -or
+        [string]$detailAttachments[0].classification -ne $script:GssRestrictedClassification -or
+        [string]$detailAttachments[0].path -notlike '*RESTRICTED*') {
+        throw "Existing package raw guest attachment is missing its restricted personal-data label: $PackageId"
     }
     return $manifest
 }
@@ -1238,6 +1380,7 @@ function New-GssEmailPackage {
         prior_year_end_date = $priorYearEnd.ToString('yyyy-MM-dd')
         result_label = "13-week rolling through $($reportingDate.ToString('yyyy-MM-dd'))"
         comparison_label = 'change versus previous rolling window'
+        adjacent_window_overlap_weeks = [int]$script:GssAnalysisPolicy.rolling_windows.adjacent_overlap_weeks
     }
     $statuses = [pscustomobject][ordered]@{
         workbook_status = [string]$AnalysisResult.WorkbookStatus
@@ -1256,8 +1399,8 @@ function New-GssEmailPackage {
         $sourceEntity = if ($restaurantFinding) { $restaurantFinding.Restaurant } else { [string]$theme.restaurant_id }
         $restaurantName = if ($restaurantFinding -and $restaurantFinding.Name) { $restaurantFinding.Name } else { Get-GssRestaurantDisplayName $sourceEntity }
         $findingType = if ([int]$theme.concern_count -gt [int]$theme.positive_count) { 'opportunity' } elseif ([int]$theme.positive_count -gt [int]$theme.concern_count) { 'strength' } else { 'mixed' }
-        $dncNote = if ([int]$theme.do_not_contact_count -gt 0) { "; $($theme.do_not_contact_count) anonymous do-not-contact response(s) included in counts" } else { '' }
-        $displayText = "${restaurantName}: new guest feedback $($theme.category) theme in $($theme.unique_response_count) unique responses; $($theme.concern_count) concern and $($theme.positive_count) positive$dncNote."
+        $dncNote = if ([int]$theme.do_not_contact_count -gt 0) { "; $($theme.do_not_contact_count) do-not-contact response(s) included only in aggregate counts" } else { '' }
+        $displayText = "${restaurantName}: new guest feedback $($theme.category) theme in $($theme.unique_response_count) of $($theme.denominator_response_count) unique responses with visit dates $($theme.visit_date_start) through $($theme.visit_date_end); $($theme.concern_count) concern and $($theme.positive_count) positive$dncNote. Theme categories are non-exclusive."
         $themeEvidence += [pscustomobject][ordered]@{
             theme_id = $theme.theme_id
             restaurant_id = $theme.restaurant_id
@@ -1268,6 +1411,10 @@ function New-GssEmailPackage {
             finding_type = $findingType
             category = $theme.category
             unique_response_count = [int]$theme.unique_response_count
+            denominator_response_count = [int]$theme.denominator_response_count
+            visit_date_start = [string]$theme.visit_date_start
+            visit_date_end = [string]$theme.visit_date_end
+            categories_are_non_exclusive = [bool]$theme.categories_are_non_exclusive
             concern_count = [int]$theme.concern_count
             positive_count = [int]$theme.positive_count
             do_not_contact_count = [int]$theme.do_not_contact_count
@@ -1282,7 +1429,7 @@ function New-GssEmailPackage {
     else {
         'no previously unseen guest-feedback responses in the validated exports'
     }
-    $portfolioDisplayText = "Portfolio reporting basis: 13-week rolling results through $($reporting.reporting_date); changes compare with the previous rolling window and matching prior-year rolling window; $feedbackBasis. These comparisons are directional and do not establish statistical significance or causation."
+    $portfolioDisplayText = "Portfolio reporting basis: 13-week rolling results through $($reporting.reporting_date); adjacent 13-week windows overlap by 12 weeks; changes compare with the previous rolling window and matching prior-year rolling window; $feedbackBasis. This risk-reduced analysis requires human review. These comparisons are directional and do not establish statistical significance or causation."
     $portfolioEvidence = [pscustomobject][ordered]@{
         evidence_id = 'portfolio-' + (Get-GssStringSha256 ("$packageId|reporting-basis")).Substring(0, 16)
         kind = 'reporting_basis'
@@ -1319,18 +1466,42 @@ function New-GssEmailPackage {
         schema_version = $script:GssEmailPackageSchemaVersion
         policy_version = $script:GssAnalysisPolicyVersion
         package_id = $packageId
+        classification = $script:GssRestrictedClassification
+        package_contains_personal_data = $true
         feedback_selection_sha256 = $feedback.SelectionFingerprint
         reporting = $reporting
         statuses = $statuses
+        distribution_controls = [pscustomobject][ordered]@{
+            automatic_sending_enabled = $false
+            human_review_required = $true
+            restricted_recipient_review = [pscustomobject][ordered]@{
+                required_before_manual_send = $true
+                status = 'pending_manual_confirmation'
+                reviewed_recipient_count = 0
+                confirmation_source = 'manual'
+            }
+            ready_marker_meaning = 'Integrity-validated and ready for manual content/recipient review; never PII-free or send-approved.'
+        }
         methodology = [pscustomobject][ordered]@{
             score_basis = 'Each score is a 13-week rolling result; rolling rows are not averaged together.'
-            comparison_basis = 'Direction-adjusted change versus the previous rolling window and matching prior-year rolling window.'
+            comparison_basis = 'Direction-adjusted change versus the previous 13-week rolling window, which overlaps the current window by 12 weeks, and the matching prior-year rolling window.'
+            evidence_dimensions = @('level', 'movement', 'benchmark')
+            confidence_policy = [pscustomobject][ordered]@{
+                high = '100 or more responses'
+                developing = '50-99 responses; threshold and corroboration required for top findings'
+                low = '1-49 responses; never eligible for top findings'
+                not_scored = 'zero or missing responses'
+            }
             significance_claimed = $false
             causation_claimed = $false
+            human_review_required = $true
+            analysis_description = 'risk-reduced'
             feedback_label = 'new guest feedback'
             feedback_response_count = $feedback.ResponseCount
             feedback_visit_date_start = $feedback.VisitDateStart
             feedback_visit_date_end = $feedback.VisitDateEnd
+            theme_denominator_label = 'N of M unique responses over the stated visit-date range'
+            theme_categories_are_non_exclusive = $true
         }
         portfolio = [pscustomobject][ordered]@{
             evidence = @($portfolioEvidence)
@@ -1358,6 +1529,9 @@ function New-GssEmailPackage {
         Write-GssFeedbackLedger -Ledger $feedback.NextLedger -Path $LedgerPath
         return [pscustomobject]@{
             EmailReadiness = 'Ready'
+            DataClassification = $script:GssRestrictedClassification
+            AutomaticSendingEnabled = $false
+            RestrictedRecipientReviewStatus = 'pending_manual_confirmation'
             PackageId = $packageId
             PackagePath = $packagePath
             ManifestPath = Join-Path $packagePath 'email_manifest.json'
@@ -1374,7 +1548,7 @@ function New-GssEmailPackage {
         $attachmentNames = @{
             comparison_pdf = "GSS Email Comparison $dateToken.pdf"
             rolling_workbook = "GSS 13-Week Rolling $dateToken.xlsx"
-            detail_workbook = "GSS Guest Detail $dateToken.xlsx"
+            detail_workbook = "RESTRICTED GSS Detail $dateToken.xlsx"
         }
         $attachments = @()
         foreach ($source in @($sourceDescriptors | Where-Object { $_.role -in @('comparison_pdf', 'rolling_workbook', 'detail_workbook') })) {
@@ -1392,6 +1566,8 @@ function New-GssEmailPackage {
                 source_path = $source.source_path
                 byte_size = [long]$copiedItem.Length
                 sha256 = $copiedHash
+                contains_personal_data = ($source.role -eq 'detail_workbook')
+                classification = if ($source.role -eq 'detail_workbook') { $script:GssRestrictedClassification } else { 'INTERNAL' }
             }
         }
 
@@ -1400,10 +1576,16 @@ function New-GssEmailPackage {
         $analysisPath = Join-Path $stagingPath 'analysis.json'
         $textPath = Join-Path $stagingPath 'email_preview.txt'
         $htmlPath = Join-Path $stagingPath 'email_preview.html'
+        $classificationPath = Join-Path $stagingPath 'RESTRICTED.txt'
         $manifestPath = Join-Path $stagingPath 'email_manifest.json'
         Write-GssUtf8NoBomFile -Path $analysisPath -Value ($analysisDocument | ConvertTo-Json -Depth 12)
         Write-GssUtf8NoBomFile -Path $textPath -Value $previewText
         Write-GssUtf8NoBomFile -Path $htmlPath -Value $previewHtml
+        Write-GssUtf8NoBomFile -Path $classificationPath -Value @"
+$script:GssRestrictedClassification
+This package includes a raw guest detail workbook. The analysis text is risk-reduced, but the package is not PII-free.
+Automatic sending is disabled. Confirm every recipient is authorized before any manual send.
+"@
 
         $sourceLogDescriptor = @($sourceDescriptors | Where-Object role -eq 'run_log')
         if ($sourceLogDescriptor.Count -ne 1) { throw 'Package source inventory must contain exactly one run_log descriptor.' }
@@ -1412,13 +1594,17 @@ function New-GssEmailPackage {
             schema_version = $script:GssEmailPackageSchemaVersion
             policy_version = $script:GssAnalysisPolicyVersion
             package_id = $packageId
+            classification = $script:GssRestrictedClassification
+            package_contains_personal_data = $true
             feedback_selection_sha256 = $feedback.SelectionFingerprint
             reporting = $reporting
             statuses = $statuses
+            distribution_controls = $analysisDocument.distribution_controls
             source_log_path = $sourceLogPath
             analysis_path = 'analysis.json'
             text_preview_path = 'email_preview.txt'
             html_preview_path = 'email_preview.html'
+            classification_notice_path = 'RESTRICTED.txt'
             ready_marker_path = 'READY'
             sources = @($sourceDescriptors | ForEach-Object {
                 [pscustomobject][ordered]@{
@@ -1440,7 +1626,7 @@ function New-GssEmailPackage {
         }
         Write-GssUtf8NoBomFile -Path $manifestPath -Value ($manifest | ConvertTo-Json -Depth 12)
 
-        foreach ($requiredName in @('email_manifest.json', 'analysis.json', 'email_preview.txt', 'email_preview.html')) {
+        foreach ($requiredName in @('email_manifest.json', 'analysis.json', 'email_preview.txt', 'email_preview.html', 'RESTRICTED.txt')) {
             $requiredPath = Join-Path $stagingPath $requiredName
             if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf) -or (Get-Item -LiteralPath $requiredPath).Length -le 0) {
                 throw "Package output is empty or missing: $requiredName"
@@ -1457,9 +1643,10 @@ function New-GssEmailPackage {
                 throw "Source changed while the package was being created: $($source.role) $($source.source_path)"
             }
         }
-        $analysisText = Get-Content -Raw -LiteralPath $analysisPath
-        $manifestText = Get-Content -Raw -LiteralPath $manifestPath
-        $aiFacingText = $analysisText + $previewText + $previewHtml
+        $analysisText = Read-GssUtf8NoBomFile $analysisPath
+        $manifestText = Read-GssUtf8NoBomFile $manifestPath
+        $classificationText = Read-GssUtf8NoBomFile $classificationPath
+        $aiFacingText = $analysisText + $previewText + $previewHtml + $classificationText
         $nonRawText = $aiFacingText + $manifestText
         if ($nonRawText -match '(?i)(?:[A-Z]:[\\/]|\\\\[^\\])') { throw 'A machine-specific path leaked into a portable package file.' }
         # Deterministic methodology and metadata can legitimately contain an
@@ -1494,6 +1681,9 @@ function New-GssEmailPackage {
             }
         return [pscustomobject]@{
             EmailReadiness = 'Ready'
+            DataClassification = $script:GssRestrictedClassification
+            AutomaticSendingEnabled = $false
+            RestrictedRecipientReviewStatus = 'pending_manual_confirmation'
             PackageId = $packageId
             PackagePath = $packagePath
             ManifestPath = Join-Path $packagePath 'email_manifest.json'

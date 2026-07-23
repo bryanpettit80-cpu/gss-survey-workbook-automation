@@ -454,7 +454,7 @@ try {
     Assert-Equal $package.EmailReadiness 'Ready' 'Package email readiness'
     Assert-True (Test-Path -LiteralPath $package.ReadyMarkerPath -PathType Leaf) 'Ready marker exists'
     $strictUtf8 = New-Object System.Text.UTF8Encoding($false, $true)
-    foreach ($portableName in @('email_manifest.json', 'analysis.json', 'email_preview.txt', 'email_preview.html')) {
+    foreach ($portableName in @('email_manifest.json', 'analysis.json', 'email_preview.txt', 'email_preview.html', 'RESTRICTED.txt')) {
         $portablePath = Join-Path $package.PackagePath $portableName
         $portableBytes = [System.IO.File]::ReadAllBytes($portablePath)
         $hasUtf8Bom = $portableBytes.Length -ge 3 -and
@@ -469,12 +469,31 @@ try {
             throw "Assertion failed for strict UTF-8 package output: $portableName."
         }
     }
-    $manifest = Get-Content -Raw -LiteralPath $package.ManifestPath | ConvertFrom-Json
-    $analysisJson = Get-Content -Raw -LiteralPath (Join-Path $package.PackagePath 'analysis.json') | ConvertFrom-Json
+    $manifest = Read-GssUtf8NoBomFile $package.ManifestPath | ConvertFrom-Json
+    $analysisJson = Read-GssUtf8NoBomFile (Join-Path $package.PackagePath 'analysis.json') | ConvertFrom-Json
     Assert-Equal $manifest.schema_version 'gss-email-package/v1' 'Package schema version'
+    Assert-Equal $manifest.policy_version 'gss-analysis-policy/v2' 'Versioned analysis policy'
+    Assert-Equal $manifest.classification $script:GssRestrictedClassification 'Package restricted personal-data classification'
+    Assert-True ([bool]$manifest.package_contains_personal_data) 'Package explicitly contains personal data'
+    Assert-True (-not [bool]$manifest.distribution_controls.automatic_sending_enabled) 'Automatic sending remains disabled'
+    Assert-True ([bool]$manifest.distribution_controls.human_review_required) 'Human review remains required'
+    Assert-True ([bool]$manifest.distribution_controls.restricted_recipient_review.required_before_manual_send) 'Restricted-recipient review is required before manual send'
+    Assert-Equal $manifest.distribution_controls.restricted_recipient_review.status 'pending_manual_confirmation' 'Restricted-recipient review status is explicit'
+    Assert-Equal $manifest.distribution_controls.ready_marker_meaning 'Integrity-validated and ready for manual content/recipient review; never PII-free or send-approved.' 'READY meaning is unambiguous'
+    Assert-True ([string]$manifest.distribution_controls.ready_marker_meaning -match '(?i)never PII-free') 'READY never means PII-free'
+    Assert-Equal $analysisJson.classification $script:GssRestrictedClassification 'Analysis carries package classification'
+    Assert-Equal $package.DataClassification $script:GssRestrictedClassification 'Package result carries data classification'
+    Assert-True (-not [bool]$package.AutomaticSendingEnabled) 'Package result confirms automatic sending is disabled'
     Assert-True ([string]$manifest.feedback_selection_sha256 -match '^[a-f0-9]{64}$') 'Manifest carries the selected-feedback fingerprint'
     Assert-Equal $analysisJson.feedback_selection_sha256 $manifest.feedback_selection_sha256 'Analysis and manifest feedback selection agree'
     Assert-Equal @($manifest.attachments).Count 3 'Three attachment policy'
+    $detailAttachment = @($manifest.attachments | Where-Object role -eq 'detail_workbook')
+    Assert-Equal $detailAttachment.Count 1 'One raw guest detail attachment'
+    Assert-True ([bool]$detailAttachment[0].contains_personal_data) 'Raw guest detail attachment is marked as containing personal data'
+    Assert-Equal $detailAttachment[0].classification $script:GssRestrictedClassification 'Raw guest detail attachment restricted classification'
+    Assert-True ([string]$detailAttachment[0].path -like '*RESTRICTED*') 'Raw guest detail attachment has a visible restricted filename'
+    Assert-Equal $manifest.classification_notice_path 'RESTRICTED.txt' 'Package carries a visible restricted classification notice'
+    Assert-True ((Read-GssUtf8NoBomFile (Join-Path $package.PackagePath 'RESTRICTED.txt')) -match [regex]::Escape($script:GssRestrictedClassification)) 'Package notice carries the exact restricted classification'
     Assert-Equal @($manifest.sources).Count 7 'Portable source evidence count including run log and archive detail'
     Assert-Equal @($manifest.sources | Where-Object role -eq 'run_log').Count 1 'Exact run log source evidence'
     Assert-Equal @($manifest.sources | Where-Object role -eq 'detail_archive_workbook').Count 1 'Archived detail source evidence'
@@ -489,7 +508,11 @@ try {
     Assert-True ([string]$analysisJson.sanitized_feedback[0].sanitized_text -match '\[REDACTED CONTROL\]') 'Unsafe C0 and bidi controls are visibly removed'
     $serviceTheme = $analysisJson.feedback_themes | Where-Object category -eq 'service'
     Assert-Equal $serviceTheme.unique_response_count 2 'Theme requires two unique responses'
-    Assert-Equal $serviceTheme.do_not_contact_count 1 'DNC contributes only to anonymous theme counts'
+    Assert-Equal $serviceTheme.denominator_response_count 2 'Theme declares its unique-response denominator'
+    Assert-Equal $serviceTheme.visit_date_start '2026-07-10' 'Theme denominator visit-date start'
+    Assert-Equal $serviceTheme.visit_date_end '2026-07-11' 'Theme denominator visit-date end'
+    Assert-True ([bool]$serviceTheme.categories_are_non_exclusive) 'Theme categories are explicitly non-exclusive'
+    Assert-Equal $serviceTheme.do_not_contact_count 1 'DNC contributes only to aggregate theme counts'
     Assert-Equal @($serviceTheme.quotable_evidence_ids).Count 1 'DNC is not quotable'
     $serviceThemeEvidence = $analysisJson.theme_evidence | Where-Object theme_id -eq $serviceTheme.theme_id
     Assert-Equal $serviceThemeEvidence.theme_id $serviceTheme.theme_id 'Qualified theme uses the deterministic theme ID'
@@ -506,10 +529,20 @@ try {
     Assert-Equal $analysisJson.metric_evidence[0].direction 'higher_is_better' 'Metric evidence direction contract'
     Assert-True ($analysisJson.metric_evidence[0].lower_is_better -is [bool] -and -not $analysisJson.metric_evidence[0].lower_is_better) 'Metric evidence lower-is-better Boolean contract'
     Assert-Equal ([int]$serviceThemeEvidence.unique_response_count) 2 'Theme evidence response-count contract'
+    Assert-Equal ([int]$serviceThemeEvidence.denominator_response_count) 2 'Theme evidence denominator contract'
+    Assert-True ([string]$serviceThemeEvidence.display_text -match '2 of 2') 'Theme evidence uses N of M wording'
+    Assert-True ([string]$serviceThemeEvidence.display_text -match '(?i)non-exclusive') 'Theme evidence states categories are non-exclusive'
     Assert-Equal ([int]$serviceThemeEvidence.concern_count) 0 'Theme evidence concern-count contract'
     Assert-Equal ([int]$serviceThemeEvidence.positive_count) 2 'Theme evidence positive-count contract'
     Assert-Equal ([int]$serviceThemeEvidence.do_not_contact_count) 1 'Theme evidence do-not-contact-count contract'
     Assert-True (Test-GssAnalysisEvidenceContract -Analysis $analysisJson) 'Serialized analysis satisfies structured evidence contract'
+    Assert-Equal $analysisJson.metric_evidence[0].level.rolling_weeks 13 'Metric level is explicit'
+    Assert-Equal $analysisJson.metric_evidence[0].confidence_tier 'High' 'Metric confidence tier is explicit'
+    Assert-Equal $analysisJson.metric_evidence[0].movement.adjacent_window_overlap_weeks 12 'Metric movement declares 12-week adjacent overlap'
+    Assert-Equal ([double]$analysisJson.metric_evidence[0].benchmark.vs_all_franchisees) ([double]$finding.VsAllFranchisees) 'Metric benchmark is explicit'
+    Assert-Equal $analysisJson.methodology.analysis_description 'risk-reduced' 'Analysis is described as risk-reduced'
+    Assert-True ([bool]$analysisJson.methodology.human_review_required) 'Analysis methodology requires human review'
+    Assert-Equal $analysisJson.reporting.adjacent_window_overlap_weeks 12 'Reporting metadata declares adjacent-window overlap'
 
     $nullableComparison = Copy-TestJsonObject $analysisJson
     $nullableMetricId = [string]$nullableComparison.metric_evidence[0].evidence_id
@@ -544,6 +577,8 @@ try {
     Assert-True (@($analysisJson.evidence_cards.evidence_id) -contains $analysisJson.portfolio_evidence[0].evidence_id) 'Unified evidence cards include portfolio evidence'
     Assert-True ([bool]$analysisJson.privacy.pii_scan_passed) 'PII scan passed'
     Assert-True ([bool]$analysisJson.privacy.guest_name_fields_excluded) 'Guest name fields excluded'
+    Assert-True ([bool]$analysisJson.privacy.package_contains_personal_data) 'Privacy metadata does not claim the package is PII-free'
+    Assert-Equal $analysisJson.privacy.analysis_description 'risk-reduced' 'Privacy metadata uses risk-reduced wording'
     foreach ($source in @($manifest.sources)) {
         Assert-True (-not ([string]$source.path).Contains(':')) "Portable source path for $($source.role)"
         Assert-True ([string]$source.sha256 -match '^[a-f0-9]{64}$') "Source SHA-256 for $($source.role)"
@@ -553,14 +588,44 @@ try {
         Assert-Equal (Get-GssSha256 $attachmentPath) ([string]$attachment.sha256) "Attachment hash for $($attachment.role)"
         Assert-Equal ([long](Get-Item -LiteralPath $attachmentPath).Length) ([long]$attachment.byte_size) "Attachment size for $($attachment.role)"
     }
+    $validationDescriptors = @($manifest.sources | ForEach-Object {
+        [pscustomobject]@{
+            role = $_.role
+            source_path = $_.path
+            byte_size = $_.byte_size
+            sha256 = $_.sha256
+        }
+    })
+    $missingAttachmentManifest = Copy-TestJsonObject $manifest
+    $missingAttachmentManifest.attachments = @($missingAttachmentManifest.attachments | Select-Object -First 2)
+    Write-GssUtf8NoBomFile -Path $package.ManifestPath -Value ($missingAttachmentManifest | ConvertTo-Json -Depth 20)
+    Assert-ThrowsLike {
+        Test-GssExistingEmailPackage -PackagePath $package.PackagePath -PackageId $package.PackageId -ExpectedSourceDescriptors $validationDescriptors -ExpectedFeedbackSelectionFingerprint $manifest.feedback_selection_sha256
+    } '*exactly three attachments*' 'Existing package rejects an attachment count other than three'
+
+    $duplicateAttachmentRoleManifest = Copy-TestJsonObject $manifest
+    $duplicateAttachmentRoleManifest.attachments[2].role = 'comparison_pdf'
+    Write-GssUtf8NoBomFile -Path $package.ManifestPath -Value ($duplicateAttachmentRoleManifest | ConvertTo-Json -Depth 20)
+    Assert-ThrowsLike {
+        Test-GssExistingEmailPackage -PackagePath $package.PackagePath -PackageId $package.PackageId -ExpectedSourceDescriptors $validationDescriptors -ExpectedFeedbackSelectionFingerprint $manifest.feedback_selection_sha256
+    } "*exactly one attachment for role 'comparison_pdf'*" 'Existing package rejects duplicate or missing required attachment roles'
+
+    Write-GssUtf8NoBomFile -Path $package.ManifestPath -Value ($manifest | ConvertTo-Json -Depth 20)
+    Assert-True ([bool](Test-GssExistingEmailPackage -PackagePath $package.PackagePath -PackageId $package.PackageId -ExpectedSourceDescriptors $validationDescriptors -ExpectedFeedbackSelectionFingerprint $manifest.feedback_selection_sha256)) 'Original three-attachment manifest remains valid'
+
     $portableTextByFile = [ordered]@{
         'email_manifest.json' = Get-Content -Raw -LiteralPath $package.ManifestPath
         'analysis.json' = Get-Content -Raw -LiteralPath (Join-Path $package.PackagePath 'analysis.json')
         'email_preview.txt' = Get-Content -Raw -LiteralPath (Join-Path $package.PackagePath 'email_preview.txt')
         'email_preview.html' = Get-Content -Raw -LiteralPath (Join-Path $package.PackagePath 'email_preview.html')
+        'RESTRICTED.txt' = Get-Content -Raw -LiteralPath (Join-Path $package.PackagePath 'RESTRICTED.txt')
     }
     $nonRaw = @($portableTextByFile.Values) -join ''
     Assert-True ($nonRaw -match '(?i)exact seven-day sample') 'Required methodology wording is not mistaken for a matching guest surname'
+    Assert-True ($nonRaw -match '(?i)adjacent 13-week windows overlap by 12 weeks') 'Portable narrative discloses adjacent-window overlap'
+    Assert-True ($nonRaw -match '(?i)theme categories are non-exclusive') 'Portable narrative discloses non-exclusive themes'
+    Assert-True ($nonRaw -match '(?i)risk-reduced') 'Portable narrative uses risk-reduced wording'
+    Assert-True ($nonRaw -notmatch '(?i)\banonym(?:ous|ized|ised)\b') 'Portable narrative makes no anonymity claim'
     foreach ($forbidden in @('Casey', 'Testperson', 'Robin', 'Sample', 'casey@example.invalid', '212-555-0199', '555-1212', 'https://example.invalid', 'bare.example.invalid', 'ABC123', 'ZX9876')) {
         $leakedFiles = @($portableTextByFile.GetEnumerator() | Where-Object { ([string]$_.Value).Contains($forbidden) } | ForEach-Object { $_.Key })
         Assert-True ($leakedFiles.Count -eq 0) "PII canary removed: $forbidden; leaked files: $($leakedFiles -join ', ')"

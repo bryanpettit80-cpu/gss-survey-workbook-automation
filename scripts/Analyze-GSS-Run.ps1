@@ -24,6 +24,31 @@ function Release-ComObject {
     }
 }
 
+function Write-GssAnalysisAtomicText {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Content
+    )
+
+    $directory = Split-Path -Parent $Path
+    New-Item -ItemType Directory -Path $directory -Force | Out-Null
+    $temporaryPath = Join-Path $directory ('.t-{0}' -f ([guid]::NewGuid().ToString('N').Substring(0, 8)))
+    try {
+        [System.IO.File]::WriteAllText($temporaryPath, $Content, (New-Object System.Text.UTF8Encoding($false)))
+        if (Test-Path -LiteralPath $Path -PathType Leaf) {
+            [System.IO.File]::Replace($temporaryPath, $Path, $null, $true)
+        }
+        else {
+            [System.IO.File]::Move($temporaryPath, $Path)
+        }
+    }
+    finally {
+        if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) {
+            Remove-Item -LiteralPath $temporaryPath -Force
+        }
+    }
+}
+
 function Resolve-GssAnalysisFolder {
     param([string]$FolderPath)
 
@@ -126,6 +151,38 @@ function Get-GssEntityWeekKey {
 function Test-GssYoyPairing {
     param([datetime]$CurrentWeek, [datetime]$PriorYearWeek)
     return (($CurrentWeek.Date - $PriorYearWeek.Date).Days -eq 364)
+}
+
+function Get-GssConfidenceTier {
+    param([object]$ResponseCount)
+
+    if ($null -eq $ResponseCount -or
+        ($ResponseCount -is [string] -and [string]::IsNullOrWhiteSpace([string]$ResponseCount))) {
+        return 'Not scored'
+    }
+
+    $count = [double]$ResponseCount
+    if ($count -ge [int]$script:GssAnalysisPolicy.confidence.high_minimum_responses) { return 'High' }
+    if ($count -ge [int]$script:GssAnalysisPolicy.confidence.developing_minimum_responses) { return 'Developing' }
+    if ($count -ge [int]$script:GssAnalysisPolicy.confidence.low_minimum_responses) { return 'Low' }
+    return 'Not scored'
+}
+
+function Test-GssTopFindingEligibility {
+    param([object]$Item)
+
+    $tier = if ($Item.PSObject.Properties['ConfidenceTier']) {
+        [string]$Item.ConfidenceTier
+    }
+    else {
+        Get-GssConfidenceTier $Item.CurrentCount
+    }
+    if ($tier -in @('Low', 'Not scored')) { return $false }
+    if ($tier -eq 'Developing') {
+        $thresholdMet = if ($Item.PSObject.Properties['CandidateThresholdMet']) { [bool]$Item.CandidateThresholdMet } else { [bool]$Item.BaseActionItem }
+        return ($thresholdMet -and @($Item.Corroboration).Count -gt 0)
+    }
+    return $true
 }
 
 function Get-RequiredGssEntities {
@@ -306,6 +363,10 @@ function New-GssMetricDetail {
     )
 
     $rowsByKey = @{}
+    $previousCandidateThreshold = [double]$script:GssAnalysisPolicy.thresholds.previous_window.candidate_points
+    $previousActionThreshold = [double]$script:GssAnalysisPolicy.thresholds.previous_window.action_points
+    $priorYearCandidateThreshold = [double]$script:GssAnalysisPolicy.thresholds.prior_year.candidate_points
+    $priorYearActionThreshold = [double]$script:GssAnalysisPolicy.thresholds.prior_year.action_points
     foreach ($row in $RawRows) {
         $rowsByKey[(Get-GssEntityWeekKey $row.EntityKey $row.Week)] = $row
     }
@@ -337,6 +398,7 @@ function New-GssMetricDetail {
             $twoWindowsAgoValue = Get-GssMetricValue $twoWindowsAgoRow $metric.RawKey
             $threeWindowsAgoValue = Get-GssMetricValue $threeWindowsAgoRow $metric.RawKey
             $currentCount = Get-GssMetricValue $currentRow 'Count'
+            $confidenceTier = Get-GssConfidenceTier $currentCount
 
             $wow = Get-DirectionAdjustedChange $currentValue $priorWeekValue $metric.LowerIsBetter
             $yoy = Get-DirectionAdjustedChange $currentValue $priorYearValue $metric.LowerIsBetter
@@ -362,11 +424,11 @@ function New-GssMetricDetail {
             }
 
             $candidateComparisons = @()
-            if ($null -ne $wow -and [math]::Abs([double]$wow) -ge 1) {
-                $candidateComparisons += [pscustomobject]@{ Label = 'PreviousRollingWindow'; Value = [double]$wow; ActionThresholdMet = ([math]::Abs([double]$wow) -ge 2); TieOrder = 0 }
+            if ($null -ne $wow -and [math]::Abs([double]$wow) -ge $previousCandidateThreshold) {
+                $candidateComparisons += [pscustomobject]@{ Label = 'PreviousRollingWindow'; Value = [double]$wow; ActionThresholdMet = ([math]::Abs([double]$wow) -ge $previousActionThreshold); TieOrder = 0 }
             }
-            if ($null -ne $yoy -and [math]::Abs([double]$yoy) -ge 2) {
-                $candidateComparisons += [pscustomobject]@{ Label = 'PriorYearRollingWindow'; Value = [double]$yoy; ActionThresholdMet = ([math]::Abs([double]$yoy) -ge 5); TieOrder = 1 }
+            if ($null -ne $yoy -and [math]::Abs([double]$yoy) -ge $priorYearCandidateThreshold) {
+                $candidateComparisons += [pscustomobject]@{ Label = 'PriorYearRollingWindow'; Value = [double]$yoy; ActionThresholdMet = ([math]::Abs([double]$yoy) -ge $priorYearActionThreshold); TieOrder = 1 }
             }
             $evaluatedCandidates = @()
             foreach ($candidateComparison in $candidateComparisons) {
@@ -400,11 +462,17 @@ function New-GssMetricDetail {
             $persistentMovement = $false
             $corroboration = @()
             $baseAction = $false
+            $candidateThresholdMet = $false
             if ($candidate) {
                 $candidateDirection = if ($candidate.Value -gt 0) { 'Improvement' } else { 'Opportunity' }
                 $persistentMovement = [bool]$candidate.Persistent
                 $corroboration = @($candidate.Corroboration)
-                $baseAction = [bool]$candidate.IsAction
+                $candidateThresholdMet = [bool]$candidate.ActionThresholdMet
+                $baseAction = switch ($confidenceTier) {
+                    'High' { [bool]$candidate.IsAction }
+                    'Developing' { [bool]$candidate.ActionThresholdMet -and $corroboration.Count -gt 0 }
+                    default { $false }
+                }
             }
 
             $restaurantIdMatch = [regex]::Match($entity.Label, '^\s*(\d{4})\b')
@@ -428,6 +496,7 @@ function New-GssMetricDetail {
                 RollingAverage = $null
                 PreviousRollingWindow = $priorWeekValue
                 CurrentCount = $currentCount
+                ConfidenceTier = $confidenceTier
                 WoWImprovement = $wow
                 ChangeVsPreviousRollingWindow = $wow
                 YoYImprovement = $yoy
@@ -441,9 +510,26 @@ function New-GssMetricDetail {
                 CandidateDirection = $candidateDirection
                 CandidateComparison = if ($candidate) { $candidate.Label } else { $null }
                 CandidateMagnitude = if ($candidate) { [math]::Abs([double]$candidate.Value) } else { $null }
+                CandidateThresholdMet = $candidateThresholdMet
                 PersistentMovement = $persistentMovement
                 Corroboration = $corroboration
                 BaseActionItem = $baseAction
+                TopFindingEligible = $baseAction
+                Level = [pscustomobject][ordered]@{
+                    Value = $currentValue
+                    RollingWeeks = [int]$script:GssAnalysisPolicy.rolling_windows.weeks
+                    ResponseCount = $currentCount
+                    ConfidenceTier = $confidenceTier
+                }
+                Movement = [pscustomobject][ordered]@{
+                    ChangeVsPreviousRollingWindow = $wow
+                    ChangeVsPriorYearRollingWindow = $yoy
+                    AdjacentWindowOverlapWeeks = [int]$script:GssAnalysisPolicy.rolling_windows.adjacent_overlap_weeks
+                }
+                Benchmark = [pscustomobject][ordered]@{
+                    VsSorensenTotal = $vsSorensen
+                    VsAllFranchisees = $vsAll
+                }
                 WorstMovement = $worstMovement
                 WorstMovementLabel = $worstMovementLabel
                 BestMovement = $bestMovement
@@ -564,11 +650,24 @@ function Get-GssRunQa {
     if ($RunLog.RowsAppended -notin @(0, 4, 8)) {
         $warnings += "Unexpected RowsAppended value: $($RunLog.RowsAppended). Expected 0, 4, or 8."
     }
+    if ($RunLog.PSObject.Properties['WorstCaseWeeklyLoadsRemaining'] -and
+        $null -ne $RunLog.WorstCaseWeeklyLoadsRemaining -and
+        [int]$RunLog.WorstCaseWeeklyLoadsRemaining -lt 104) {
+        $warnings += "Workbook capacity is below the redesign trigger: $($RunLog.WorstCaseWeeklyLoadsRemaining) worst-case weekly loads remain. Plan structural redesign before capacity is exhausted."
+    }
 
     foreach ($detail in $MetricDetail) {
         if ($detail.Metric -eq 'Count') { continue }
-        if ($detail.CurrentCount -ne $null -and $detail.CurrentCount -lt 100) {
-            $warnings += "Low sample count for $($detail.Entity): $($detail.CurrentCount)."
+        switch ([string]$detail.ConfidenceTier) {
+            'Developing' {
+                $warnings += "Developing confidence for $($detail.Entity): $($detail.CurrentCount) responses; a top finding requires both the point threshold and corroboration."
+            }
+            'Low' {
+                $warnings += "Low confidence for $($detail.Entity): $($detail.CurrentCount) responses; excluded from top Strength and Opportunity findings."
+            }
+            'Not scored' {
+                $warnings += "Not scored for $($detail.Entity): response count is zero or missing; excluded from top Strength and Opportunity findings."
+            }
         }
         if ($detail.WorstMovement -ne $null -and $detail.WorstMovement -le -5) {
             $warnings += ("Large decline: {0} {1} moved {2:N1} points." -f $detail.Entity, $detail.Metric, $detail.WorstMovement)
@@ -605,7 +704,7 @@ function Select-GssAttentionItems {
     param([object[]]$MetricDetail, [int]$Count = 5)
 
     return @($MetricDetail |
-        Where-Object { $_.WorstMovement -ne $null -and $_.WorstMovement -lt 0 } |
+        Where-Object { $_.WorstMovement -ne $null -and $_.WorstMovement -lt 0 -and (Test-GssTopFindingEligibility $_) } |
         Sort-Object @{ Expression = { $_.WorstMovement }; Ascending = $true }, @{ Expression = { $_.CurrentCount }; Descending = $true } |
         Select-Object -First $Count)
 }
@@ -614,7 +713,7 @@ function Select-GssStrengthItems {
     param([object[]]$MetricDetail, [int]$Count = 5)
 
     return @($MetricDetail |
-        Where-Object { $_.BestMovement -ne $null -and $_.BestMovement -gt 0 -and ($_.WorstMovement -eq $null -or $_.WorstMovement -ge 0) } |
+        Where-Object { $_.BestMovement -ne $null -and $_.BestMovement -gt 0 -and ($_.WorstMovement -eq $null -or $_.WorstMovement -ge 0) -and (Test-GssTopFindingEligibility $_) } |
         Sort-Object @{ Expression = { $_.BestMovement }; Descending = $true }, @{ Expression = { $_.CurrentCount }; Descending = $true }, @{ Expression = { $_.Entity }; Descending = $true } |
         Select-Object -First $Count)
 }
@@ -644,6 +743,13 @@ function Select-GssRestaurantFindings {
         $actionItems = @()
         foreach ($detail in @($MetricDetail | Where-Object { $_.RestaurantId -eq $restaurantId -and $_.IsCandidate })) {
             $copy = $detail | Select-Object *
+            $confidenceTier = if ($copy.PSObject.Properties['ConfidenceTier']) {
+                [string]$copy.ConfidenceTier
+            }
+            else {
+                Get-GssConfidenceTier $copy.CurrentCount
+            }
+            $copy | Add-Member -NotePropertyName ConfidenceTier -NotePropertyValue $confidenceTier -Force
             $corroboration = @($copy.Corroboration)
             $feedbackCategory = Get-GssMetricFeedbackCategory $copy
             if ($feedbackCategory) {
@@ -659,8 +765,33 @@ function Select-GssRestaurantFindings {
                 }
             }
             $copy.Corroboration = @($corroboration | Select-Object -Unique)
-            $isAction = [bool]$copy.BaseActionItem -or @($copy.Corroboration | Where-Object { $_ -like 'guest_feedback:*' }).Count -gt 0
+            $thresholdMet = if ($copy.PSObject.Properties['CandidateThresholdMet']) {
+                [bool]$copy.CandidateThresholdMet
+            }
+            else {
+                [bool]$copy.BaseActionItem
+            }
+            $isAction = switch ($confidenceTier) {
+                'High' {
+                    [bool]$copy.BaseActionItem -or @($copy.Corroboration | Where-Object { $_ -like 'guest_feedback:*' }).Count -gt 0
+                }
+                'Developing' {
+                    $thresholdMet -and @($copy.Corroboration).Count -gt 0
+                }
+                default {
+                    $false
+                }
+            }
             $copy | Add-Member -NotePropertyName IsActionItem -NotePropertyValue $isAction -Force
+            $copy | Add-Member -NotePropertyName CandidateThresholdMet -NotePropertyValue $thresholdMet -Force
+            $copy | Add-Member -NotePropertyName TopFindingEligible -NotePropertyValue $isAction -Force
+            $confidenceDecision = switch ($confidenceTier) {
+                'High' { 'Eligible under the standard threshold/corroboration rules.' }
+                'Developing' { 'Eligible only when the point threshold and corroboration are both present.' }
+                'Low' { 'Excluded from top findings because the response count is below 50.' }
+                default { 'Excluded from top findings because the response count is zero or missing.' }
+            }
+            $copy | Add-Member -NotePropertyName ConfidencePolicyDecision -NotePropertyValue $confidenceDecision -Force
             $directionSign = if ($copy.CandidateDirection -eq 'Improvement') { 1 } else { -1 }
             $eligibleMagnitudes = @()
             foreach ($value in @($copy.ChangeVsPreviousRollingWindow, $copy.YoYImprovement)) {
@@ -728,6 +859,7 @@ function New-GssReviewMarkdown {
     $lines += "Email readiness: $($Result.EmailReadiness)"
     $lines += "Run mode: $($Result.Run.Mode)"
     $lines += "13-week rolling through: $($Result.Run.CurrentWeekEnding)"
+    $lines += 'Adjacent 13-week rolling windows overlap by 12 weeks.'
     $lines += "Prior-year rolling through: $($Result.Run.PriorYearWeekEnding)"
     $lines += "Rows appended: $($Result.Run.RowsAppended)"
     $lines += "Workbook QA: $($Result.WorkbookQaStatus)"
@@ -755,8 +887,8 @@ function New-GssReviewMarkdown {
     }
     else {
         foreach ($item in $AttentionItems) {
-            $lines += ('- {0}: {1} 13-week rolling value {2}; change versus previous rolling window {3}; change versus prior-year rolling window {4}; versus all franchisees {5}.' -f `
-                $item.Entity, $item.Metric, (Format-GssNumber $item.Current), (Format-GssMovementNumber $item.ChangeVsPreviousRollingWindow), (Format-GssMovementNumber $item.YoYImprovement), (Format-GssMovementNumber $item.VsAllFranchisees))
+            $lines += ('- {0}: {1}. Level: 13-week rolling value {2} ({3} confidence, n={4}). Movement: {5} versus the previous rolling window and {6} versus prior year. Benchmark: {7} versus all franchisees.' -f `
+                $item.Entity, $item.Metric, (Format-GssNumber $item.Current), $item.ConfidenceTier, (Format-GssNumber $item.CurrentCount 0), (Format-GssMovementNumber $item.ChangeVsPreviousRollingWindow), (Format-GssMovementNumber $item.YoYImprovement), (Format-GssMovementNumber $item.VsAllFranchisees))
         }
     }
     $lines += ''
@@ -766,8 +898,8 @@ function New-GssReviewMarkdown {
     }
     else {
         foreach ($item in $StrengthItems) {
-            $lines += ('- {0}: {1} 13-week rolling value {2}; change versus previous rolling window {3}; change versus prior-year rolling window {4}; versus Sorensen total {5}.' -f `
-                $item.Entity, $item.Metric, (Format-GssNumber $item.Current), (Format-GssMovementNumber $item.ChangeVsPreviousRollingWindow), (Format-GssMovementNumber $item.YoYImprovement), (Format-GssMovementNumber $item.VsSorensenTotal))
+            $lines += ('- {0}: {1}. Level: 13-week rolling value {2} ({3} confidence, n={4}). Movement: {5} versus the previous rolling window and {6} versus prior year. Benchmark: {7} versus Sorensen total.' -f `
+                $item.Entity, $item.Metric, (Format-GssNumber $item.Current), $item.ConfidenceTier, (Format-GssNumber $item.CurrentCount 0), (Format-GssMovementNumber $item.ChangeVsPreviousRollingWindow), (Format-GssMovementNumber $item.YoYImprovement), (Format-GssMovementNumber $item.VsSorensenTotal))
         }
     }
     $lines += ''
@@ -776,7 +908,7 @@ function New-GssReviewMarkdown {
     $lines += "- JSON: $($Result.JsonPath)"
     $lines += "- Review folder: $($Result.ReviewFolder)"
     $lines += ''
-    $lines += 'These comparisons are directional. They do not establish statistical significance or causation.'
+    $lines += 'This risk-reduced analysis requires human review. These comparisons are directional. They do not establish statistical significance or causation.'
     $lines += ''
 
     return ($lines -join [Environment]::NewLine)
@@ -843,6 +975,16 @@ function Invoke-GssRunAnalysis {
         EmailReadiness = if ($PublishPackage) { $qa.EmailReadiness } else { 'NotEvaluated' }
         WorkbookQaStatus = $workbookData.WorkbookQaStatus
         GeneratedAt = (Get-Date).ToString('s')
+        AnalysisPolicy = [pscustomobject][ordered]@{
+            Version = $script:GssAnalysisPolicyVersion
+            RollingWeeks = [int]$script:GssAnalysisPolicy.rolling_windows.weeks
+            AdjacentWindowOverlapWeeks = [int]$script:GssAnalysisPolicy.rolling_windows.adjacent_overlap_weeks
+            HighMinimumResponses = [int]$script:GssAnalysisPolicy.confidence.high_minimum_responses
+            DevelopingMinimumResponses = [int]$script:GssAnalysisPolicy.confidence.developing_minimum_responses
+            LowMinimumResponses = [int]$script:GssAnalysisPolicy.confidence.low_minimum_responses
+            HumanReviewRequired = [bool]$script:GssAnalysisPolicy.review_controls.human_review_required
+            AutomaticSendingEnabled = [bool]$script:GssAnalysisPolicy.review_controls.automatic_sending_enabled
+        }
         Folder = $FolderPath
         ReviewFolder = $reviewFolder
         MarkdownPath = $markdownPath
@@ -885,9 +1027,9 @@ function Invoke-GssRunAnalysis {
     }
 
     $markdown = New-GssReviewMarkdown $result $attentionItems $strengthItems
-    $markdown | Set-Content -LiteralPath $markdownPath -Encoding UTF8
-    $result | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $jsonPath -Encoding UTF8
-    $metricDetail | Export-Csv -LiteralPath $detailCsvPath -NoTypeInformation -Encoding UTF8
+    Write-GssAnalysisAtomicText -Path $markdownPath -Content (@($markdown) -join [Environment]::NewLine)
+    Write-GssAnalysisAtomicText -Path $jsonPath -Content ($result | ConvertTo-Json -Depth 8)
+    Write-GssAnalysisAtomicText -Path $detailCsvPath -Content (@($metricDetail | ConvertTo-Csv -NoTypeInformation) -join [Environment]::NewLine)
 
     Write-GssAnalysisSummary $result
     if ($ReturnObject) {

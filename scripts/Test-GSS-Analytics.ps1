@@ -26,6 +26,18 @@ Assert-Equal (Test-GssYoyPairing ([datetime]'2026-07-05') ([datetime]'2025-07-06
 Assert-Equal (Test-GssYoyPairing ([datetime]'2026-07-05') ([datetime]'2025-07-05')) $false 'Invalid YoY pairing'
 Assert-Equal (Format-GssMovementNumber 2.25 1) '+2.3' 'Positive movement formatting'
 Assert-Equal (Format-GssMovementNumber -2.25 1) '-2.3' 'Negative movement formatting'
+Assert-Equal $script:GssAnalysisPolicyVersion 'gss-analysis-policy/v2' 'Versioned analysis policy'
+Assert-Equal ([double]$script:GssAnalysisPolicy.thresholds.previous_window.candidate_points) 1 'Previous-window candidate threshold remains one point'
+Assert-Equal ([double]$script:GssAnalysisPolicy.thresholds.previous_window.action_points) 2 'Previous-window action threshold remains two points'
+Assert-Equal ([double]$script:GssAnalysisPolicy.thresholds.prior_year.candidate_points) 2 'Prior-year candidate threshold remains two points'
+Assert-Equal ([double]$script:GssAnalysisPolicy.thresholds.prior_year.action_points) 5 'Prior-year action threshold remains five points'
+Assert-Equal (Get-GssConfidenceTier 100) 'High' 'High confidence boundary'
+Assert-Equal (Get-GssConfidenceTier 99) 'Developing' 'Developing confidence upper boundary'
+Assert-Equal (Get-GssConfidenceTier 50) 'Developing' 'Developing confidence lower boundary'
+Assert-Equal (Get-GssConfidenceTier 49) 'Low' 'Low confidence upper boundary'
+Assert-Equal (Get-GssConfidenceTier 1) 'Low' 'Low confidence lower boundary'
+Assert-Equal (Get-GssConfidenceTier 0) 'Not scored' 'Zero responses are not scored'
+Assert-Equal (Get-GssConfidenceTier $null) 'Not scored' 'Missing responses are not scored'
 
 $metrics = @(
     [pscustomobject]@{ DisplayName = 'Overall Experience'; RawKey = 'Overall Experience'; LowerIsBetter = $false; IncludeInMovers = $true; Category = 'Overall'; Owner = 'GM' },
@@ -79,6 +91,10 @@ Assert-Equal $richmondOverall.WoWImprovement -5 'Metric detail WoW decline'
 Assert-Equal $richmondOverall.YoYImprovement -10 'Metric detail YoY decline'
 Assert-Equal $richmondOverall.WorstMovementLabel 'PriorYearRollingWindow' 'Weakest comparison label'
 Assert-Equal $richmondOverall.BestMovementLabel 'PreviousRollingWindow' 'Strongest comparison label when both are negative'
+Assert-Equal $richmondOverall.ConfidenceTier 'High' 'Metric confidence tier'
+Assert-Equal $richmondOverall.Level.RollingWeeks 13 'Structured level window'
+Assert-Equal $richmondOverall.Movement.AdjacentWindowOverlapWeeks 12 'Structured movement adjacent overlap'
+Assert-Equal $richmondOverall.Benchmark.VsAllFranchisees $richmondOverall.VsAllFranchisees 'Structured benchmark value'
 Assert-Equal $richmondDissat.WoWImprovement 3 'Lower-is-better metric detail'
 Assert-Equal $vbOverall.BestMovement 4 'Strength ranking candidate'
 Assert-Equal $vbOverall.BestMovementLabel 'PriorYearRollingWindow' 'Strength improvement label'
@@ -113,6 +129,16 @@ Assert-True (@($readyQa.Warnings | Where-Object { $_ -like 'QA Checks*' }).Count
 
 $invalidQa = Get-GssRunQa $runLog 'C:\GSS Surveys' 'C:\missing.xlsx' $rawRows $metrics $headers $detail $current $priorYear $true '#VALUE!'
 Assert-True (@($invalidQa.Blockers | Where-Object { $_ -like 'Workbook QA Checks returned an invalid status*' }).Count -eq 1) 'Invalid workbook QA is a blocker'
+
+$capacityRunLog = $runLog | Select-Object *
+$capacityRunLog | Add-Member -NotePropertyName WorstCaseWeeklyLoadsRemaining -NotePropertyValue 103
+$capacityQa = Get-GssRunQa $capacityRunLog 'C:\GSS Surveys' 'C:\missing.xlsx' $rawRows $metrics $headers $detail $current $priorYear $true 'READY'
+Assert-True (@($capacityQa.Warnings | Where-Object { $_ -like 'Workbook capacity is below the redesign trigger*' }).Count -eq 1) 'Capacity below 104 weekly loads triggers redesign warning'
+
+$healthyCapacityRunLog = $runLog | Select-Object *
+$healthyCapacityRunLog | Add-Member -NotePropertyName WorstCaseWeeklyLoadsRemaining -NotePropertyValue 104
+$healthyCapacityQa = Get-GssRunQa $healthyCapacityRunLog 'C:\GSS Surveys' 'C:\missing.xlsx' $rawRows $metrics $headers $detail $current $priorYear $true 'READY'
+Assert-True (@($healthyCapacityQa.Warnings | Where-Object { $_ -like 'Workbook capacity is below the redesign trigger*' }).Count -eq 0) 'Capacity at 104 weekly loads does not trigger redesign warning'
 
 $pathRunLog = [pscustomobject]@{ TargetWorkbook = 'C:\GSS Surveys\_automation_runs\test-output\guarded-copy.xlsx' }
 Assert-Equal (Resolve-GssAnalysisWorkbookPath $pathRunLog 'C:\GSS Surveys' 'main.xlsx') 'C:\GSS Surveys\_automation_runs\test-output\guarded-copy.xlsx' 'Analyzer uses logged copy-test workbook'
@@ -151,7 +177,14 @@ Assert-Equal $mixedDirection.CandidateDirection 'Improvement' 'Eligible previous
 Assert-Equal $mixedDirection.CandidateComparison 'PreviousRollingWindow' 'Mixed-direction eligible comparison selection'
 
 function New-TestFindingItem {
-    param([string]$RestaurantId, [string]$MetricName, [string]$Direction, [double]$Score, [bool]$BaseAction = $true)
+    param(
+        [string]$RestaurantId,
+        [string]$MetricName,
+        [string]$Direction,
+        [double]$Score,
+        [bool]$BaseAction = $true,
+        [int]$ResponseCount = 120
+    )
     return [pscustomobject]@{
         EvidenceId = "metric-$RestaurantId-$MetricName"
         RestaurantId = $RestaurantId
@@ -161,7 +194,7 @@ function New-TestFindingItem {
         Category = if ($MetricName -like 'Service*') { 'Service' } else { 'Overall' }
         LowerIsBetter = $false
         Current = 80
-        CurrentCount = 120
+        CurrentCount = $ResponseCount
         ChangeVsPreviousRollingWindow = if ($Direction -eq 'Improvement') { $Score } else { -$Score }
         YoYImprovement = 0
         VsAllFranchisees = 0
@@ -170,6 +203,7 @@ function New-TestFindingItem {
         IsCandidate = $true
         CandidateDirection = $Direction
         CandidateMagnitude = $Score
+        CandidateThresholdMet = $BaseAction
         Corroboration = @()
         BaseActionItem = $BaseAction
     }
@@ -199,5 +233,27 @@ $guestTheme = [pscustomobject]@{ restaurant_id = '9354'; category = 'service'; c
 $withGuest = @(Select-GssRestaurantFindings @($guestCandidate) @($guestTheme)) | Where-Object RestaurantId -eq '9354'
 Assert-Equal @($withGuest.Opportunities).Count 1 'Guest feedback elevates a candidate to action item'
 Assert-True (@($withGuest.Opportunities[0].Corroboration | Where-Object { $_ -eq 'guest_feedback:theme-9354-service' }).Count -eq 1) 'Guest corroboration evidence ID retained'
+
+$developingThresholdOnly = New-TestFindingItem '9354' 'Service Developing Threshold Only' 'Opportunity' 3 $true 75
+$developingWithoutCorroboration = @(Select-GssRestaurantFindings @($developingThresholdOnly)) | Where-Object RestaurantId -eq '9354'
+Assert-Equal @($developingWithoutCorroboration.Opportunities).Count 0 'Developing confidence requires corroboration in addition to the point threshold'
+
+$developingWithGuest = @(Select-GssRestaurantFindings @($developingThresholdOnly) @($guestTheme)) | Where-Object RestaurantId -eq '9354'
+Assert-Equal @($developingWithGuest.Opportunities).Count 1 'Developing confidence qualifies with threshold and corroboration'
+Assert-Equal $developingWithGuest.Opportunities[0].ConfidenceTier 'Developing' 'Developing confidence retained in selected finding'
+
+$developingBelowThreshold = New-TestFindingItem '9354' 'Service Developing Below Threshold' 'Opportunity' 1.2 $false 75
+$developingBelowThresholdWithGuest = @(Select-GssRestaurantFindings @($developingBelowThreshold) @($guestTheme)) | Where-Object RestaurantId -eq '9354'
+Assert-Equal @($developingBelowThresholdWithGuest.Opportunities).Count 0 'Developing corroboration cannot replace the point threshold'
+
+$lowWithGuest = New-TestFindingItem '9354' 'Service Low Confidence' 'Opportunity' 6 $true 49
+$lowFindings = @(Select-GssRestaurantFindings @($lowWithGuest) @($guestTheme)) | Where-Object RestaurantId -eq '9354'
+Assert-Equal @($lowFindings.Opportunities).Count 0 'Low confidence is never a top Opportunity'
+Assert-Equal @($lowFindings.Strengths).Count 0 'Low confidence is never a top Strength'
+
+$notScoredWithGuest = New-TestFindingItem '9354' 'Service Not Scored' 'Improvement' 6 $true 0
+$notScoredFindings = @(Select-GssRestaurantFindings @($notScoredWithGuest) @($guestTheme)) | Where-Object RestaurantId -eq '9354'
+Assert-Equal @($notScoredFindings.Opportunities).Count 0 'Not scored is never a top Opportunity'
+Assert-Equal @($notScoredFindings.Strengths).Count 0 'Not scored is never a top Strength'
 
 Write-Host 'GSS analytics logic tests passed.'

@@ -9,9 +9,20 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
+      - name: Install pinned PowerShell validation modules
+        shell: powershell
+        run: |
+          Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Scope CurrentUser -Force -AllowClobber
+          Install-Module Pester -RequiredVersion 5.8.0 -Scope CurrentUser -Force -AllowClobber -SkipPublisherCheck
       - name: Parse PowerShell scripts
         shell: powershell
         run: .\scripts\Test-GSS-PowerShellSyntax.ps1
+      - name: Run PSScriptAnalyzer against reviewed baseline
+        shell: powershell
+        run: .\scripts\Test-GSS-PSScriptAnalyzer.ps1
+      - name: Run Pester module tests
+        shell: powershell
+        run: .\scripts\Test-GSS-Pester.ps1
       - name: Run non-Excel logic tests
         shell: powershell
         run: .\scripts\Test-GSS-Logic.ps1
@@ -21,3 +32,9 @@ jobs:
       - name: Run email package and privacy tests
         shell: powershell
         run: .\scripts\Test-GSS-EmailPackage.ps1
+      - name: Run Drive backup state-machine tests
+        shell: powershell
+        run: .\scripts\Test-GSS-DriveBackup.ps1
+      - name: Verify release manifest file hashes
+        shell: powershell
+        run: .\scripts\Test-GSS-ReleaseIntegrity.ps1 -SkipTagCheck

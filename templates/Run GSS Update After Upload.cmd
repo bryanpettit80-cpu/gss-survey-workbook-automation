@@ -6,6 +6,8 @@ echo GSS SURVEY WORKBOOK UPDATE
 echo ==========================
 echo This will test the update first. The live workbook will not change
 echo unless the test passes and you type APPLY when prompted.
+echo A verified private Google Drive backup is required before live apply.
+echo Automatic email sending is permanently disabled.
 echo.
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0GSS Survey Workbook Automation\scripts\Invoke-GSS-SafeWorkbookUpdate.ps1" -Folder "%~dp0."
 set EXITCODE=%ERRORLEVEL%

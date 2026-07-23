@@ -2,8 +2,16 @@ This folder stores the current guest-detail export and its archive.
 
 The workbook updater does not use these files to change the score-trends workbook.
 After a successful live update, the email-package analyzer uses them to prepare
-anonymized new guest feedback and the raw detail attachment. Missing or corrupt
-detail data blocks email drafting but does not block an otherwise safe workbook update.
+risk-reduced analysis text and the raw detail attachment. The analysis removes
+recognized personal-data patterns, but it is not anonymous and cannot prove that
+all personal data is absent. The raw detail attachment contains personal data.
+
+Every resulting package is:
+CONTAINS PERSONAL DATA - RESTRICTED
+
+It requires restricted-recipient and content review by a person. Automatic sending
+is permanently disabled. Missing or corrupt detail data blocks email drafting but
+does not block an otherwise safe workbook update.
 
 For the weekly update, save the newest Sorensen FW workbook in:
 02 Weekly Rolling Source Workbooks

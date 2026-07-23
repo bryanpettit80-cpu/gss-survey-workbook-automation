@@ -8,20 +8,24 @@ Non-technical users should work from the parent `GSS Surveys` folder, not from t
 
 1. Save the newest `Sorensen FW...` workbook in `02 Weekly Rolling Source Workbooks`.
 2. Close the main GSS workbook if it is open in Excel.
-3. Double-click `Run GSS Update After Upload.cmd` in the `GSS Surveys` folder.
-4. Wait for the copy-test and review to finish.
-5. Type `APPLY` only when the copy-test passes and you want to update the live workbook.
+3. Confirm Google Drive for desktop is running and `G:\My Drive` is available.
+4. Double-click `Run GSS Update After Upload.cmd` in the `GSS Surveys` folder.
+5. Wait for the copy-test and review to finish.
+6. Type `APPLY` only when the tested run fingerprint is shown and you want to update the live workbook.
 
-The launcher always tests a copy first. It also creates a backup before changing the live workbook.
+The launcher locks the workflow to one workstation run, stages and tests the workbook once, and binds `APPLY` to the tested fingerprint. It must prepare and hash-verify a private Google Drive backup before promoting the staged workbook.
 
 ## What the Final Message Means
 
 - `NO LIVE CHANGES MADE`: the process stopped safely without changing the live workbook.
-- `UPDATE COMPLETE`: the live workbook was updated and the final review passed.
+- `UPDATE COMPLETE`: the live workbook was updated, the final review passed, and the Drive snapshot was committed.
+- `BACKUP FINALIZATION PENDING`: the workbook is valid and stays in place, but no READY email package is published until the idempotent Drive-finalization retry succeeds.
 - `ATTENTION NEEDED`: stop and review the message shown on screen before using the results.
 
 Finished comparison PDFs are saved in `04 Email Comparison PDFs`.
-They are named for the report week, not the file-modification date. After a successful live apply, the launcher also publishes a portable package for the AOL draft writer. A copy-test never publishes an email package.
+They are named for the report week, not the file-modification date. After a successful live apply and committed Drive snapshot, the launcher publishes a portable package for the AOL draft writer. A copy-test never publishes an email package.
+
+Every READY package includes three reviewed attachments, including an unchanged raw guest-detail workbook that contains personal data. READY means the package passed the workflow controls; it does not mean anonymous or PII-free. Treat the package as **CONTAINS PERSONAL DATA — RESTRICTED**. Human recipient/content review is required, and automatic sending is permanently disabled.
 
 ## Operator Folder Map
 
@@ -43,8 +47,13 @@ The repository is intentionally program-only. Do not commit survey workbooks, PD
 - `scripts\Invoke-GSS-SafeWorkbookUpdate.ps1`: canonical safe workflow used by the operator launcher.
 - `scripts\Update-GSS-MainWorkbook.ps1`: Excel updater.
 - `scripts\Analyze-GSS-Run.ps1`: deterministic post-run QA and insight review.
-- `scripts\Gss-EmailPackage.ps1`: portable, privacy-sanitized email-package publisher.
+- `scripts\Gss-EmailPackage.ps1`: restricted email-package publisher with risk-reduced analysis text and an explicitly labeled raw personal-data attachment.
 - `scripts\Gss-Common.ps1`: shared conversion and path helpers.
+- `scripts\Invoke-GSS-DriveBackup.ps1`: private Drive backup, finalization, retention reporting, capacity projection, and verify-only restore entry point.
+- `scripts\Gss-DriveBackup.ps1`: hash-verified DriveFS backup functions.
+- `scripts\Resume-GSS-PendingFinalize.ps1`: idempotent backup/package continuation that never reapplies the workbook.
+- `scripts\Invoke-GSS-QuarterlyRestoreDrill.ps1`: isolated Drive restore plus desktop Excel validation.
+- `scripts\Test-GSS-ReleaseIntegrity.ps1`: tagged-release, clean-tree, manifest, and executable-file guard.
 - `scripts\Install-GSS-OperatorLauncher.ps1`: refreshes the operator launcher and plain-language guide files.
 - `scripts\Get-GSS-SetupStatus.ps1`: checks operator files and scheduled-task state.
 
@@ -61,14 +70,39 @@ The repository is intentionally program-only. Do not commit survey workbooks, PD
 
 ### Safety and Output
 
-- Copy-tests go to `..\_automation_runs\test-output`.
+- Copy-tests and transaction staging go to `..\_automation_runs\test-output`.
 - Live backups go to `..\_automation_runs\backups`.
 - JSON logs go to `..\_automation_runs\logs`.
 - QA packages go to `..\_automation_runs\qa\run_review_YYYYMMDD_HHMMSS`.
-- Ready email packages go to `..\_automation_runs\email_outbox\<package-id>` only after a successful live apply.
+- Ready email packages go to `..\_automation_runs\email_outbox\<package-id>` only after a successful live apply, final workbook validation, and committed Drive snapshot.
 - The post-run result reports `WorkbookStatus`, `AnalysisStatus`, and `EmailReadiness` separately. Only workbook blockers prevent apply; detail-data or attachment-evidence blockers prevent drafting.
 - A blocked copy-test review prevents live apply.
-- Existing current/prior-year rows are skipped rather than duplicated.
+- Exact entity-set checks block partial, duplicate, or unexpected current/prior-year week rows before mutation.
+- Live promotion rechecks the starting workbook and source hashes, uses a same-volume atomic replace, and rolls back only when the live file still matches this run's promoted hash.
+- Logs, QA evidence, manifests, and receipts use atomic writes.
+
+### Independent Google Drive Backup
+
+The supported destination is the owner-only `GSS Survey Backups` folder in `bryan.pettit80@gmail.com` My Drive. Runtime access uses the exact Drive-for-desktop path stored in `%LOCALAPPDATA%\GSSSurveyWorkbookAutomation\settings.json`; the workflow never falls back to Dropbox or another folder.
+
+The curated recovery set includes operator guides, folders `01` through `06`, raw guest-detail workbooks, QA/log/state evidence, finalized READY packages, current transaction artifacts, and exact program-release archives. It excludes test output, old local runtime backups, quarantine, staging/temp files, and the repository working tree/`.git`. Because the recovery set contains raw guest data, the Drive root is classified **CONTAINS PERSONAL DATA — RESTRICTED**.
+
+`Prepare` writes and hash-verifies a `.partial-<run-id>` snapshot and writes `prepared-manifest.json` last. `Finalize` refreshes the post-apply artifacts, promotes the snapshot, and atomically writes `backup-manifest.json` plus `commit-receipt.json`. Runtime verification is recorded as `drivefs_hash_verified`; commissioning and restore drills add Google Drive metadata readback evidence.
+
+Retention is report-only: keep the newest completed snapshot in each of the latest 13 ISO weeks plus the latest snapshot in each of the prior 12 calendar months. The automation reports older candidates but never deletes them. Quarterly restore drills extract to `%LOCALAPPDATA%` and verify hashes without overwriting the live Dropbox tree.
+
+Useful commands:
+
+```powershell
+.\scripts\Invoke-GSS-DriveBackup.ps1 -Operation Inventory -RunSummaryPath <run-summary.json> -OutputObject
+.\scripts\Invoke-GSS-DriveBackup.ps1 -Operation CapacityProjection -RunSummaryPath <run-summary.json> -OutputObject
+.\scripts\Invoke-GSS-DriveBackup.ps1 -Operation RetentionReport -OutputObject
+.\scripts\Invoke-GSS-DriveBackup.ps1 -Operation VerifyRestore -RunId <committed-run-id> -OutputObject
+.\scripts\Resume-GSS-PendingFinalize.ps1 -LiveRunLogPath <exact-apply-log.json>
+.\scripts\Invoke-GSS-QuarterlyRestoreDrill.ps1 -RunId <committed-run-id>
+```
+
+The resume command never reapplies the workbook. It revalidates the exact run and live hashes, retries the Drive commit idempotently, and publishes the READY package only after the backup is committed. The quarterly drill adds desktop Excel validation to the hash-verified restore and writes a combined receipt inside the isolated restore folder.
 
 ### Validation
 
@@ -76,12 +110,29 @@ Run these before committing script changes:
 
 ```powershell
 .\scripts\Test-GSS-PowerShellSyntax.ps1
+.\scripts\Test-GSS-PSScriptAnalyzer.ps1
+.\scripts\Test-GSS-Pester.ps1
 .\scripts\Test-GSS-Logic.ps1
 .\scripts\Test-GSS-Analytics.ps1
 .\scripts\Test-GSS-EmailPackage.ps1
+.\scripts\Test-GSS-DriveBackup.ps1
+.\scripts\Test-GSS-ReleaseIntegrity.ps1 -SkipTagCheck
 ```
 
-For local Excel integration verification, run `Test-GSS-WorkbookIntegration.ps1` against a copy-test workbook. This check is intentionally not part of GitHub Actions because the hosted runner does not provide desktop Excel.
+PSScriptAnalyzer `1.25.0` and Pester `5.8.0` are pinned in CI. The analyzer baseline records reviewed legacy warnings and fails on any new warning fingerprint; Pester covers new modules while the established regression harnesses remain in place.
+
+For local Excel integration verification, run `Test-GSS-WorkbookIntegration.ps1` against the staged copy-test workbook and write its machine-readable receipt to `..\_automation_runs\state\release\local-excel-validation-receipt.json`. Production validates that the receipt is a passed copy-only test bound to the exact HEAD/tag, workbook hash, Excel version, and run fingerprint. This check is intentionally not part of GitHub Actions because the hosted runner does not provide desktop Excel.
+
+### Release Contract
+
+Production execution requires a clean, exact tagged release at `HEAD`, a matching `release\release-manifest.json`, and no untracked executable files. Generate the reviewed manifest only after code and policy changes are complete:
+
+```powershell
+.\scripts\New-GSS-ReleaseManifest.ps1 -Version <major.minor.patch>
+.\scripts\Test-GSS-ReleaseIntegrity.ps1 -SkipTagCheck
+```
+
+After the manifest commit is merged and CI is green, create the annotated release tag on that exact `main` commit, run the local Excel validation, archive the exact tag, and include both archive and validation receipt in the Drive snapshot. The production launcher performs the full tag and receipt checks and refuses mutable or unapproved code.
 
 Requirements are Windows, Microsoft Excel desktop, and PowerShell.
 

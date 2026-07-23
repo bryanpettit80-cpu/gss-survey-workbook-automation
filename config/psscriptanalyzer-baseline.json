@@ -1,0 +1,600 @@
+{
+  "schema_version": 1,
+  "psscriptanalyzer_version": "1.25.0",
+  "generated_at_utc": "2026-07-23T20:27:48.1537040Z",
+  "policy": "Existing warnings are reviewed debt. CI rejects any new warning fingerprint.",
+  "entries": [
+    {
+      "fingerprint": "scripts/Analyze-GSS-Run.ps1|PSAvoidUsingWriteHost|File 'Analyze-GSS-Run.ps1' uses Write-Host. Avoid using Write-Host because it might not work in all hosts, does not work when there is no host, and (prior to PS 5.0) cannot be suppressed, captured, or redirected. Instead, use Write-Output, Write-Verbose, or Write-Information.",
+      "path": "scripts/Analyze-GSS-Run.ps1",
+      "rule": "PSAvoidUsingWriteHost",
+      "severity": "Warning",
+      "message": "File 'Analyze-GSS-Run.ps1' uses Write-Host. Avoid using Write-Host because it might not work in all hosts, does not work when there is no host, and (prior to PS 5.0) cannot be suppressed, captured, or redirected. Instead, use Write-Output, Write-Verbose, or Write-Information.",
+      "count": 9
+    },
+    {
+      "fingerprint": "scripts/Analyze-GSS-Run.ps1|PSPossibleIncorrectComparisonWithNull|$null should be on the left side of equality comparisons.",
+      "path": "scripts/Analyze-GSS-Run.ps1",
+      "rule": "PSPossibleIncorrectComparisonWithNull",
+      "severity": "Warning",
+      "message": "$null should be on the left side of equality comparisons.",
+      "count": 4
+    },
+    {
+      "fingerprint": "scripts/Analyze-GSS-Run.ps1|PSReviewUnusedParameter|The parameter 'LookbackWeeks' has been declared but not used.",
+      "path": "scripts/Analyze-GSS-Run.ps1",
+      "rule": "PSReviewUnusedParameter",
+      "severity": "Warning",
+      "message": "The parameter 'LookbackWeeks' has been declared but not used.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Analyze-GSS-Run.ps1|PSUseApprovedVerbs|The cmdlet 'Release-ComObject' uses an unapproved verb.",
+      "path": "scripts/Analyze-GSS-Run.ps1",
+      "rule": "PSUseApprovedVerbs",
+      "severity": "Warning",
+      "message": "The cmdlet 'Release-ComObject' uses an unapproved verb.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Analyze-GSS-Run.ps1|PSUseDeclaredVarsMoreThanAssignments|The variable 'resolvedPdf' is assigned but never used.",
+      "path": "scripts/Analyze-GSS-Run.ps1",
+      "rule": "PSUseDeclaredVarsMoreThanAssignments",
+      "severity": "Warning",
+      "message": "The variable 'resolvedPdf' is assigned but never used.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Analyze-GSS-Run.ps1|PSUseShouldProcessForStateChangingFunctions|Function 'New-GssMetricDetail' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "path": "scripts/Analyze-GSS-Run.ps1",
+      "rule": "PSUseShouldProcessForStateChangingFunctions",
+      "severity": "Warning",
+      "message": "Function 'New-GssMetricDetail' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Analyze-GSS-Run.ps1|PSUseShouldProcessForStateChangingFunctions|Function 'New-GssReviewMarkdown' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "path": "scripts/Analyze-GSS-Run.ps1",
+      "rule": "PSUseShouldProcessForStateChangingFunctions",
+      "severity": "Warning",
+      "message": "Function 'New-GssReviewMarkdown' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Analyze-GSS-Run.ps1|PSUseSingularNouns|The cmdlet 'Get-RequiredGssEntities' uses a plural noun. A singular noun should be used instead.",
+      "path": "scripts/Analyze-GSS-Run.ps1",
+      "rule": "PSUseSingularNouns",
+      "severity": "Warning",
+      "message": "The cmdlet 'Get-RequiredGssEntities' uses a plural noun. A singular noun should be used instead.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Analyze-GSS-Run.ps1|PSUseSingularNouns|The cmdlet 'Select-GssAttentionItems' uses a plural noun. A singular noun should be used instead.",
+      "path": "scripts/Analyze-GSS-Run.ps1",
+      "rule": "PSUseSingularNouns",
+      "severity": "Warning",
+      "message": "The cmdlet 'Select-GssAttentionItems' uses a plural noun. A singular noun should be used instead.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Analyze-GSS-Run.ps1|PSUseSingularNouns|The cmdlet 'Select-GssRestaurantFindings' uses a plural noun. A singular noun should be used instead.",
+      "path": "scripts/Analyze-GSS-Run.ps1",
+      "rule": "PSUseSingularNouns",
+      "severity": "Warning",
+      "message": "The cmdlet 'Select-GssRestaurantFindings' uses a plural noun. A singular noun should be used instead.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Analyze-GSS-Run.ps1|PSUseSingularNouns|The cmdlet 'Select-GssStrengthItems' uses a plural noun. A singular noun should be used instead.",
+      "path": "scripts/Analyze-GSS-Run.ps1",
+      "rule": "PSUseSingularNouns",
+      "severity": "Warning",
+      "message": "The cmdlet 'Select-GssStrengthItems' uses a plural noun. A singular noun should be used instead.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Gss-Common.ps1|PSAvoidAssignmentToAutomaticVariable|The Variable 'matches' is an automatic variable that is built into PowerShell, assigning to it might have undesired side effects. If assignment is not by design, please use a different name.",
+      "path": "scripts/Gss-Common.ps1",
+      "rule": "PSAvoidAssignmentToAutomaticVariable",
+      "severity": "Warning",
+      "message": "The Variable 'matches' is an automatic variable that is built into PowerShell, assigning to it might have undesired side effects. If assignment is not by design, please use a different name.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Gss-Common.ps1|PSUseApprovedVerbs|The cmdlet 'Normalize-Header' uses an unapproved verb.",
+      "path": "scripts/Gss-Common.ps1",
+      "rule": "PSUseApprovedVerbs",
+      "severity": "Warning",
+      "message": "The cmdlet 'Normalize-Header' uses an unapproved verb.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Gss-Common.ps1|PSUseSingularNouns|The cmdlet 'Get-GssFiles' uses a plural noun. A singular noun should be used instead.",
+      "path": "scripts/Gss-Common.ps1",
+      "rule": "PSUseSingularNouns",
+      "severity": "Warning",
+      "message": "The cmdlet 'Get-GssFiles' uses a plural noun. A singular noun should be used instead.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Gss-EmailPackage.ps1|PSAvoidAssignmentToAutomaticVariable|The Variable 'matches' is an automatic variable that is built into PowerShell, assigning to it might have undesired side effects. If assignment is not by design, please use a different name.",
+      "path": "scripts/Gss-EmailPackage.ps1",
+      "rule": "PSAvoidAssignmentToAutomaticVariable",
+      "severity": "Warning",
+      "message": "The Variable 'matches' is an automatic variable that is built into PowerShell, assigning to it might have undesired side effects. If assignment is not by design, please use a different name.",
+      "count": 5
+    },
+    {
+      "fingerprint": "scripts/Gss-EmailPackage.ps1|PSUseApprovedVerbs|The cmdlet 'Normalize-GssFeedbackHeader' uses an unapproved verb.",
+      "path": "scripts/Gss-EmailPackage.ps1",
+      "rule": "PSUseApprovedVerbs",
+      "severity": "Warning",
+      "message": "The cmdlet 'Normalize-GssFeedbackHeader' uses an unapproved verb.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Gss-EmailPackage.ps1|PSUseApprovedVerbs|The cmdlet 'Normalize-GssFeedbackText' uses an unapproved verb.",
+      "path": "scripts/Gss-EmailPackage.ps1",
+      "rule": "PSUseApprovedVerbs",
+      "severity": "Warning",
+      "message": "The cmdlet 'Normalize-GssFeedbackText' uses an unapproved verb.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Gss-EmailPackage.ps1|PSUseDeclaredVarsMoreThanAssignments|The variable 'existingManifest' is assigned but never used.",
+      "path": "scripts/Gss-EmailPackage.ps1",
+      "rule": "PSUseDeclaredVarsMoreThanAssignments",
+      "severity": "Warning",
+      "message": "The variable 'existingManifest' is assigned but never used.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Gss-EmailPackage.ps1|PSUseShouldProcessForStateChangingFunctions|Function 'New-GssEmailPackage' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "path": "scripts/Gss-EmailPackage.ps1",
+      "rule": "PSUseShouldProcessForStateChangingFunctions",
+      "severity": "Warning",
+      "message": "Function 'New-GssEmailPackage' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Gss-EmailPackage.ps1|PSUseShouldProcessForStateChangingFunctions|Function 'New-GssEvidencePreviewText' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "path": "scripts/Gss-EmailPackage.ps1",
+      "rule": "PSUseShouldProcessForStateChangingFunctions",
+      "severity": "Warning",
+      "message": "Function 'New-GssEvidencePreviewText' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Gss-EmailPackage.ps1|PSUseShouldProcessForStateChangingFunctions|Function 'New-GssSanitizedFeedback' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "path": "scripts/Gss-EmailPackage.ps1",
+      "rule": "PSUseShouldProcessForStateChangingFunctions",
+      "severity": "Warning",
+      "message": "Function 'New-GssSanitizedFeedback' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Gss-EmailPackage.ps1|PSUseSingularNouns|The cmdlet 'Get-GssFeedbackThemes' uses a plural noun. A singular noun should be used instead.",
+      "path": "scripts/Gss-EmailPackage.ps1",
+      "rule": "PSUseSingularNouns",
+      "severity": "Warning",
+      "message": "The cmdlet 'Get-GssFeedbackThemes' uses a plural noun. A singular noun should be used instead.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Gss-EmailPackage.ps1|PSUseSingularNouns|The cmdlet 'Get-GssKnownGuestNames' uses a plural noun. A singular noun should be used instead.",
+      "path": "scripts/Gss-EmailPackage.ps1",
+      "rule": "PSUseSingularNouns",
+      "severity": "Warning",
+      "message": "The cmdlet 'Get-GssKnownGuestNames' uses a plural noun. A singular noun should be used instead.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Gss-EmailPackage.ps1|PSUseSingularNouns|The cmdlet 'Get-GssPiiRedactionRules' uses a plural noun. A singular noun should be used instead.",
+      "path": "scripts/Gss-EmailPackage.ps1",
+      "rule": "PSUseSingularNouns",
+      "severity": "Warning",
+      "message": "The cmdlet 'Get-GssPiiRedactionRules' uses a plural noun. A singular noun should be used instead.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Gss-EmailPackage.ps1|PSUseSingularNouns|The cmdlet 'Get-GssRemainingPiiTypes' uses a plural noun. A singular noun should be used instead.",
+      "path": "scripts/Gss-EmailPackage.ps1",
+      "rule": "PSUseSingularNouns",
+      "severity": "Warning",
+      "message": "The cmdlet 'Get-GssRemainingPiiTypes' uses a plural noun. A singular noun should be used instead.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Gss-EmailPackage.ps1|PSUseSingularNouns|The cmdlet 'Test-GssFeedbackAnswers' uses a plural noun. A singular noun should be used instead.",
+      "path": "scripts/Gss-EmailPackage.ps1",
+      "rule": "PSUseSingularNouns",
+      "severity": "Warning",
+      "message": "The cmdlet 'Test-GssFeedbackAnswers' uses a plural noun. A singular noun should be used instead.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Install-GSS-OperatorLauncher.ps1|PSAvoidUsingWriteHost|File 'Install-GSS-OperatorLauncher.ps1' uses Write-Host. Avoid using Write-Host because it might not work in all hosts, does not work when there is no host, and (prior to PS 5.0) cannot be suppressed, captured, or redirected. Instead, use Write-Output, Write-Verbose, or Write-Information.",
+      "path": "scripts/Install-GSS-OperatorLauncher.ps1",
+      "rule": "PSAvoidUsingWriteHost",
+      "severity": "Warning",
+      "message": "File 'Install-GSS-OperatorLauncher.ps1' uses Write-Host. Avoid using Write-Host because it might not work in all hosts, does not work when there is no host, and (prior to PS 5.0) cannot be suppressed, captured, or redirected. Instead, use Write-Output, Write-Verbose, or Write-Information.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Test-GSS-Analytics.ps1|PSAvoidUsingWriteHost|File 'Test-GSS-Analytics.ps1' uses Write-Host. Avoid using Write-Host because it might not work in all hosts, does not work when there is no host, and (prior to PS 5.0) cannot be suppressed, captured, or redirected. Instead, use Write-Output, Write-Verbose, or Write-Information.",
+      "path": "scripts/Test-GSS-Analytics.ps1",
+      "rule": "PSAvoidUsingWriteHost",
+      "severity": "Warning",
+      "message": "File 'Test-GSS-Analytics.ps1' uses Write-Host. Avoid using Write-Host because it might not work in all hosts, does not work when there is no host, and (prior to PS 5.0) cannot be suppressed, captured, or redirected. Instead, use Write-Output, Write-Verbose, or Write-Information.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Test-GSS-Analytics.ps1|PSUseShouldProcessForStateChangingFunctions|Function 'New-TestFindingItem' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "path": "scripts/Test-GSS-Analytics.ps1",
+      "rule": "PSUseShouldProcessForStateChangingFunctions",
+      "severity": "Warning",
+      "message": "Function 'New-TestFindingItem' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Test-GSS-Analytics.ps1|PSUseShouldProcessForStateChangingFunctions|Function 'New-TestRawRow' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "path": "scripts/Test-GSS-Analytics.ps1",
+      "rule": "PSUseShouldProcessForStateChangingFunctions",
+      "severity": "Warning",
+      "message": "Function 'New-TestRawRow' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Test-GSS-EmailPackage.ps1|PSAvoidUsingWriteHost|File 'Test-GSS-EmailPackage.ps1' uses Write-Host. Avoid using Write-Host because it might not work in all hosts, does not work when there is no host, and (prior to PS 5.0) cannot be suppressed, captured, or redirected. Instead, use Write-Output, Write-Verbose, or Write-Information.",
+      "path": "scripts/Test-GSS-EmailPackage.ps1",
+      "rule": "PSAvoidUsingWriteHost",
+      "severity": "Warning",
+      "message": "File 'Test-GSS-EmailPackage.ps1' uses Write-Host. Avoid using Write-Host because it might not work in all hosts, does not work when there is no host, and (prior to PS 5.0) cannot be suppressed, captured, or redirected. Instead, use Write-Output, Write-Verbose, or Write-Information.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Test-GSS-EmailPackage.ps1|PSReviewUnusedParameter|The parameter 'DelayMilliseconds' has been declared but not used.",
+      "path": "scripts/Test-GSS-EmailPackage.ps1",
+      "rule": "PSReviewUnusedParameter",
+      "severity": "Warning",
+      "message": "The parameter 'DelayMilliseconds' has been declared but not used.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Test-GSS-EmailPackage.ps1|PSReviewUnusedParameter|The parameter 'MaxAttempts' has been declared but not used.",
+      "path": "scripts/Test-GSS-EmailPackage.ps1",
+      "rule": "PSReviewUnusedParameter",
+      "severity": "Warning",
+      "message": "The parameter 'MaxAttempts' has been declared but not used.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Test-GSS-EmailPackage.ps1|PSReviewUnusedParameter|The parameter 'PackagePath' has been declared but not used.",
+      "path": "scripts/Test-GSS-EmailPackage.ps1",
+      "rule": "PSReviewUnusedParameter",
+      "severity": "Warning",
+      "message": "The parameter 'PackagePath' has been declared but not used.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Test-GSS-EmailPackage.ps1|PSReviewUnusedParameter|The parameter 'ValidationOperation' has been declared but not used.",
+      "path": "scripts/Test-GSS-EmailPackage.ps1",
+      "rule": "PSReviewUnusedParameter",
+      "severity": "Warning",
+      "message": "The parameter 'ValidationOperation' has been declared but not used.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Test-GSS-EmailPackage.ps1|PSUseShouldProcessForStateChangingFunctions|Function 'New-LoggedEvidence' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "path": "scripts/Test-GSS-EmailPackage.ps1",
+      "rule": "PSUseShouldProcessForStateChangingFunctions",
+      "severity": "Warning",
+      "message": "Function 'New-LoggedEvidence' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Test-GSS-EmailPackage.ps1|PSUseShouldProcessForStateChangingFunctions|Function 'New-TestDetailWorkbook' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "path": "scripts/Test-GSS-EmailPackage.ps1",
+      "rule": "PSUseShouldProcessForStateChangingFunctions",
+      "severity": "Warning",
+      "message": "Function 'New-TestDetailWorkbook' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Test-GSS-EmailPackage.ps1|PSUseShouldProcessForStateChangingFunctions|Function 'New-TestResponse' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "path": "scripts/Test-GSS-EmailPackage.ps1",
+      "rule": "PSUseShouldProcessForStateChangingFunctions",
+      "severity": "Warning",
+      "message": "Function 'New-TestResponse' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Test-GSS-EmailPackage.ps1|PSUseSingularNouns|The cmdlet 'Write-TestBytes' uses a plural noun. A singular noun should be used instead.",
+      "path": "scripts/Test-GSS-EmailPackage.ps1",
+      "rule": "PSUseSingularNouns",
+      "severity": "Warning",
+      "message": "The cmdlet 'Write-TestBytes' uses a plural noun. A singular noun should be used instead.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Test-GSS-Logic.ps1|PSAvoidUsingWriteHost|File 'Test-GSS-Logic.ps1' uses Write-Host. Avoid using Write-Host because it might not work in all hosts, does not work when there is no host, and (prior to PS 5.0) cannot be suppressed, captured, or redirected. Instead, use Write-Output, Write-Verbose, or Write-Information.",
+      "path": "scripts/Test-GSS-Logic.ps1",
+      "rule": "PSAvoidUsingWriteHost",
+      "severity": "Warning",
+      "message": "File 'Test-GSS-Logic.ps1' uses Write-Host. Avoid using Write-Host because it might not work in all hosts, does not work when there is no host, and (prior to PS 5.0) cannot be suppressed, captured, or redirected. Instead, use Write-Output, Write-Verbose, or Write-Information.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Test-GSS-Logic.ps1|PSUseShouldProcessForStateChangingFunctions|Function 'New-TestSource' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "path": "scripts/Test-GSS-Logic.ps1",
+      "rule": "PSUseShouldProcessForStateChangingFunctions",
+      "severity": "Warning",
+      "message": "Function 'New-TestSource' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Test-GSS-PowerShellSyntax.ps1|PSAvoidUsingWriteHost|File 'Test-GSS-PowerShellSyntax.ps1' uses Write-Host. Avoid using Write-Host because it might not work in all hosts, does not work when there is no host, and (prior to PS 5.0) cannot be suppressed, captured, or redirected. Instead, use Write-Output, Write-Verbose, or Write-Information.",
+      "path": "scripts/Test-GSS-PowerShellSyntax.ps1",
+      "rule": "PSAvoidUsingWriteHost",
+      "severity": "Warning",
+      "message": "File 'Test-GSS-PowerShellSyntax.ps1' uses Write-Host. Avoid using Write-Host because it might not work in all hosts, does not work when there is no host, and (prior to PS 5.0) cannot be suppressed, captured, or redirected. Instead, use Write-Output, Write-Verbose, or Write-Information.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Test-GSS-WorkbookIntegration.ps1|PSAvoidUsingWriteHost|File 'Test-GSS-WorkbookIntegration.ps1' uses Write-Host. Avoid using Write-Host because it might not work in all hosts, does not work when there is no host, and (prior to PS 5.0) cannot be suppressed, captured, or redirected. Instead, use Write-Output, Write-Verbose, or Write-Information.",
+      "path": "scripts/Test-GSS-WorkbookIntegration.ps1",
+      "rule": "PSAvoidUsingWriteHost",
+      "severity": "Warning",
+      "message": "File 'Test-GSS-WorkbookIntegration.ps1' uses Write-Host. Avoid using Write-Host because it might not work in all hosts, does not work when there is no host, and (prior to PS 5.0) cannot be suppressed, captured, or redirected. Instead, use Write-Output, Write-Verbose, or Write-Information.",
+      "count": 7
+    },
+    {
+      "fingerprint": "scripts/Test-GSS-WorkbookIntegration.ps1|PSUseSingularNouns|The cmdlet 'Compare-GssWorkbookCells' uses a plural noun. A singular noun should be used instead.",
+      "path": "scripts/Test-GSS-WorkbookIntegration.ps1",
+      "rule": "PSUseSingularNouns",
+      "severity": "Warning",
+      "message": "The cmdlet 'Compare-GssWorkbookCells' uses a plural noun. A singular noun should be used instead.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Update-GSS-MainWorkbook.ps1|PSAvoidUsingEmptyCatchBlock|Empty catch block is used. Please use Write-Error or throw statements in catch blocks.",
+      "path": "scripts/Update-GSS-MainWorkbook.ps1",
+      "rule": "PSAvoidUsingEmptyCatchBlock",
+      "severity": "Warning",
+      "message": "Empty catch block is used. Please use Write-Error or throw statements in catch blocks.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Update-GSS-MainWorkbook.ps1|PSAvoidUsingWriteHost|File 'Update-GSS-MainWorkbook.ps1' uses Write-Host. Avoid using Write-Host because it might not work in all hosts, does not work when there is no host, and (prior to PS 5.0) cannot be suppressed, captured, or redirected. Instead, use Write-Output, Write-Verbose, or Write-Information.",
+      "path": "scripts/Update-GSS-MainWorkbook.ps1",
+      "rule": "PSAvoidUsingWriteHost",
+      "severity": "Warning",
+      "message": "File 'Update-GSS-MainWorkbook.ps1' uses Write-Host. Avoid using Write-Host because it might not work in all hosts, does not work when there is no host, and (prior to PS 5.0) cannot be suppressed, captured, or redirected. Instead, use Write-Output, Write-Verbose, or Write-Information.",
+      "count": 16
+    },
+    {
+      "fingerprint": "scripts/Update-GSS-MainWorkbook.ps1|PSUseApprovedVerbs|The cmdlet 'Release-ComObject' uses an unapproved verb.",
+      "path": "scripts/Update-GSS-MainWorkbook.ps1",
+      "rule": "PSUseApprovedVerbs",
+      "severity": "Warning",
+      "message": "The cmdlet 'Release-ComObject' uses an unapproved verb.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Update-GSS-MainWorkbook.ps1|PSUseBOMForUnicodeEncodedFile|Missing BOM encoding for non-ASCII encoded file 'Update-GSS-MainWorkbook.ps1'",
+      "path": "scripts/Update-GSS-MainWorkbook.ps1",
+      "rule": "PSUseBOMForUnicodeEncodedFile",
+      "severity": "Warning",
+      "message": "Missing BOM encoding for non-ASCII encoded file 'Update-GSS-MainWorkbook.ps1'",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Update-GSS-MainWorkbook.ps1|PSUseDeclaredVarsMoreThanAssignments|The variable 'capacityPlan' is assigned but never used.",
+      "path": "scripts/Update-GSS-MainWorkbook.ps1",
+      "rule": "PSUseDeclaredVarsMoreThanAssignments",
+      "severity": "Warning",
+      "message": "The variable 'capacityPlan' is assigned but never used.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Update-GSS-MainWorkbook.ps1|PSUseShouldProcessForStateChangingFunctions|Function 'Remove-GssWorkbookGuardrails' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "path": "scripts/Update-GSS-MainWorkbook.ps1",
+      "rule": "PSUseShouldProcessForStateChangingFunctions",
+      "severity": "Warning",
+      "message": "Function 'Remove-GssWorkbookGuardrails' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Update-GSS-MainWorkbook.ps1|PSUseShouldProcessForStateChangingFunctions|Function 'Set-CellFormula' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "path": "scripts/Update-GSS-MainWorkbook.ps1",
+      "rule": "PSUseShouldProcessForStateChangingFunctions",
+      "severity": "Warning",
+      "message": "Function 'Set-CellFormula' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Update-GSS-MainWorkbook.ps1|PSUseShouldProcessForStateChangingFunctions|Function 'Set-CellValue' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "path": "scripts/Update-GSS-MainWorkbook.ps1",
+      "rule": "PSUseShouldProcessForStateChangingFunctions",
+      "severity": "Warning",
+      "message": "Function 'Set-CellValue' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Update-GSS-MainWorkbook.ps1|PSUseShouldProcessForStateChangingFunctions|Function 'Set-GssBanner' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "path": "scripts/Update-GSS-MainWorkbook.ps1",
+      "rule": "PSUseShouldProcessForStateChangingFunctions",
+      "severity": "Warning",
+      "message": "Function 'Set-GssBanner' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Update-GSS-MainWorkbook.ps1|PSUseShouldProcessForStateChangingFunctions|Function 'Set-GssDashboardValidation' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "path": "scripts/Update-GSS-MainWorkbook.ps1",
+      "rule": "PSUseShouldProcessForStateChangingFunctions",
+      "severity": "Warning",
+      "message": "Function 'Set-GssDashboardValidation' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Update-GSS-MainWorkbook.ps1|PSUseShouldProcessForStateChangingFunctions|Function 'Set-GssEmailComparisonLayout' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "path": "scripts/Update-GSS-MainWorkbook.ps1",
+      "rule": "PSUseShouldProcessForStateChangingFunctions",
+      "severity": "Warning",
+      "message": "Function 'Set-GssEmailComparisonLayout' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Update-GSS-MainWorkbook.ps1|PSUseShouldProcessForStateChangingFunctions|Function 'Set-GssReadmeContent' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "path": "scripts/Update-GSS-MainWorkbook.ps1",
+      "rule": "PSUseShouldProcessForStateChangingFunctions",
+      "severity": "Warning",
+      "message": "Function 'Set-GssReadmeContent' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Update-GSS-MainWorkbook.ps1|PSUseShouldProcessForStateChangingFunctions|Function 'Set-GssStatusStyles' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "path": "scripts/Update-GSS-MainWorkbook.ps1",
+      "rule": "PSUseShouldProcessForStateChangingFunctions",
+      "severity": "Warning",
+      "message": "Function 'Set-GssStatusStyles' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Update-GSS-MainWorkbook.ps1|PSUseShouldProcessForStateChangingFunctions|Function 'Set-GssWorkbookBanners' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "path": "scripts/Update-GSS-MainWorkbook.ps1",
+      "rule": "PSUseShouldProcessForStateChangingFunctions",
+      "severity": "Warning",
+      "message": "Function 'Set-GssWorkbookBanners' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Update-GSS-MainWorkbook.ps1|PSUseShouldProcessForStateChangingFunctions|Function 'Set-GssWorkbookGuardrails' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "path": "scripts/Update-GSS-MainWorkbook.ps1",
+      "rule": "PSUseShouldProcessForStateChangingFunctions",
+      "severity": "Warning",
+      "message": "Function 'Set-GssWorkbookGuardrails' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Update-GSS-MainWorkbook.ps1|PSUseShouldProcessForStateChangingFunctions|Function 'Set-GssWorkbookPrintLayouts' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "path": "scripts/Update-GSS-MainWorkbook.ps1",
+      "rule": "PSUseShouldProcessForStateChangingFunctions",
+      "severity": "Warning",
+      "message": "Function 'Set-GssWorkbookPrintLayouts' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Update-GSS-MainWorkbook.ps1|PSUseShouldProcessForStateChangingFunctions|Function 'Update-EmailComparisonData' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "path": "scripts/Update-GSS-MainWorkbook.ps1",
+      "rule": "PSUseShouldProcessForStateChangingFunctions",
+      "severity": "Warning",
+      "message": "Function 'Update-EmailComparisonData' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Update-GSS-MainWorkbook.ps1|PSUseShouldProcessForStateChangingFunctions|Function 'Update-EmailComparisonSection' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "path": "scripts/Update-GSS-MainWorkbook.ps1",
+      "rule": "PSUseShouldProcessForStateChangingFunctions",
+      "severity": "Warning",
+      "message": "Function 'Update-EmailComparisonSection' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Update-GSS-MainWorkbook.ps1|PSUseShouldProcessForStateChangingFunctions|Function 'Update-GssQaSheet' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "path": "scripts/Update-GSS-MainWorkbook.ps1",
+      "rule": "PSUseShouldProcessForStateChangingFunctions",
+      "severity": "Warning",
+      "message": "Function 'Update-GssQaSheet' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Update-GSS-MainWorkbook.ps1|PSUseSingularNouns|The cmdlet 'Add-RawDataRows' uses a plural noun. A singular noun should be used instead.",
+      "path": "scripts/Update-GSS-MainWorkbook.ps1",
+      "rule": "PSUseSingularNouns",
+      "severity": "Warning",
+      "message": "The cmdlet 'Add-RawDataRows' uses a plural noun. A singular noun should be used instead.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Update-GSS-MainWorkbook.ps1|PSUseSingularNouns|The cmdlet 'Get-GssConfigurationCounts' uses a plural noun. A singular noun should be used instead.",
+      "path": "scripts/Update-GSS-MainWorkbook.ps1",
+      "rule": "PSUseSingularNouns",
+      "severity": "Warning",
+      "message": "The cmdlet 'Get-GssConfigurationCounts' uses a plural noun. A singular noun should be used instead.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Update-GSS-MainWorkbook.ps1|PSUseSingularNouns|The cmdlet 'Get-MetricCatalogRows' uses a plural noun. A singular noun should be used instead.",
+      "path": "scripts/Update-GSS-MainWorkbook.ps1",
+      "rule": "PSUseSingularNouns",
+      "severity": "Warning",
+      "message": "The cmdlet 'Get-MetricCatalogRows' uses a plural noun. A singular noun should be used instead.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Update-GSS-MainWorkbook.ps1|PSUseSingularNouns|The cmdlet 'Get-RollingSources' uses a plural noun. A singular noun should be used instead.",
+      "path": "scripts/Update-GSS-MainWorkbook.ps1",
+      "rule": "PSUseSingularNouns",
+      "severity": "Warning",
+      "message": "The cmdlet 'Get-RollingSources' uses a plural noun. A singular noun should be used instead.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Update-GSS-MainWorkbook.ps1|PSUseSingularNouns|The cmdlet 'Get-SourceRows' uses a plural noun. A singular noun should be used instead.",
+      "path": "scripts/Update-GSS-MainWorkbook.ps1",
+      "rule": "PSUseSingularNouns",
+      "severity": "Warning",
+      "message": "The cmdlet 'Get-SourceRows' uses a plural noun. A singular noun should be used instead.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Update-GSS-MainWorkbook.ps1|PSUseSingularNouns|The cmdlet 'Remove-GssWorkbookGuardrails' uses a plural noun. A singular noun should be used instead.",
+      "path": "scripts/Update-GSS-MainWorkbook.ps1",
+      "rule": "PSUseSingularNouns",
+      "severity": "Warning",
+      "message": "The cmdlet 'Remove-GssWorkbookGuardrails' uses a plural noun. A singular noun should be used instead.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Update-GSS-MainWorkbook.ps1|PSUseSingularNouns|The cmdlet 'Set-GssStatusStyles' uses a plural noun. A singular noun should be used instead.",
+      "path": "scripts/Update-GSS-MainWorkbook.ps1",
+      "rule": "PSUseSingularNouns",
+      "severity": "Warning",
+      "message": "The cmdlet 'Set-GssStatusStyles' uses a plural noun. A singular noun should be used instead.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Update-GSS-MainWorkbook.ps1|PSUseSingularNouns|The cmdlet 'Set-GssWorkbookBanners' uses a plural noun. A singular noun should be used instead.",
+      "path": "scripts/Update-GSS-MainWorkbook.ps1",
+      "rule": "PSUseSingularNouns",
+      "severity": "Warning",
+      "message": "The cmdlet 'Set-GssWorkbookBanners' uses a plural noun. A singular noun should be used instead.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Update-GSS-MainWorkbook.ps1|PSUseSingularNouns|The cmdlet 'Set-GssWorkbookGuardrails' uses a plural noun. A singular noun should be used instead.",
+      "path": "scripts/Update-GSS-MainWorkbook.ps1",
+      "rule": "PSUseSingularNouns",
+      "severity": "Warning",
+      "message": "The cmdlet 'Set-GssWorkbookGuardrails' uses a plural noun. A singular noun should be used instead.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Update-GSS-MainWorkbook.ps1|PSUseSingularNouns|The cmdlet 'Set-GssWorkbookPrintLayouts' uses a plural noun. A singular noun should be used instead.",
+      "path": "scripts/Update-GSS-MainWorkbook.ps1",
+      "rule": "PSUseSingularNouns",
+      "severity": "Warning",
+      "message": "The cmdlet 'Set-GssWorkbookPrintLayouts' uses a plural noun. A singular noun should be used instead.",
+      "count": 1
+    },
+    {
+      "fingerprint": "scripts/Update-GSS-MainWorkbook.ps1|PSUseSingularNouns|The cmdlet 'Test-WeekExists' uses a plural noun. A singular noun should be used instead.",
+      "path": "scripts/Update-GSS-MainWorkbook.ps1",
+      "rule": "PSUseSingularNouns",
+      "severity": "Warning",
+      "message": "The cmdlet 'Test-WeekExists' uses a plural noun. A singular noun should be used instead.",
+      "count": 1
+    }
+  ]
+}

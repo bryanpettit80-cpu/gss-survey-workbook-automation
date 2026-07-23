@@ -632,7 +632,7 @@ try {
     }
     Assert-True (-not [regex]::IsMatch($nonRaw, (Get-GssUnsafeControlPattern))) 'Portable output contains no unsafe control or bidi characters'
     $ledgerText = Get-Content -Raw -LiteralPath $ledgerPath
-    Assert-True ($ledgerText -notmatch '(?i)Casey|Testperson|Robin|Sample|example\.invalid|555') 'Ledger remains hash-only'
+    Assert-True ($ledgerText -notmatch '(?i)Casey|Testperson|Robin|Sample|example\.invalid|212-555-0199|555-1212') 'Ledger remains hash-only'
     $ledger = $ledgerText | ConvertFrom-Json
     Assert-Equal @($ledger.entries).Count 3 'Ledger includes deduplicated current and baseline hashes'
     Assert-True ((Get-Item -LiteralPath $ledgerPath).LastWriteTimeUtc -le (Get-Item -LiteralPath $package.ReadyMarkerPath).LastWriteTimeUtc) 'Ledger is persisted before the READY marker'

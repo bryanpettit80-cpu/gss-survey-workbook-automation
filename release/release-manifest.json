@@ -3,7 +3,7 @@
     "release_version":  "1.0.0",
     "release_tag":  "v1.0.0",
     "commit_binding":  "exact_release_tag",
-    "generated_at_utc":  "2026-07-23T20:54:45.3602758Z",
+    "generated_at_utc":  "2026-07-23T21:02:08.5923190Z",
     "classification":  "PROGRAM SOURCE ONLY - NO GSS WORKBOOKS, REPORTS, OR CUSTOMER DATA",
     "runtime_contract":  {
                              "require_clean_tree":  true,
@@ -168,8 +168,8 @@
                       "path":  "scripts/Test-GSS-EmailPackage.ps1",
                       "role":  "validation",
                       "hash_mode":  "utf8_lf",
-                      "canonical_size_bytes":  51096,
-                      "sha256":  "7f909c7ba631c262b3d39e21c870648003d23fa57be04602ca1a3280732a322a"
+                      "canonical_size_bytes":  51114,
+                      "sha256":  "042a637b38b4064446e411129adacf263c06366e1fbf968bd9d25b5d81dda46c"
                   },
                   {
                       "path":  "scripts/Test-GSS-Logic.ps1",

@@ -3,13 +3,17 @@ param(
     [Parameter(Mandatory)]
     [string]$WorkbookPath,
     [string]$BaselinePath,
-    [string]$ExportVerificationFolder
+    [string]$ExportVerificationFolder,
+    [string]$ReceiptPath,
+    [string]$SourceRunLogPath,
+    [string]$Folder
 )
 
 $ErrorActionPreference = 'Stop'
 
 $scriptRoot = Split-Path -Parent $PSCommandPath
 . (Join-Path $scriptRoot 'Update-GSS-MainWorkbook.ps1')
+$repoRoot = Split-Path -Parent $scriptRoot
 
 $xlCellTypeFormulas = -4123
 $xlCellTypeConstants = 2
@@ -125,6 +129,24 @@ function Compare-GssWorkbookCells {
     }
 }
 
+function Resolve-GssIntegrationDataRoot {
+    param([string]$WorkbookPath, [string]$ExplicitFolder)
+
+    if (-not [string]::IsNullOrWhiteSpace($ExplicitFolder)) {
+        return (Resolve-Path -LiteralPath $ExplicitFolder).Path
+    }
+    $cursor = Split-Path -Parent $WorkbookPath
+    while (-not [string]::IsNullOrWhiteSpace($cursor)) {
+        if (Test-Path -LiteralPath (Join-Path $cursor '_automation_runs') -PathType Container) {
+            return $cursor
+        }
+        $parent = Split-Path -Parent $cursor
+        if ($parent -eq $cursor) { break }
+        $cursor = $parent
+    }
+    return $null
+}
+
 $WorkbookPath = (Resolve-Path -LiteralPath $WorkbookPath).Path
 if ($BaselinePath) {
     $BaselinePath = (Resolve-Path -LiteralPath $BaselinePath).Path
@@ -133,13 +155,38 @@ if ($ExportVerificationFolder) {
     New-Item -ItemType Directory -Path $ExportVerificationFolder -Force | Out-Null
     $ExportVerificationFolder = (Resolve-Path -LiteralPath $ExportVerificationFolder).Path
 }
+$dataRoot = Resolve-GssIntegrationDataRoot -WorkbookPath $WorkbookPath -ExplicitFolder $Folder
+if ([string]::IsNullOrWhiteSpace($ReceiptPath)) {
+    if ($dataRoot) {
+        $receiptDirectory = Join-Path $dataRoot '_automation_runs\qa'
+    }
+    else {
+        $receiptDirectory = Join-Path (Split-Path -Parent $WorkbookPath) '_automation_runs\qa'
+    }
+    New-Item -ItemType Directory -Path $receiptDirectory -Force | Out-Null
+    $ReceiptPath = Join-Path $receiptDirectory ('workbook-integration-{0}.json' -f (Get-Date -Format 'yyyyMMdd_HHmmss_fff'))
+}
+else {
+    $ReceiptPath = [System.IO.Path]::GetFullPath($ReceiptPath)
+}
+
+$sourceRunFingerprint = $null
+if (-not [string]::IsNullOrWhiteSpace($SourceRunLogPath)) {
+    $SourceRunLogPath = (Resolve-Path -LiteralPath $SourceRunLogPath).Path
+    $sourceRun = Get-Content -LiteralPath $SourceRunLogPath -Raw | ConvertFrom-Json
+    $sourceRunFingerprint = [string]$sourceRun.RunFingerprint
+}
 
 $excel = $null
 $workbook = $null
 $baselineWorkbook = $null
 $verificationPdfs = @()
+$excelVersion = $null
+$verificationStatus = 'Failed'
+$verificationError = $null
 try {
     $excel = New-Object -ComObject Excel.Application
+    $excelVersion = [string]$excel.Version
     $excel.Visible = $false
     $excel.DisplayAlerts = $false
     $excel.EnableEvents = $false
@@ -341,6 +388,11 @@ try {
     Write-Host '  Constant errors: 0'
     if ($BaselinePath) { Write-Host "  Preserved baseline cells: $BaselinePath" }
     foreach ($pdfPath in $verificationPdfs) { Write-Host "  Verification PDF: $pdfPath" }
+    $verificationStatus = 'Passed'
+}
+catch {
+    $verificationError = $_.Exception.Message
+    throw
 }
 finally {
     if ($baselineWorkbook) { $baselineWorkbook.Close($false) }
@@ -353,4 +405,47 @@ finally {
     }
     [GC]::Collect()
     [GC]::WaitForPendingFinalizers()
+
+    $headCommit = $null
+    $releaseTag = $null
+    try { $headCommit = (& git -C $repoRoot rev-parse HEAD 2>$null).Trim() }
+    catch { Write-Verbose "Git HEAD was unavailable for the validation receipt: $($_.Exception.Message)" }
+    try { $releaseTag = (& git -C $repoRoot describe --tags --exact-match HEAD 2>$null).Trim() }
+    catch { Write-Verbose "An exact Git release tag was unavailable for the validation receipt: $($_.Exception.Message)" }
+    if ([string]::IsNullOrWhiteSpace($releaseTag)) {
+        $releaseManifestPath = Join-Path $repoRoot 'release\release-manifest.json'
+        if (Test-Path -LiteralPath $releaseManifestPath -PathType Leaf) {
+            try {
+                $releaseManifest = Get-Content -LiteralPath $releaseManifestPath -Raw | ConvertFrom-Json
+                $releaseTag = [string]$releaseManifest.release_tag
+            }
+            catch { Write-Verbose "Release manifest could not be read for the validation receipt: $($_.Exception.Message)" }
+        }
+    }
+    $portableWorkbookPath = if ($dataRoot) {
+        ConvertTo-GssDropboxRelativePath -Path $WorkbookPath -FolderPath $dataRoot
+    }
+    else {
+        [System.IO.Path]::GetFileName($WorkbookPath)
+    }
+    $receipt = [pscustomobject]@{
+        ReceiptSchemaVersion = 1
+        TimestampUtc = [datetime]::UtcNow.ToString('o')
+        Status = $verificationStatus
+        Error = $verificationError
+        GitHead = $headCommit
+        ReleaseTag = $releaseTag
+        ExcelVersion = $excelVersion
+        WorkbookPath = $portableWorkbookPath
+        WorkbookSha256 = if (Test-Path -LiteralPath $WorkbookPath -PathType Leaf) { Get-GssSha256 $WorkbookPath } else { $null }
+        SourceRunFingerprint = $sourceRunFingerprint
+        SourceRunLogPath = if ($SourceRunLogPath -and $dataRoot) {
+            ConvertTo-GssDropboxRelativePath -Path $SourceRunLogPath -FolderPath $dataRoot
+        }
+        else { $SourceRunLogPath }
+        FormulaErrors = if ($verificationStatus -eq 'Passed') { 0 } else { $null }
+        ConstantErrors = if ($verificationStatus -eq 'Passed') { 0 } else { $null }
+    }
+    Write-GssAtomicJson -Path $ReceiptPath -InputObject $receipt
+    Write-Information "  Validation receipt: $ReceiptPath" -InformationAction Continue
 }

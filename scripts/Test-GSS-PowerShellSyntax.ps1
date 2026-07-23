@@ -5,7 +5,7 @@ $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
 $scripts = Get-ChildItem -LiteralPath $repoRoot -Recurse -File |
-    Where-Object { $_.Extension -ieq '.ps1' }
+    Where-Object { $_.Extension -in @('.ps1', '.psm1', '.psd1') }
 $failures = @()
 
 foreach ($script in $scripts) {

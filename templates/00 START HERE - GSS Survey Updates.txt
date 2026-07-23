@@ -9,18 +9,32 @@ WEEKLY UPDATE
    Also place the newest guest-detail export in:
    03 Uploaded Survey Workbooks
 2. Close the main GSS workbook if it is open in Excel.
-3. Double-click:
+3. Confirm Google Drive for desktop is running and G:\My Drive is available.
+4. Double-click:
    Run GSS Update After Upload.cmd
-4. Wait for the copy-test and review to finish.
-5. Type APPLY only when the screen says the copy-test passed.
+5. Wait for the copy-test and review to finish.
+6. Type APPLY only when the screen shows the tested run fingerprint and says
+   the copy-test passed.
 
 IMPORTANT
 - The live workbook is 01 Main Workbook\GSS Score Trends - Main.xlsx.
 - Finished email PDFs are in 04 Email Comparison PDFs.
-- After a successful live update, the system prepares an email package for the AOL draft writer.
+- A private Google Drive backup must be prepared before the live workbook changes.
+- If Google Drive is unavailable, the live update stops without changing the workbook.
+- After a successful live update and committed Drive backup, the system prepares
+  a restricted email package for human review.
+- The raw guest-detail attachment contains personal data. Treat every READY
+  package as CONTAINS PERSONAL DATA - RESTRICTED.
+- Automatic email sending is permanently disabled.
 - Missing guest-detail data can block the email draft without blocking the workbook update.
 - Do not edit GSS Survey Workbook Automation or _automation_runs.
-- The launcher makes a backup before changing the live workbook.
+- Backup retention is report-only. The automation never deletes Drive backups.
+- If BackupStatus is PendingFinalize, the valid workbook stays in place but no
+  READY package is published until backup finalization succeeds.
+- Technical recovery for PendingFinalize is:
+  GSS Survey Workbook Automation\scripts\Resume-GSS-PendingFinalize.ps1
+  -LiveRunLogPath <exact apply log>
+  This resumes backup/package finalization and never reapplies the workbook.
 - If the screen says ATTENTION NEEDED, stop and ask for technical help.
 
 FOLDER MAP

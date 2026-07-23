@@ -1,24 +1,33 @@
-# Keep this repo program-only.
+# Customer, workbook, and generated business artifacts never belong in this program repository.
+*.xls
 *.xlsx
 *.xlsm
-*.xls
-*.csv
+*.xlsb
 *.pdf
+*.csv
 *.png
 *.jpg
 *.jpeg
+*.gif
+*.zip
 
-# Generated runtime output belongs in ../_automation_runs, not Git.
+# Local validation and runtime output.
 _automation_runs/
 automation/
 backups/
 logs/
 test-output/
+TestResults/
+*.trx
+*.nunit.xml
+*.log
+release/local-excel-validation-receipt.json
 
-# Local/editor noise.
+# PowerShell/editor caches.
+.vscode/
+.idea/
 Thumbs.db
 .DS_Store
+.env.local
 *.tmp
 *.bak
-*.log
-.env.local

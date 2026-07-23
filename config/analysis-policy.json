@@ -1,0 +1,35 @@
+{
+  "schema_version": "gss-analysis-policy/v2",
+  "thresholds": {
+    "previous_window": {
+      "candidate_points": 1.0,
+      "action_points": 2.0
+    },
+    "prior_year": {
+      "candidate_points": 2.0,
+      "action_points": 5.0
+    }
+  },
+  "confidence": {
+    "high_minimum_responses": 100,
+    "developing_minimum_responses": 50,
+    "low_minimum_responses": 1,
+    "developing_requires_threshold_and_corroboration": true,
+    "low_eligible_for_top_findings": false,
+    "not_scored_eligible_for_top_findings": false
+  },
+  "rolling_windows": {
+    "weeks": 13,
+    "adjacent_overlap_weeks": 12
+  },
+  "guest_feedback": {
+    "minimum_unique_responses_per_theme": 2,
+    "theme_categories_are_non_exclusive": true
+  },
+  "review_controls": {
+    "human_review_required": true,
+    "automatic_sending_enabled": false,
+    "causation_claimed": false,
+    "statistical_significance_claimed": false
+  }
+}

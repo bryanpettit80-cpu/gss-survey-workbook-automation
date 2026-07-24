@@ -922,7 +922,11 @@ print(summary["status"])
                     f"-CycleLedgerPath {ledger_argument}"
                 ),
             )
-            self.assertEqual(hash_result["Status"], "HashComputed")
+            self.assertEqual(
+                hash_result["Status"],
+                "HashComputed",
+                hash_result.get("TechnicalError"),
+            )
             self.assertRegex(hash_result["SourceSha256"], r"^[0-9a-f]{64}$")
             self.assertFalse(ledger.exists())
 
@@ -937,7 +941,11 @@ print(summary["status"])
                     f"-CycleLedgerPath {ledger_argument}"
                 ),
             )
-            self.assertEqual(run_result["Status"], "ShadowSuppressed")
+            self.assertEqual(
+                run_result["Status"],
+                "ShadowSuppressed",
+                run_result.get("TechnicalError"),
+            )
             self.assertEqual(
                 sorted(path.name for path in output.iterdir()),
                 sorted(MODEL.REQUIRED_ARTIFACTS),

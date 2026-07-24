@@ -3,7 +3,7 @@
   "release_version": "1.1.0",
   "release_tag": "v1.1.0",
   "commit_binding": "exact_release_tag",
-  "generated_at_utc": "2026-07-24T03:17:44.3498909Z",
+  "generated_at_utc": "2026-07-24T03:21:31.4561567Z",
   "classification": "PROGRAM SOURCE ONLY - NO GSS WORKBOOKS, REPORTS, OR CUSTOMER DATA",
   "runtime_contract": {
     "require_clean_tree": true,
@@ -294,8 +294,8 @@
       "path": "tests/test_gss_shadow_model.py",
       "role": "validation",
       "hash_mode": "utf8_lf",
-      "canonical_size_bytes": 37792,
-      "sha256": "9b3d3506a18a9a11d1d69bdeff35358bf22ab374d97a095ddad981757ab8b638"
+      "canonical_size_bytes": 37987,
+      "sha256": "b0a9ded9a3e8d8de39ffcb1d55cfab9514f14e366a8732be3f8ef986ccffed2f"
     }
   ]
 }

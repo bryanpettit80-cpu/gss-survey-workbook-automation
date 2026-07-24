@@ -4,6 +4,8 @@ Import-Module $modulePath -Force
 Describe 'GSS release integrity module' {
     It 'selects program and policy files but excludes data and the manifest itself' {
         (Test-GssReleaseTrackedPath -Path 'scripts/Update-GSS-MainWorkbook.ps1') | Should -BeTrue
+        (Test-GssReleaseTrackedPath -Path 'scripts/gss_shadow_model.py') | Should -BeTrue
+        (Test-GssReleaseTrackedPath -Path 'requirements-shadow-model.lock') | Should -BeTrue
         (Test-GssReleaseTrackedPath -Path 'config/analysis-policy.json') | Should -BeTrue
         (Test-GssReleaseTrackedPath -Path 'release/release-manifest.json') | Should -BeFalse
         (Test-GssReleaseTrackedPath -Path 'fixtures/GSS Score Trends - Main.xlsx') | Should -BeFalse

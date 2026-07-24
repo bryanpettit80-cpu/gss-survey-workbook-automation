@@ -8,6 +8,8 @@ $script:ReleaseExtensions = @(
     '.ps1',
     '.psd1',
     '.psm1',
+    '.py',
+    '.lock',
     '.txt',
     '.yml',
     '.yaml'
@@ -25,6 +27,7 @@ $script:ExecutableExtensions = @(
     '.ps1',
     '.psd1',
     '.psm1',
+    '.py',
     '.scr',
     '.vbs',
     '.wsf',
@@ -79,6 +82,7 @@ function Get-GssReleaseRole {
 
     if ($Path -like 'scripts/Test-*' -or $Path -like 'tests/*') { return 'validation' }
     if ($Path -like 'scripts/*') { return 'runtime' }
+    if ($Path -like 'requirements*.lock') { return 'runtime-dependency' }
     if ($Path -like 'templates/*') { return 'operator-template' }
     if ($Path -like 'config/*') { return 'policy' }
     if ($Path -like '.github/*') { return 'ci' }

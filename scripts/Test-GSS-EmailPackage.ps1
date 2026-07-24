@@ -472,7 +472,7 @@ try {
     $manifest = Read-GssUtf8NoBomFile $package.ManifestPath | ConvertFrom-Json
     $analysisJson = Read-GssUtf8NoBomFile (Join-Path $package.PackagePath 'analysis.json') | ConvertFrom-Json
     Assert-Equal $manifest.schema_version 'gss-email-package/v1' 'Package schema version'
-    Assert-Equal $manifest.policy_version 'gss-analysis-policy/v2' 'Versioned analysis policy'
+    Assert-Equal $manifest.policy_version 'gss-analysis-policy/v3' 'Versioned analysis policy'
     Assert-Equal $manifest.classification $script:GssRestrictedClassification 'Package restricted personal-data classification'
     Assert-True ([bool]$manifest.package_contains_personal_data) 'Package explicitly contains personal data'
     Assert-True (-not [bool]$manifest.distribution_controls.automatic_sending_enabled) 'Automatic sending remains disabled'

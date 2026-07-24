@@ -199,7 +199,7 @@ function Test-GssDriveBackupNoLinkTraversal {
         $targets = if ($targetProperty -and $null -ne $targetProperty.Value) { @($targetProperty.Value) } else { @() }
         if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -and
             (-not [string]::IsNullOrWhiteSpace($linkType) -or $targets.Count -gt 0)) {
-            throw "RecoveryOnly source paths cannot traverse a symbolic link or junction: $cursor"
+            throw "Narrow backup source paths cannot traverse a symbolic link or junction: $cursor"
         }
         if ($cursor.Equals($fullRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
             break
@@ -571,7 +571,7 @@ function Get-GssDriveBackupInventory {
         [object[]]$AdditionalItems = @(),
         [string[]]$TransactionArtifactPaths = @(),
         [string[]]$ReleaseArchivePaths = @(),
-        [ValidateSet('Full', 'RecoveryOnly')]
+        [ValidateSet('Full', 'RecoveryOnly', 'ReleaseOnly')]
         [string]$InventoryMode = 'Full'
     )
 
@@ -666,6 +666,59 @@ function Get-GssDriveBackupInventory {
         }
         if ([string]::IsNullOrWhiteSpace($recoveryTransactionHash)) {
             throw 'RecoveryOnly inventories must include at least one manifest-bound transaction evidence file.'
+        }
+    }
+
+    if ($InventoryMode -eq 'ReleaseOnly') {
+        if (@($TransactionArtifactPaths | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count -gt 0 -or
+            @($ReleaseArchivePaths | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count -gt 0) {
+            throw 'ReleaseOnly inventories require a closed, explicit BackupInventory and cannot use transaction or release path shortcuts.'
+        }
+        if (@($AdditionalItems).Count -ne 3) {
+            throw 'ReleaseOnly inventories require exactly three structured release artifacts.'
+        }
+
+        $allowedRoles = @('release_archive', 'release_manifest', 'release_excel_receipt')
+        foreach ($item in @($AdditionalItems)) {
+            if ($null -eq $item -or $item -is [string]) {
+                throw 'ReleaseOnly BackupInventory entries must be structured records.'
+            }
+            $source = [string](Get-GssDriveBackupProperty $item @('SourcePath', 'source_path', 'Path', 'path'))
+            $portable = Assert-GssDriveBackupSafeRelativePath -Path ([string](Get-GssDriveBackupProperty $item @('PortablePath', 'portable_path')))
+            $role = [string](Get-GssDriveBackupProperty $item @('Role', 'role'))
+            $classification = [string](Get-GssDriveBackupProperty $item @('Classification', 'classification'))
+            if ($role -notin $allowedRoles) {
+                throw "ReleaseOnly BackupInventory role is not allowed: $role"
+            }
+            if ($classification -cne 'restricted_operational') {
+                throw "ReleaseOnly artifact '$role' must be classified restricted_operational."
+            }
+
+            [void](Test-GssDriveBackupNoLinkTraversal -Path $source -Root $root)
+            $relativeSource = (Get-GssDriveBackupRelativePath -Path $source -Root $root).Replace('/', '\')
+            switch ($role) {
+                'release_archive' {
+                    if ($relativeSource -notmatch '^_automation_runs\\state\\release\\(gss-survey-workbook-automation-v\d+\.\d+\.\d+\.zip)$') {
+                        throw 'ReleaseOnly archive must use the exact versioned path under _automation_runs\state\release.'
+                    }
+                    $expectedPortable = "release/$($matches[1])"
+                }
+                'release_manifest' {
+                    if (-not $relativeSource.Equals('GSS Survey Workbook Automation\release\release-manifest.json', [System.StringComparison]::OrdinalIgnoreCase)) {
+                        throw 'ReleaseOnly manifest must be the exact program release\release-manifest.json file.'
+                    }
+                    $expectedPortable = 'release/release-manifest.json'
+                }
+                'release_excel_receipt' {
+                    if (-not $relativeSource.Equals('_automation_runs\state\release\local-excel-validation-receipt.json', [System.StringComparison]::OrdinalIgnoreCase)) {
+                        throw 'ReleaseOnly Excel receipt must use the exact _automation_runs\state\release path.'
+                    }
+                    $expectedPortable = 'release/local-excel-validation-receipt.json'
+                }
+            }
+            if (-not $portable.Equals($expectedPortable, [System.StringComparison]::OrdinalIgnoreCase)) {
+                throw "ReleaseOnly artifact '$role' must use the exact portable path '$expectedPortable'."
+            }
         }
     }
 
@@ -776,6 +829,9 @@ function Get-GssDriveBackupInventory {
     $result = @($records | Sort-Object PortablePath)
     if ($InventoryMode -eq 'RecoveryOnly') {
         [void](Assert-GssRecoveryOnlyInventoryContract -GssRoot $root -Inventory $result)
+    }
+    elseif ($InventoryMode -eq 'ReleaseOnly') {
+        [void](Assert-GssReleaseOnlyInventoryContract -GssRoot $root -Inventory $result)
     }
     return $result
 }
@@ -1033,7 +1089,7 @@ function Test-GssDriveBackupExactInventoryRecordSet {
         $expectedByPortablePath[$key] = $item
     }
     if (@($Actual).Count -ne $expectedByPortablePath.Count) {
-        throw "$Label count does not match the requested RecoveryOnly inventory."
+        throw "$Label count does not match the requested closed inventory."
     }
 
     $seen = @{}
@@ -1053,6 +1109,355 @@ function Test-GssDriveBackupExactInventoryRecordSet {
             throw "$Label changed the source, role, or classification for '$portable'."
         }
     }
+    return $true
+}
+
+function Get-GssDriveBackupByteSha256 {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [byte[]]$Bytes
+    )
+
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return ([System.BitConverter]::ToString($sha256.ComputeHash($Bytes))).Replace('-', '').ToLowerInvariant()
+    }
+    finally {
+        $sha256.Dispose()
+    }
+}
+
+function Get-GssDriveBackupZipEntryByteArray {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [object]$Entry
+    )
+
+    $stream = $null
+    $memory = $null
+    try {
+        $stream = $Entry.Open()
+        $memory = New-Object System.IO.MemoryStream
+        $stream.CopyTo($memory)
+        return [byte[]]$memory.ToArray()
+    }
+    finally {
+        if ($memory) { $memory.Dispose() }
+        if ($stream) { $stream.Dispose() }
+    }
+}
+
+function Get-GssReleaseOnlyInventoryFingerprint {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [object[]]$Inventory,
+        [Parameter(Mandatory)]
+        [string]$Release
+    )
+
+    $parts = New-Object System.Collections.Generic.List[string]
+    $parts.Add('gss-release-only-inventory/v1')
+    $parts.Add($Release.Trim())
+    foreach ($evidence in @(ConvertTo-GssDriveBackupInventoryEvidence -Inventory $Inventory | Sort-Object portable_path)) {
+        $parts.Add(([string]$evidence.portable_path).Trim())
+        $parts.Add(([string]$evidence.role).Trim())
+        $parts.Add(([string]$evidence.classification).Trim())
+        $parts.Add(([string]$evidence.byte_size).Trim())
+        $parts.Add(([string]$evidence.sha256).Trim().ToLowerInvariant())
+    }
+    $bytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes(($parts -join "`n"))
+    return Get-GssDriveBackupByteSha256 -Bytes $bytes
+}
+
+function Assert-GssReleaseOnlyArtifactSet {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$ArchivePath,
+        [Parameter(Mandatory)]
+        [string]$ManifestPath,
+        [Parameter(Mandatory)]
+        [string]$ExcelReceiptPath,
+        [string]$GssRoot
+    )
+
+    $archive = [System.IO.Path]::GetFullPath($ArchivePath)
+    $manifestSource = [System.IO.Path]::GetFullPath($ManifestPath)
+    $receiptSource = [System.IO.Path]::GetFullPath($ExcelReceiptPath)
+    foreach ($requiredPath in @($archive, $manifestSource, $receiptSource)) {
+        if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
+            throw "ReleaseOnly required artifact is missing: $requiredPath"
+        }
+    }
+
+    $manifest = Read-GssDriveBackupJson -Path $manifestSource
+    $version = [string](Get-GssDriveBackupProperty $manifest @('release_version'))
+    $tag = [string](Get-GssDriveBackupProperty $manifest @('release_tag'))
+    $archiveName = [string](Get-GssDriveBackupProperty $manifest @('archive_name'))
+    if ($version -notmatch '^\d+\.\d+\.\d+$' -or
+        $tag -cne "v$version" -or
+        $archiveName -cne "gss-survey-workbook-automation-$tag.zip" -or
+        [System.IO.Path]::GetFileName($archive) -cne $archiveName -or
+        [string](Get-GssDriveBackupProperty $manifest @('commit_binding')) -cne 'exact_release_tag' -or
+        [string](Get-GssDriveBackupProperty $manifest @('classification')) -cne 'PROGRAM SOURCE ONLY - NO GSS WORKBOOKS, REPORTS, OR CUSTOMER DATA') {
+        throw 'ReleaseOnly manifest version, tag, archive name, commit binding, or classification is invalid.'
+    }
+    $runtime = Get-GssDriveBackupProperty $manifest @('runtime_contract')
+    if ($null -eq $runtime -or
+        (Get-GssDriveBackupProperty $runtime @('require_clean_tree')) -isnot [bool] -or
+        -not [bool](Get-GssDriveBackupProperty $runtime @('require_clean_tree')) -or
+        (Get-GssDriveBackupProperty $runtime @('reject_untracked_executables')) -isnot [bool] -or
+        -not [bool](Get-GssDriveBackupProperty $runtime @('reject_untracked_executables')) -or
+        (Get-GssDriveBackupProperty $runtime @('require_exact_tag_at_head')) -isnot [bool] -or
+        -not [bool](Get-GssDriveBackupProperty $runtime @('require_exact_tag_at_head')) -or
+        [string](Get-GssDriveBackupProperty $runtime @('automatic_sending')) -cne 'permanently_disabled' -or
+        [string](Get-GssDriveBackupProperty $runtime @('live_execution')) -cne 'manual_apply_only' -or
+        (Get-GssDriveBackupProperty $runtime @('excel_validation_receipt_required')) -isnot [bool] -or
+        -not [bool](Get-GssDriveBackupProperty $runtime @('excel_validation_receipt_required')) -or
+        [string](Get-GssDriveBackupProperty $runtime @('excel_validation_receipt_name')) -cne 'local-excel-validation-receipt.json' -or
+        [string](Get-GssDriveBackupProperty $runtime @('excel_validation_receipt_relative_path')) -cne '_automation_runs/state/release/local-excel-validation-receipt.json') {
+        throw 'ReleaseOnly manifest does not preserve the approved clean-tag, manual-apply, disabled-send, and Excel-receipt controls.'
+    }
+
+    $receipt = Read-GssDriveBackupJson -Path $receiptSource
+    $receiptError = [string](Get-GssDriveBackupProperty $receipt @('Error'))
+    $workbookPortable = Assert-GssDriveBackupSafeRelativePath -Path ([string](Get-GssDriveBackupProperty $receipt @('WorkbookPath')))
+    $sourceLogPortable = Assert-GssDriveBackupSafeRelativePath -Path ([string](Get-GssDriveBackupProperty $receipt @('SourceRunLogPath')))
+    if ([int](Get-GssDriveBackupProperty $receipt @('ReceiptSchemaVersion')) -ne 1 -or
+        [string](Get-GssDriveBackupProperty $receipt @('Status')) -cne 'Passed' -or
+        -not [string]::IsNullOrWhiteSpace($receiptError) -or
+        [string](Get-GssDriveBackupProperty $receipt @('ReleaseTag')) -cne $tag -or
+        [string](Get-GssDriveBackupProperty $receipt @('GitHead')) -notmatch '^[a-fA-F0-9]{40}$' -or
+        [string]::IsNullOrWhiteSpace([string](Get-GssDriveBackupProperty $receipt @('ExcelVersion'))) -or
+        [string](Get-GssDriveBackupProperty $receipt @('WorkbookSha256')) -notmatch '^[a-fA-F0-9]{64}$' -or
+        [string](Get-GssDriveBackupProperty $receipt @('SourceRunFingerprint')) -notmatch '^[a-fA-F0-9]{64}$' -or
+        -not $workbookPortable.StartsWith('_automation_runs/test-output/', [System.StringComparison]::OrdinalIgnoreCase) -or
+        -not $sourceLogPortable.StartsWith('_automation_runs/logs/', [System.StringComparison]::OrdinalIgnoreCase) -or
+        [int](Get-GssDriveBackupProperty $receipt @('FormulaErrors') -1) -ne 0 -or
+        [int](Get-GssDriveBackupProperty $receipt @('ConstantErrors') -1) -ne 0) {
+        throw 'ReleaseOnly Excel receipt is not a passed copy-only validation for the exact release tag.'
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($GssRoot)) {
+        $root = [System.IO.Path]::GetFullPath($GssRoot).TrimEnd('\', '/')
+        $workbookPath = [System.IO.Path]::GetFullPath((Join-Path $root $workbookPortable.Replace('/', '\')))
+        $sourceLogPath = [System.IO.Path]::GetFullPath((Join-Path $root $sourceLogPortable.Replace('/', '\')))
+        foreach ($evidencePath in @($workbookPath, $sourceLogPath)) {
+            [void](Get-GssDriveBackupRelativePath -Path $evidencePath -Root $root)
+            [void](Test-GssDriveBackupNoLinkTraversal -Path $evidencePath -Root $root)
+        }
+        if ((Get-GssDriveBackupSha256 -Path $workbookPath) -cne ([string](Get-GssDriveBackupProperty $receipt @('WorkbookSha256'))).ToLowerInvariant()) {
+            throw 'ReleaseOnly Excel receipt workbook hash does not match its copy-test artifact.'
+        }
+        $sourceRun = Read-GssDriveBackupJson -Path $sourceLogPath
+        if ([string](Get-GssDriveBackupProperty $sourceRun @('Mode')) -cne 'CopyTestOnly' -or
+            [string](Get-GssDriveBackupProperty $sourceRun @('TransactionStatus')) -cne 'Prepared' -or
+            [string](Get-GssDriveBackupProperty $sourceRun @('ProgramRelease')) -cne $tag -or
+            [string](Get-GssDriveBackupProperty $sourceRun @('HostName')) -cne [Environment]::MachineName -or
+            [string](Get-GssDriveBackupProperty $sourceRun @('RunFingerprint')) -cne [string](Get-GssDriveBackupProperty $receipt @('SourceRunFingerprint')) -or
+            ([string](Get-GssDriveBackupProperty $sourceRun @('StagedWorkbookRelativePath'))).Replace('\', '/') -cne $workbookPortable -or
+            [string](Get-GssDriveBackupProperty $sourceRun @('StagedWorkbookSha256')) -cne ([string](Get-GssDriveBackupProperty $receipt @('WorkbookSha256'))).ToLowerInvariant()) {
+            throw 'ReleaseOnly Excel receipt does not match its Prepared copy-only source run.'
+        }
+    }
+
+    try {
+        Add-Type -AssemblyName System.IO.Compression -ErrorAction Stop
+        Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop
+    }
+    catch {
+        if (-not ('System.IO.Compression.ZipFile' -as [type])) {
+            throw "ReleaseOnly archive validation requires System.IO.Compression: $($_.Exception.Message)"
+        }
+    }
+
+    $zip = $null
+    try {
+        $zip = [System.IO.Compression.ZipFile]::OpenRead($archive)
+        $entriesByPath = @{}
+        foreach ($entry in @($zip.Entries)) {
+            if ([string]::IsNullOrWhiteSpace([string]$entry.Name)) { continue }
+            $portable = Assert-GssDriveBackupSafeRelativePath -Path ([string]$entry.FullName)
+            $key = $portable.ToLowerInvariant()
+            if ($entriesByPath.ContainsKey($key)) {
+                throw "ReleaseOnly archive contains duplicate path '$portable'."
+            }
+            $entriesByPath[$key] = $entry
+        }
+
+        $expectedPaths = @{}
+        $manifestFiles = @(Get-GssDriveBackupProperty $manifest @('files') @())
+        if ($manifestFiles.Count -lt 1) {
+            throw 'ReleaseOnly manifest contains no program files.'
+        }
+        $strictUtf8 = New-Object System.Text.UTF8Encoding($false, $true)
+        $canonicalUtf8 = New-Object System.Text.UTF8Encoding($false)
+        foreach ($file in $manifestFiles) {
+            $portable = Assert-GssDriveBackupSafeRelativePath -Path ([string](Get-GssDriveBackupProperty $file @('path')))
+            $key = $portable.ToLowerInvariant()
+            if ($expectedPaths.ContainsKey($key) -or $portable.Equals('release/release-manifest.json', [System.StringComparison]::OrdinalIgnoreCase)) {
+                throw "ReleaseOnly manifest contains a duplicate or self-referential path '$portable'."
+            }
+            $expectedPaths[$key] = $true
+            if (-not $entriesByPath.ContainsKey($key)) {
+                throw "ReleaseOnly archive is missing manifest-bound program file '$portable'."
+            }
+            if ([string](Get-GssDriveBackupProperty $file @('hash_mode')) -cne 'utf8_lf') {
+                throw "ReleaseOnly manifest uses an unsupported hash mode for '$portable'."
+            }
+            $entryBytes = Get-GssDriveBackupZipEntryByteArray -Entry $entriesByPath[$key]
+            try {
+                $entryText = $strictUtf8.GetString($entryBytes)
+            }
+            catch {
+                throw "ReleaseOnly archive program file is not strict UTF-8 text: $portable"
+            }
+            $canonicalBytes = $canonicalUtf8.GetBytes($entryText.Replace("`r`n", "`n").Replace("`r", "`n"))
+            if ([long](Get-GssDriveBackupProperty $file @('canonical_size_bytes')) -ne $canonicalBytes.Length -or
+                [string](Get-GssDriveBackupProperty $file @('sha256')) -cne (Get-GssDriveBackupByteSha256 -Bytes $canonicalBytes)) {
+                throw "ReleaseOnly archive program file does not match the release manifest: $portable"
+            }
+        }
+
+        $manifestArchivePath = 'release/release-manifest.json'
+        $manifestArchiveKey = $manifestArchivePath.ToLowerInvariant()
+        if (-not $entriesByPath.ContainsKey($manifestArchiveKey)) {
+            throw 'ReleaseOnly archive does not contain release/release-manifest.json.'
+        }
+        $expectedPaths[$manifestArchiveKey] = $true
+        $archivedManifestBytes = Get-GssDriveBackupZipEntryByteArray -Entry $entriesByPath[$manifestArchiveKey]
+        $sourceManifestBytes = [System.IO.File]::ReadAllBytes($manifestSource)
+        try {
+            $archivedManifestText = $strictUtf8.GetString($archivedManifestBytes)
+            $sourceManifestText = $strictUtf8.GetString($sourceManifestBytes)
+        }
+        catch {
+            throw 'ReleaseOnly archive and inventoried release manifests must both be strict UTF-8 text.'
+        }
+        $archivedManifestCanonicalBytes = $canonicalUtf8.GetBytes(
+            $archivedManifestText.Replace("`r`n", "`n").Replace("`r", "`n")
+        )
+        $sourceManifestCanonicalBytes = $canonicalUtf8.GetBytes(
+            $sourceManifestText.Replace("`r`n", "`n").Replace("`r", "`n")
+        )
+        if ($archivedManifestCanonicalBytes.Length -ne $sourceManifestCanonicalBytes.Length -or
+            (Get-GssDriveBackupByteSha256 -Bytes $archivedManifestCanonicalBytes) -cne
+                (Get-GssDriveBackupByteSha256 -Bytes $sourceManifestCanonicalBytes)) {
+            throw 'ReleaseOnly archive manifest content does not match the inventoried release manifest after canonical line-ending normalization.'
+        }
+
+        foreach ($entryKey in @($entriesByPath.Keys)) {
+            if (-not $expectedPaths.ContainsKey($entryKey) -and $entryKey -cne '.gitignore') {
+                throw "ReleaseOnly archive contains an unmanifested program file: $($entriesByPath[$entryKey].FullName)"
+            }
+        }
+    }
+    finally {
+        if ($zip) { $zip.Dispose() }
+    }
+
+    return [pscustomobject]@{
+        Version = $version
+        Tag = $tag
+        ArchiveName = $archiveName
+        ManifestSha256 = Get-GssDriveBackupSha256 -Path $manifestSource
+        ArchiveSha256 = Get-GssDriveBackupSha256 -Path $archive
+        ExcelReceiptSha256 = Get-GssDriveBackupSha256 -Path $receiptSource
+    }
+}
+
+function Assert-GssReleaseOnlyInventoryContract {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$GssRoot,
+        [Parameter(Mandatory)]
+        [object[]]$Inventory
+    )
+
+    if (@($Inventory).Count -ne 3) {
+        throw 'ReleaseOnly inventory must contain exactly three artifacts.'
+    }
+    $byRole = @{}
+    foreach ($item in @($Inventory)) {
+        $role = [string](Get-GssDriveBackupProperty $item @('Role', 'role'))
+        if ($role -notin @('release_archive', 'release_manifest', 'release_excel_receipt') -or $byRole.ContainsKey($role)) {
+            throw "ReleaseOnly inventory contains an unsupported or duplicate role '$role'."
+        }
+        if ([string](Get-GssDriveBackupProperty $item @('Classification', 'classification')) -cne 'restricted_operational') {
+            throw "ReleaseOnly inventory role '$role' has an invalid classification."
+        }
+        $byRole[$role] = $item
+    }
+    foreach ($role in @('release_archive', 'release_manifest', 'release_excel_receipt')) {
+        if (-not $byRole.ContainsKey($role)) {
+            throw "ReleaseOnly inventory is missing required role '$role'."
+        }
+    }
+
+    [void](Assert-GssReleaseOnlyArtifactSet `
+        -ArchivePath ([string]$byRole['release_archive'].SourcePath) `
+        -ManifestPath ([string]$byRole['release_manifest'].SourcePath) `
+        -ExcelReceiptPath ([string]$byRole['release_excel_receipt'].SourcePath) `
+        -GssRoot $GssRoot)
+    return $true
+}
+
+function Assert-GssReleaseOnlySnapshotContract {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$SnapshotDirectory,
+        [Parameter(Mandatory)]
+        [object[]]$Files
+    )
+
+    if (@($Files).Count -ne 3) {
+        throw 'ReleaseOnly snapshot must contain exactly three artifacts.'
+    }
+    $root = [System.IO.Path]::GetFullPath($SnapshotDirectory).TrimEnd('\', '/')
+    $byRole = @{}
+    $expectedPortable = @{
+        release_manifest = 'release/release-manifest.json'
+        release_excel_receipt = 'release/local-excel-validation-receipt.json'
+    }
+    foreach ($file in @($Files)) {
+        $role = [string](Get-GssDriveBackupProperty $file @('role', 'Role'))
+        $portable = Assert-GssDriveBackupSafeRelativePath -Path ([string](Get-GssDriveBackupProperty $file @('portable_path', 'PortablePath')))
+        if ($role -notin @('release_archive', 'release_manifest', 'release_excel_receipt') -or $byRole.ContainsKey($role)) {
+            throw "ReleaseOnly snapshot contains an unsupported or duplicate role '$role'."
+        }
+        if ([string](Get-GssDriveBackupProperty $file @('classification', 'Classification')) -cne 'restricted_operational') {
+            throw "ReleaseOnly snapshot role '$role' has an invalid classification."
+        }
+        if ($role -eq 'release_archive') {
+            if ($portable -notmatch '^release/gss-survey-workbook-automation-v\d+\.\d+\.\d+\.zip$') {
+                throw 'ReleaseOnly snapshot archive portable path is invalid.'
+            }
+        }
+        elseif (-not $portable.Equals($expectedPortable[$role], [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "ReleaseOnly snapshot role '$role' has an invalid portable path."
+        }
+        $snapshotRelative = Assert-GssDriveBackupSafeRelativePath -Path ([string](Get-GssDriveBackupProperty $file @('snapshot_path')))
+        $sourcePath = [System.IO.Path]::GetFullPath((Join-Path $root $snapshotRelative.Replace('/', '\')))
+        if (-not $sourcePath.StartsWith("$root\", [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "ReleaseOnly snapshot role '$role' escaped the snapshot root."
+        }
+        $byRole[$role] = $sourcePath
+    }
+    foreach ($role in @('release_archive', 'release_manifest', 'release_excel_receipt')) {
+        if (-not $byRole.ContainsKey($role)) {
+            throw "ReleaseOnly snapshot is missing required role '$role'."
+        }
+    }
+
+    [void](Assert-GssReleaseOnlyArtifactSet `
+        -ArchivePath $byRole['release_archive'] `
+        -ManifestPath $byRole['release_manifest'] `
+        -ExcelReceiptPath $byRole['release_excel_receipt'])
     return $true
 }
 
@@ -1423,7 +1828,7 @@ function New-GssDriveBackupPreparedSnapshot {
         [Parameter(Mandatory)]
         [object[]]$Inventory,
         [string]$Release = 'unversioned',
-        [ValidateSet('WorkbookTransaction', 'RecoveryOnly')]
+        [ValidateSet('WorkbookTransaction', 'RecoveryOnly', 'ReleaseOnly')]
         [string]$SnapshotPurpose = 'WorkbookTransaction',
         [string]$SettingsPath = (Get-GssDriveBackupDefaultSettingsPath)
     )
@@ -1463,9 +1868,12 @@ function New-GssDriveBackupPreparedSnapshot {
             }
             $files = @(Get-GssDriveBackupProperty $existing @('files') @())
             [void](Test-GssDriveBackupPayload -SnapshotDirectory $partialPath -Files $files)
-            if ($SnapshotPurpose -eq 'RecoveryOnly') {
+            if ($SnapshotPurpose -eq 'ReleaseOnly') {
+                [void](Assert-GssReleaseOnlySnapshotContract -SnapshotDirectory $partialPath -Files $files)
+            }
+            if ($SnapshotPurpose -in @('RecoveryOnly', 'ReleaseOnly')) {
                 $requestedFiles = @(ConvertTo-GssDriveBackupInventoryEvidence -Inventory $Inventory)
-                [void](Test-GssDriveBackupExactFileSet -ExpectedFiles $files -ActualFiles $requestedFiles -Label 'Idempotent RecoveryOnly preparation inventory')
+                [void](Test-GssDriveBackupExactFileSet -ExpectedFiles $files -ActualFiles $requestedFiles -Label "Idempotent $SnapshotPurpose preparation inventory")
             }
             return [pscustomobject]@{
                 Status = 'Prepared'
@@ -1494,7 +1902,12 @@ function New-GssDriveBackupPreparedSnapshot {
         New-Item -ItemType Directory -Path $partialPath | Out-Null
         try {
             $files = @(Copy-GssDriveBackupInventory -Inventory $Inventory -SnapshotDirectory $partialPath -PayloadPrefix 'prepared-payload')
+            [void](Test-GssDriveBackupPayload -SnapshotDirectory $partialPath -Files $files)
+            if ($SnapshotPurpose -eq 'ReleaseOnly') {
+                [void](Assert-GssReleaseOnlySnapshotContract -SnapshotDirectory $partialPath -Files $files)
+            }
             $chainHead = Get-GssDriveBackupChainHead -RootPath $context.RootPath
+            $containsPersonalData = [bool](@($files | Where-Object classification -eq 'restricted_personal_data').Count -gt 0)
             $prepared = [ordered]@{
                 schema_version = 1
                 manifest_type = 'prepared'
@@ -1514,11 +1927,16 @@ function New-GssDriveBackupPreparedSnapshot {
                     verification_level = $context.Settings.VerificationLevel
                 }
                 data_classification = [ordered]@{
-                    label = $script:GssDriveBackupClassificationLabel
-                    contains_personal_data = $true
+                    label = if ($containsPersonalData) {
+                        $script:GssDriveBackupClassificationLabel
+                    }
+                    else {
+                        'RESTRICTED OPERATIONAL - NO PERSONAL DATA IN SNAPSHOT INVENTORY'
+                    }
+                    contains_personal_data = $containsPersonalData
                 }
                 scope = [ordered]@{
-                    inventory_mode = if ($SnapshotPurpose -eq 'RecoveryOnly') { 'RecoveryOnly' } else { 'Full' }
+                    inventory_mode = if ($SnapshotPurpose -in @('RecoveryOnly', 'ReleaseOnly')) { $SnapshotPurpose } else { 'Full' }
                     included_roles = @($files.role | Sort-Object -Unique)
                     excluded = @('test-output', '_automation_runs/backups except explicit transaction artifacts', 'quarantine', 'staging', 'temp', 'repository working tree', '.git')
                 }
@@ -1699,8 +2117,17 @@ function Test-GssCommittedBackupSnapshot {
     $receiptPurpose = [string](Get-GssDriveBackupProperty $receipt @('snapshot_purpose') 'WorkbookTransaction')
     $manifestPurpose = [string](Get-GssDriveBackupProperty $manifest @('snapshot_purpose') 'WorkbookTransaction')
     $preparedPurpose = [string](Get-GssDriveBackupProperty $preparedManifest @('snapshot_purpose') 'WorkbookTransaction')
+    if ($receiptPurpose -notin @('WorkbookTransaction', 'RecoveryOnly', 'ReleaseOnly')) {
+        throw "Committed snapshot purpose is unsupported: $receiptPurpose"
+    }
     if ($receiptPurpose -ne $manifestPurpose -or $receiptPurpose -ne $preparedPurpose) {
         throw "Committed snapshot purpose does not match across its prepared manifest, final manifest, and receipt: $SnapshotPath"
+    }
+    $expectedInventoryMode = if ($receiptPurpose -in @('RecoveryOnly', 'ReleaseOnly')) { $receiptPurpose } else { 'Full' }
+    $manifestInventoryMode = [string](Get-GssDriveBackupProperty (Get-GssDriveBackupProperty $manifest @('scope')) @('inventory_mode'))
+    $preparedInventoryMode = [string](Get-GssDriveBackupProperty (Get-GssDriveBackupProperty $preparedManifest @('scope')) @('inventory_mode'))
+    if ($manifestInventoryMode -cne $expectedInventoryMode -or $preparedInventoryMode -cne $expectedInventoryMode) {
+        throw "Committed snapshot inventory mode does not match purpose '$receiptPurpose'."
     }
     $expectedManifestHash = [string](Get-GssDriveBackupProperty $receipt @('backup_manifest_sha256'))
     $actualManifestHash = Get-GssDriveBackupSha256 -Path $manifestPath
@@ -1718,8 +2145,12 @@ function Test-GssCommittedBackupSnapshot {
     $validatedCount = Test-GssDriveBackupPayload -SnapshotDirectory $SnapshotPath -Files $files
     $preparedFiles = @(Get-GssDriveBackupProperty $preparedManifest @('files') @())
     $validatedPreparedCount = Test-GssDriveBackupPayload -SnapshotDirectory $SnapshotPath -Files $preparedFiles
-    if ($receiptPurpose -eq 'RecoveryOnly') {
-        [void](Test-GssDriveBackupExactFileSet -ExpectedFiles $preparedFiles -ActualFiles $files -Label 'Committed RecoveryOnly inventory')
+    if ($receiptPurpose -in @('RecoveryOnly', 'ReleaseOnly')) {
+        [void](Test-GssDriveBackupExactFileSet -ExpectedFiles $preparedFiles -ActualFiles $files -Label "Committed $receiptPurpose inventory")
+    }
+    if ($receiptPurpose -eq 'ReleaseOnly') {
+        [void](Assert-GssReleaseOnlySnapshotContract -SnapshotDirectory $SnapshotPath -Files $preparedFiles)
+        [void](Assert-GssReleaseOnlySnapshotContract -SnapshotDirectory $SnapshotPath -Files $files)
     }
     return [pscustomobject]@{
         Receipt = $receipt
@@ -1743,7 +2174,7 @@ function Complete-GssDriveBackupSnapshot {
         [Parameter(Mandatory)]
         [string]$Fingerprint,
         [object[]]$FinalInventory,
-        [ValidateSet('WorkbookTransaction', 'RecoveryOnly')]
+        [ValidateSet('WorkbookTransaction', 'RecoveryOnly', 'ReleaseOnly')]
         [string]$SnapshotPurpose = 'WorkbookTransaction',
         [string]$SettingsPath = (Get-GssDriveBackupDefaultSettingsPath)
     )
@@ -1774,10 +2205,10 @@ function Complete-GssDriveBackupSnapshot {
                 [string](Get-GssDriveBackupProperty $validated.Manifest @('snapshot_purpose') 'WorkbookTransaction') -ne $SnapshotPurpose) {
                 throw 'Committed snapshot identity does not match the requested run.'
             }
-            if ($SnapshotPurpose -eq 'RecoveryOnly' -and $null -ne $FinalInventory -and @($FinalInventory).Count -gt 0) {
+            if ($SnapshotPurpose -in @('RecoveryOnly', 'ReleaseOnly') -and $null -ne $FinalInventory -and @($FinalInventory).Count -gt 0) {
                 $requestedFiles = @(ConvertTo-GssDriveBackupInventoryEvidence -Inventory $FinalInventory)
                 $committedFiles = @(Get-GssDriveBackupProperty $validated.Manifest @('files') @())
-                [void](Test-GssDriveBackupExactFileSet -ExpectedFiles $committedFiles -ActualFiles $requestedFiles -Label 'Idempotent committed RecoveryOnly inventory')
+                [void](Test-GssDriveBackupExactFileSet -ExpectedFiles $committedFiles -ActualFiles $requestedFiles -Label "Idempotent committed $SnapshotPurpose inventory")
             }
             $head = Get-GssDriveBackupChainHead -RootPath $context.RootPath
             $priorHash = [string](Get-GssDriveBackupProperty $validated.Manifest @('prior_manifest_sha256'))
@@ -1816,6 +2247,9 @@ function Complete-GssDriveBackupSnapshot {
         }
         $preparedFiles = @(Get-GssDriveBackupProperty $prepared @('files') @())
         [void](Test-GssDriveBackupPayload -SnapshotDirectory $activePath -Files $preparedFiles)
+        if ($SnapshotPurpose -eq 'ReleaseOnly') {
+            [void](Assert-GssReleaseOnlySnapshotContract -SnapshotDirectory $activePath -Files $preparedFiles)
+        }
 
         $manifestPath = Join-Path $activePath 'backup-manifest.json'
         if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
@@ -1831,8 +2265,11 @@ function Complete-GssDriveBackupSnapshot {
             $manifestPreparedFiles = @(Get-GssDriveBackupProperty $backupManifest @('prepared_files') @())
             [void](Test-GssDriveBackupPayload -SnapshotDirectory $activePath -Files $manifestPreparedFiles)
             [void](Test-GssDriveBackupExactFileSet -ExpectedFiles $preparedFiles -ActualFiles $manifestPreparedFiles -Label 'Final manifest prepared inventory')
-            if ($SnapshotPurpose -eq 'RecoveryOnly') {
-                [void](Test-GssDriveBackupExactFileSet -ExpectedFiles $preparedFiles -ActualFiles $finalFiles -Label 'Existing RecoveryOnly final inventory')
+            if ($SnapshotPurpose -in @('RecoveryOnly', 'ReleaseOnly')) {
+                [void](Test-GssDriveBackupExactFileSet -ExpectedFiles $preparedFiles -ActualFiles $finalFiles -Label "Existing $SnapshotPurpose final inventory")
+            }
+            if ($SnapshotPurpose -eq 'ReleaseOnly') {
+                [void](Assert-GssReleaseOnlySnapshotContract -SnapshotDirectory $activePath -Files $finalFiles)
             }
         }
         else {
@@ -1840,35 +2277,38 @@ function Complete-GssDriveBackupSnapshot {
                 throw 'Finalization requires the current curated inventory so the post-apply state can be captured.'
             }
 
-            if ($SnapshotPurpose -eq 'RecoveryOnly') {
+            if ($SnapshotPurpose -in @('RecoveryOnly', 'ReleaseOnly')) {
                 $preparedByPortablePath = @{}
                 foreach ($preparedFile in @($preparedFiles)) {
                     $preparedKey = ([string](Get-GssDriveBackupProperty $preparedFile @('portable_path'))).ToLowerInvariant()
                     $preparedByPortablePath[$preparedKey] = $preparedFile
                 }
                 if (@($FinalInventory).Count -ne $preparedByPortablePath.Count) {
-                    throw 'RecoveryOnly final inventory does not match the prepared inventory count.'
+                    throw "$SnapshotPurpose final inventory does not match the prepared inventory count."
                 }
                 foreach ($item in @($FinalInventory)) {
                     $portable = Assert-GssDriveBackupSafeRelativePath -Path ([string]$item.PortablePath)
                     $key = $portable.ToLowerInvariant()
                     if (-not $preparedByPortablePath.ContainsKey($key)) {
-                        throw "RecoveryOnly final inventory added an unprepared path: $portable"
+                        throw "$SnapshotPurpose final inventory added an unprepared path: $portable"
                     }
                     $expected = $preparedByPortablePath[$key]
                     $actualHash = Get-GssDriveBackupSha256 -Path ([string]$item.SourcePath)
                     if ($actualHash -ne [string](Get-GssDriveBackupProperty $expected @('sha256')) -or
                         [string]$item.Role -ne [string](Get-GssDriveBackupProperty $expected @('role')) -or
                         [string]$item.Classification -ne [string](Get-GssDriveBackupProperty $expected @('classification'))) {
-                        throw "RecoveryOnly final inventory changed after preparation: $portable"
+                        throw "$SnapshotPurpose final inventory changed after preparation: $portable"
                     }
                 }
             }
 
             $finalFiles = @(Copy-GssDriveBackupInventory -Inventory $FinalInventory -SnapshotDirectory $activePath -PayloadPrefix 'payload')
             [void](Test-GssDriveBackupPayload -SnapshotDirectory $activePath -Files $finalFiles)
-            if ($SnapshotPurpose -eq 'RecoveryOnly') {
-                [void](Test-GssDriveBackupExactFileSet -ExpectedFiles $preparedFiles -ActualFiles $finalFiles -Label 'Copied RecoveryOnly final inventory')
+            if ($SnapshotPurpose -in @('RecoveryOnly', 'ReleaseOnly')) {
+                [void](Test-GssDriveBackupExactFileSet -ExpectedFiles $preparedFiles -ActualFiles $finalFiles -Label "Copied $SnapshotPurpose final inventory")
+            }
+            if ($SnapshotPurpose -eq 'ReleaseOnly') {
+                [void](Assert-GssReleaseOnlySnapshotContract -SnapshotDirectory $activePath -Files $finalFiles)
             }
             $expectedPrior = [string](Get-GssDriveBackupProperty $prepared @('prior_manifest_sha256'))
 

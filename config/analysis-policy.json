@@ -1,5 +1,5 @@
 {
-  "schema_version": "gss-analysis-policy/v3",
+  "schema_version": "gss-analysis-policy/v4",
   "thresholds": {
     "previous_window": {
       "candidate_points": 1.0,
@@ -11,6 +11,7 @@
     }
   },
   "confidence": {
+    "semantic_label": "ResponseVolumeTier",
     "high_minimum_responses": 100,
     "developing_minimum_responses": 50,
     "low_minimum_responses": 1,
@@ -24,166 +25,109 @@
   },
   "guest_feedback": {
     "minimum_unique_responses_per_theme": 2,
-    "theme_categories_are_non_exclusive": true
+    "theme_categories_are_non_exclusive": true,
+    "scope_label": "Among guests who provided comments"
   },
-  "population_export": {
-    "required_before_inference_or_modeling": true,
-    "source_sha256_definition": "sha256_canonical_json_omitting_source_sha256",
-    "reporting_week": {
-      "start_day": "Monday",
-      "end_day": "Sunday",
-      "date_basis": "local_visit_date"
-    },
-    "required_fields": [
-      "response_id",
-      "restaurant_id",
-      "visit_date",
-      "overall",
-      "service",
-      "culinary",
-      "value",
-      "pace",
-      "recommend",
-      "first_visit",
-      "questionnaire_version",
-      "conditional_eligibility"
-    ],
-    "optional_fields": [
-      "manager_visit"
-    ],
-    "reconciliation": {
-      "count_delta_maximum_rate": 0.01,
-      "count_delta_minimum_absolute": 1,
-      "score_delta_maximum_percentage_points": 0.10,
-      "response_ids_must_be_unique": true,
-      "core_rating_completeness_minimum_rate": 0.99,
-      "visit_date_completeness_minimum_rate": 1.0,
-      "restaurant_completeness_minimum_rate": 1.0,
-      "failure_status": "DataBlocked"
-    }
+  "source_design": {
+    "population_scores_source": "rolling_aggregate_workbook",
+    "population_scope_label": "Population aggregate - all submitted surveys",
+    "population_raw_rows_available": false,
+    "row_level_scores_source": "surveys_with_comments_only",
+    "raw_row_scope": "comment_bearing_surveys_only",
+    "commenter_scope_label": "Among guests who provided comments",
+    "non_comment_row_level_scores_available": false,
+    "commenter_rows_population_representative": false,
+    "population_driver_modeling_supported": false,
+    "population_driver_modeling_status": "PopulationRawDataUnavailable",
+    "population_driver_modeling_reason_code": "non_comment_survey_rows_not_provided"
   },
-  "inference": {
-    "primary_outcome": {
-      "field": "overall",
-      "event_values": [1, 2, 3],
-      "label": "low_overall"
-    },
-    "secondary_outcome": {
-      "field": "recommend",
-      "event_minimum": 0,
-      "event_maximum": 6,
-      "label": "recommend_detractor"
-    },
-    "comparison": {
-      "current_window_weeks": 13,
-      "previous_window_weeks": 13,
-      "windows_overlap": false,
-      "interval_method": "newcombe_independent_score",
-      "multiple_testing_method": "benjamini_hochberg",
-      "false_discovery_rate": 0.10,
-      "minimum_responses_per_window": 100,
-      "minimum_practical_difference_percentage_points": 2.0,
-      "confidence_level": 0.95
-    },
-    "descriptive_only": [
-      "adjacent_rolling_windows",
-      "sorensen_benchmark",
-      "all_franchisees_benchmark"
+  "commenter_lens": {
+    "enabled": true,
+    "scope_label": "Among guests who provided comments",
+    "reporting_window_weeks": 13,
+    "material_gap_percentage_points": 2.0,
+    "maximum_reconstructed_event_count_error": 0.01,
+    "metrics": [
+      {
+        "id": "low_overall",
+        "response_field": "overall",
+        "population_metric": "Overall Dissat (Lower Is Better)",
+        "event_minimum": 1,
+        "event_maximum": 3
+      },
+      {
+        "id": "low_service",
+        "response_field": "service",
+        "population_metric": "Service Dissat (Lower Is Better)",
+        "event_minimum": 1,
+        "event_maximum": 3
+      },
+      {
+        "id": "low_culinary",
+        "response_field": "culinary",
+        "population_metric": "Culinary Dissat (Lower Is Better)",
+        "event_minimum": 1,
+        "event_maximum": 3
+      },
+      {
+        "id": "low_value",
+        "response_field": "value",
+        "population_metric": "Value Dissat (Lower Is Better)",
+        "event_minimum": 1,
+        "event_maximum": 3
+      },
+      {
+        "id": "low_pace",
+        "response_field": "paceofmeal",
+        "population_metric": "Pace Of Meal Dissat (Lower Is Better)",
+        "event_minimum": 1,
+        "event_maximum": 3
+      },
+      {
+        "id": "recommend_detractor",
+        "response_field": "recommend",
+        "population_metric": null,
+        "event_minimum": 0,
+        "event_maximum": 6
+      }
+    ],
+    "status_values": [
+      "Ready",
+      "InsufficientData",
+      "DataQualityReview"
+    ],
+    "population_prevalence_claim_allowed": false,
+    "statistical_significance_claim_allowed": false,
+    "causation_claim_allowed": false,
+    "individual_prediction_allowed": false,
+    "row_level_persistence_allowed": false,
+    "email_attachment_allowed": false,
+    "outputs": [
+      "commenter_lens.json",
+      "commenter_lens.csv"
     ]
   },
-  "driver_model": {
-    "mode": "shadow",
-    "runtime": {
-      "python": "3.12",
-      "network_allowed_during_run": false,
-      "dependencies": [
-        "numpy",
-        "scipy",
-        "scikit-learn"
-      ],
-      "dependencies_must_be_hash_locked": true
-    },
-    "algorithm": "l2_logistic_regression",
-    "primary_outcome": "low_overall",
-    "secondary_outcome": "recommend_detractor",
-    "predictors": [
-      "service_one_point_worsening",
-      "culinary_one_point_worsening",
-      "value_one_point_worsening",
-      "pace_one_point_worsening"
-    ],
-    "controls": [
-      "restaurant",
-      "first_visit",
-      "questionnaire_version",
-      "time"
-    ],
-    "excluded_inputs": [
-      "guest_name",
-      "contact_information",
-      "free_text",
-      "recommend_as_predictor",
-      "individual_predictions"
-    ],
-    "manager_visit_sensitivity_only": true,
-    "regularization_c_grid": [0.03, 0.1, 0.3, 1.0, 3.0],
-    "validation": {
-      "expanding_validation_block_weeks": 4,
-      "minimum_training_weeks_before_fold": 8,
-      "holdout_weeks": 8,
-      "selection_metric": "brier_score",
-      "bootstrap_repetitions": 1000,
-      "bootstrap_unit": "week",
-      "random_seed": 20260723,
-      "all_folds_must_converge": true,
-      "final_model_must_converge": true,
-      "all_bootstrap_repetitions_required": true
-    },
-    "shadow_minimums": {
-      "usable_responses": 500,
-      "primary_events": 100,
-      "weeks": 26,
-      "distinct_weekly_cycles": 8,
-      "cycle_evidence": "verified_append_only_aggregate_ledger"
-    },
-    "store_specific_minimums": {
-      "usable_responses_per_store": 500,
-      "primary_events_per_store": 100
-    },
-    "promotion": {
-      "explicit_approval_required": true,
-      "minimum_weeks": 52,
-      "minimum_responses": 1000,
-      "minimum_primary_events": 200,
-      "minimum_validation_folds": 3,
-      "minimum_brier_improvement_rate": 0.05,
-      "minimum_auc": 0.70,
-      "calibration_model_must_converge": true,
-      "calibration_slope_minimum": 0.75,
-      "calibration_slope_maximum": 1.25,
-      "calibration_intercept_absolute_maximum": 0.10,
-      "top_factor_sign_stability_minimum_rate": 0.80
-    },
-    "outputs": [
-      "model_summary.json",
-      "model_estimates.csv",
-      "model_diagnostics.json",
-      "input_manifest.json",
-      "model_card.md"
-    ],
+  "modeling": {
+    "status": "PopulationRawDataUnavailable",
+    "reason_code": "non_comment_survey_rows_not_provided",
+    "reason": "Raw row scores are structurally available only for surveys with comments, so population driver modeling is unsupported.",
+    "nonblocking": true,
+    "blocks_workbook_or_backup_or_package": false,
     "row_level_persistence_allowed": false,
-    "email_attachment_allowed_in_shadow": false,
-    "blocks_workbook_or_backup_or_package": false
+    "email_attachment_allowed": false
   },
   "forecasting": {
     "status": "Deferred",
+    "source": "aggregate_population_history_only",
     "minimum_contiguous_population_weeks": 52,
-    "minimum_weeks_for_annual_seasonality": 104
+    "minimum_weeks_for_annual_seasonality": 104,
+    "population_forecast_published": false
   },
   "review_controls": {
     "human_review_required": true,
     "automatic_sending_enabled": false,
     "causation_claimed": false,
-    "statistical_significance_claimed": false
+    "statistical_significance_claimed": false,
+    "population_prevalence_claimed_from_commenter_rows": false
   }
 }

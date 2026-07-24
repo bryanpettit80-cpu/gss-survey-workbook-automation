@@ -15,6 +15,13 @@ function Assert-True {
     if (-not $Value) { throw "Assertion failed for $Name." }
 }
 
+function Assert-Near {
+    param([double]$Actual, [double]$Expected, [double]$Tolerance, [string]$Name)
+    if ([math]::Abs($Actual - $Expected) -gt $Tolerance) {
+        throw "Assertion failed for $Name. Expected '$Expected' +/- '$Tolerance'; actual '$Actual'."
+    }
+}
+
 function Assert-ThrowsLike {
     param([scriptblock]$Script, [string]$Pattern, [string]$Name)
     try { & $Script; throw "Assertion failed for $Name. Expected an exception." }
@@ -62,6 +69,18 @@ $packageTerminalThrowCatches = @($packageFunctionAst.Body.FindAll({
 Assert-Equal $packageTerminalThrowCatches.Count 1 'Package creation has one terminal rethrow catch'
 $packageRethrow = $packageTerminalThrowCatches[0].Body.Statements[-1]
 Assert-True ($null -eq $packageRethrow.Pipeline) 'Package creation uses bare throw after cleanup'
+
+$inventoryFunctionAst = $sourceAst.Find({
+    param($node)
+    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -eq 'Get-GssDetailInventory'
+}, $true)
+$inventorySource = $inventoryFunctionAst.Extent.Text
+$preParseVerificationIndex = $inventorySource.IndexOf("Assert-GssHistoricalRecoveryFileIntegrity -Descriptor `$recoveryDescriptor -Phase 'pre-parse'", [System.StringComparison]::Ordinal)
+$workbookParseIndex = $inventorySource.IndexOf('Read-GssDetailWorkbook -Path $file.FullName -FolderPath $FolderPath', [System.StringComparison]::Ordinal)
+$postParseVerificationIndex = $inventorySource.IndexOf("Assert-GssHistoricalRecoveryFileIntegrity -Descriptor `$recoveryDescriptor -Phase 'post-parse'", [System.StringComparison]::Ordinal)
+Assert-True ($preParseVerificationIndex -ge 0 -and $preParseVerificationIndex -lt $workbookParseIndex) 'Recovered workbook bytes are verified before parsing'
+Assert-True ($postParseVerificationIndex -gt $workbookParseIndex) 'Recovered workbook bytes are verified after parsing'
 
 function Copy-TestJsonObject {
     param([Parameter(Mandatory)][object]$Value)
@@ -160,6 +179,68 @@ function New-TestResponse {
     }
 }
 
+function Get-TestCommenterFixture {
+    param(
+        [int]$CommenterCount,
+        [int]$CommenterOverallEventCount,
+        [int]$PopulationCount,
+        [int]$PopulationOverallEventCount,
+        [datetime]$VisitDate,
+        [int]$MissingOverallCount = 0,
+        [string]$RestaurantId = '9354'
+    )
+
+    if ($CommenterOverallEventCount + $MissingOverallCount -gt $CommenterCount) {
+        throw 'Synthetic commenter-lens fixture counts are inconsistent.'
+    }
+    $responses = @()
+    for ($index = 0; $index -lt $CommenterCount; $index++) {
+        $overall = if ($index -lt $CommenterOverallEventCount) {
+            '1'
+        }
+        elseif ($index -ge ($CommenterCount - $MissingOverallCount)) {
+            ''
+        }
+        else {
+            '5'
+        }
+        $responses += [pscustomobject]@{
+            RestaurantId = $RestaurantId
+            VisitDate = $VisitDate.Date
+            Answers = [pscustomobject]@{
+                overall = $overall
+                service = '5'
+                culinary = '5'
+                value = '5'
+                paceofmeal = '5'
+                recommend = '10'
+            }
+        }
+    }
+
+    $metricDetail = @()
+    foreach ($metricPolicy in @($script:GssAnalysisPolicy.commenter_lens.metrics | Where-Object { $null -ne $_.population_metric })) {
+        $populationEventCount = if ([string]$metricPolicy.id -eq 'low_overall') {
+            $PopulationOverallEventCount
+        }
+        else {
+            0
+        }
+        $metricDetail += [pscustomobject]@{
+            RestaurantId = $RestaurantId
+            Metric = [string]$metricPolicy.population_metric
+            RawMetric = [string]$metricPolicy.population_metric
+            Current = 100.0 * $populationEventCount / $PopulationCount
+            CurrentCount = $PopulationCount
+            IsCandidate = $false
+        }
+    }
+    return [pscustomobject]@{
+        Inventory = [pscustomobject]@{ UniqueResponses = $responses }
+        MetricDetail = $metricDetail
+    }
+}
+
 function Write-TestBytes {
     param([string]$Path, [string]$Value)
     New-Item -ItemType Directory -Path (Split-Path -Parent $Path) -Force | Out-Null
@@ -176,7 +257,125 @@ function New-LoggedEvidence {
     }
 }
 
-$temporaryRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('gss_email_package_test_' + [guid]::NewGuid().ToString('N'))
+function Initialize-TestRecoveryInventoryFixture {
+    param(
+        [Parameter(Mandatory)][string]$BasePath,
+        [Parameter(Mandatory)][string[]]$Headers
+    )
+
+    $fixtureRoot = Join-Path $BasePath 'recovery-inventory'
+    $detailRoot = Join-Path $fixtureRoot '03 Uploaded Survey Workbooks'
+    $ordinaryArchive = Join-Path $detailRoot 'Archive - Previous Uploads'
+    $current = New-TestResponse '9354 Richmond' '07/18/2026' '6:00 PM' 'Current weekly response.' 'Current' 'Guest'
+    $ordinary = New-TestResponse '9355 Virginia Beach' '07/04/2026' '7:00 PM' 'Ordinary archive response.' 'Archive' 'Guest'
+    New-TestDetailWorkbook -Path (Join-Path $detailRoot 'Sorensen Current.xlsx') -Headers $Headers -Records @($current)
+    New-TestDetailWorkbook -Path (Join-Path $ordinaryArchive 'Sorensen Archive.xlsx') -Headers $Headers -Records @($ordinary)
+
+    $correctedWeeks = @(
+        [pscustomobject]@{ Week = 'FY26 FW16'; SubjectWeek = 'FY26 FW14'; Date = '09/13/2025' },
+        [pscustomobject]@{ Week = 'FY26 FW17'; SubjectWeek = 'FY26 FW15'; Date = '09/20/2025' },
+        [pscustomobject]@{ Week = 'FY26 FW26'; SubjectWeek = 'FY26 FW25'; Date = '11/22/2025' },
+        [pscustomobject]@{ Week = 'FY26 FW30'; SubjectWeek = ''; Date = '12/20/2025' }
+    )
+    $manifestSources = @()
+    $recoveredPaths = @()
+    for ($index = 0; $index -lt $correctedWeeks.Count; $index++) {
+        $week = $correctedWeeks[$index]
+        $provisionalPath = Join-Path $BasePath "recovered-$index.xlsx"
+        $response = New-TestResponse `
+            '9354 Richmond' `
+            $week.Date `
+            '5:00 PM' `
+            "Recovered response for $($week.Week)." `
+            'Recovered' `
+            "Guest$index"
+        New-TestDetailWorkbook -Path $provisionalPath -Headers $Headers -Records @($response)
+        $sha256 = Get-GssSha256 $provisionalPath
+        $portableDestination = "$($script:GssHistoricalRecoveryArchivePrefix)/FY26/$($week.Week.Replace(' ', '-'))-$sha256.xlsx"
+        $destinationPath = Join-Path $fixtureRoot $portableDestination.Replace('/', '\')
+        New-Item -ItemType Directory -Path (Split-Path -Parent $destinationPath) -Force | Out-Null
+        Move-Item -LiteralPath $provisionalPath -Destination $destinationPath
+        $parsed = Read-GssDetailWorkbook -Path $destinationPath -FolderPath $fixtureRoot
+        $manifestSources += [pscustomobject][ordered]@{
+            source_kind = 'synthetic_test'
+            drive_file_id = "drivefixture$($index + 1)abcdefghij"
+            gmail_message_ids = @("199000000000000$($index + 1)")
+            subject_week = $week.SubjectWeek
+            source_report_week = $week.Week
+            assignment_basis = 'approved_corrected_week_fixture'
+            visit_date_start = $parsed.VisitDateStart.ToString('yyyy-MM-dd')
+            visit_date_end = $parsed.VisitDateEnd.ToString('yyyy-MM-dd')
+            row_count = @($parsed.Responses).Count
+            byte_size = [long](Get-Item -LiteralPath $destinationPath).Length
+            sha256 = $sha256
+            response_set_sha256 = Get-GssHistoricalRecoveryResponseSetSha256 -Workbook $parsed
+            destination_path = $portableDestination
+            validation = [pscustomobject][ordered]@{
+                detail_schema_valid = $true
+                response_identity_version = 'gss-feedback-response-identity/v1'
+                duplicate_response_count = 0
+            }
+        }
+        $recoveredPaths += $destinationPath
+    }
+
+    $manifest = [pscustomobject][ordered]@{
+        schema_version = $script:GssHistoricalRecoveryManifestVersion
+        fiscal_year = 'FY26'
+        created_at_utc = '2026-07-24T12:00:00Z'
+        sources = $manifestSources
+    }
+    $manifestStagingPath = Join-Path $BasePath 'recovery-manifest-staging.json'
+    Write-GssUtf8NoBomFile -Path $manifestStagingPath -Value ($manifest | ConvertTo-Json -Depth 20)
+    $manifestSha256 = Get-GssSha256 $manifestStagingPath
+    $transactionRoot = Join-Path $fixtureRoot "_automation_runs\historical-recovery\$manifestSha256"
+    New-Item -ItemType Directory -Path $transactionRoot -Force | Out-Null
+    $manifestPath = Join-Path $transactionRoot 'recovery-manifest.json'
+    Move-Item -LiteralPath $manifestStagingPath -Destination $manifestPath
+
+    $receiptFiles = @()
+    for ($index = 0; $index -lt $manifestSources.Count; $index++) {
+        $source = $manifestSources[$index]
+        $receiptFiles += [pscustomobject][ordered]@{
+            source_index = $index + 1
+            sha256 = [string]$source.sha256
+            byte_size = [long]$source.byte_size
+            row_count = [int]$source.row_count
+            response_set_sha256 = [string]$source.response_set_sha256
+            destination_path = [string]$source.destination_path
+            destination_full_path = $recoveredPaths[$index]
+            partial_path = Join-Path (Split-Path -Parent $recoveredPaths[$index]) ".$($source.sha256).recovery-part"
+            source_leaf_name = Split-Path -Leaf $recoveredPaths[$index]
+            response_hashes = @()
+            prepared = $true
+            destination_preexisting = $false
+            published_by_transaction = $true
+        }
+    }
+    $receipt = [pscustomobject][ordered]@{
+        schema_version = $script:GssHistoricalRecoveryReceiptVersion
+        classification = $script:GssRestrictedClassification
+        contains_personal_data = $true
+        manifest_sha256 = $manifestSha256
+        manifest_snapshot_path = $manifestPath
+        transaction_id = "historical-recovery:$manifestSha256"
+        state = 'Committed'
+        published_file_count = $receiptFiles.Count
+        files = $receiptFiles
+    }
+    $receiptPath = Join-Path $transactionRoot 'transaction-receipt.json'
+    Write-GssUtf8NoBomFile -Path $receiptPath -Value ($receipt | ConvertTo-Json -Depth 20)
+
+    return [pscustomobject]@{
+        Folder = $fixtureRoot
+        ManifestPath = $manifestPath
+        ReceiptPath = $receiptPath
+        RecoveredPaths = $recoveredPaths
+        CorrectedWeeks = @($correctedWeeks.Week)
+    }
+}
+
+$temporaryRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('gep_' + [guid]::NewGuid().ToString('N').Substring(0, 8))
 $folder = Join-Path $temporaryRoot 'GSS Surveys'
 try {
     $detailFolder = Join-Path $folder '03 Uploaded Survey Workbooks'
@@ -347,6 +546,84 @@ try {
     Assert-Equal $inventory.DuplicateResponseCount 1 'Duplicate response count'
     $knownGuestNames = @(Get-GssKnownGuestNames $inventory.AllResponseInstances)
     Assert-True ($knownGuestNames -contains 'Casey' -and $knownGuestNames -contains 'Robin') 'Distinct same-length guest names remain in the redaction set'
+    Assert-ThrowsLike {
+        Get-GssDetailInventory -FolderPath $folder -ReportingDate ([datetime]'2026-07-13')
+    } '*reporting date must be a Sunday*' 'Detail inventory rejects a non-Sunday reporting date'
+
+    $recoveryFixture = Initialize-TestRecoveryInventoryFixture -BasePath $temporaryRoot -Headers $headers19
+    $recoveredInventory = Get-GssDetailInventory `
+        -FolderPath $recoveryFixture.Folder `
+        -ReportingDate ([datetime]'2026-07-19')
+    Assert-Equal @($recoveredInventory.Workbooks).Count 6 'Recovery inventory retains normal current/archive files and four recovered files'
+    $recoveredPortablePaths = @(
+        $recoveredInventory.Workbooks.PortablePath |
+            Where-Object { $_ -like "$($script:GssHistoricalRecoveryArchivePrefix)/*" }
+    )
+    Assert-Equal $recoveredPortablePaths.Count 4 'Four corrected recovered weeks are accepted'
+    foreach ($correctedWeek in $recoveryFixture.CorrectedWeeks) {
+        Assert-True (
+            @($recoveredPortablePaths | Where-Object {
+                $_ -like "*/$($correctedWeek.Replace(' ', '-'))-*.xlsx"
+            }).Count -eq 1
+        ) "Corrected recovery assignment is represented exactly once: $correctedWeek"
+    }
+
+    $tamperedPath = $recoveryFixture.RecoveredPaths[0]
+    $tamperedOriginalBytes = [System.IO.File]::ReadAllBytes($tamperedPath)
+    [System.IO.File]::WriteAllText($tamperedPath, 'tampered recovered workbook')
+    Assert-ThrowsLike {
+        Get-GssDetailInventory -FolderPath $recoveryFixture.Folder -ReportingDate ([datetime]'2026-07-19')
+    } '*hash or size mismatch*' 'Recovered inventory rejects substituted workbook bytes'
+    [System.IO.File]::WriteAllBytes($tamperedPath, $tamperedOriginalBytes)
+
+    $missingPath = $recoveryFixture.RecoveredPaths[1]
+    $hiddenMissingPath = "$missingPath.missing"
+    Move-Item -LiteralPath $missingPath -Destination $hiddenMissingPath
+    Assert-ThrowsLike {
+        Get-GssDetailInventory -FolderPath $recoveryFixture.Folder -ReportingDate ([datetime]'2026-07-19')
+    } '*is missing*' 'Recovered inventory rejects a missing committed workbook'
+    Move-Item -LiteralPath $hiddenMissingPath -Destination $missingPath
+
+    $allMissingMoves = @()
+    foreach ($recoveredPath in $recoveryFixture.RecoveredPaths) {
+        $hiddenPath = "$recoveredPath.missing"
+        Move-Item -LiteralPath $recoveredPath -Destination $hiddenPath
+        $allMissingMoves += [pscustomobject]@{ Original = $recoveredPath; Hidden = $hiddenPath }
+    }
+    Assert-ThrowsLike {
+        Get-GssDetailInventory -FolderPath $recoveryFixture.Folder -ReportingDate ([datetime]'2026-07-19')
+    } '*is missing*' 'Committed evidence rejects deletion of the entire recovered XLSX set'
+    foreach ($move in $allMissingMoves) {
+        Move-Item -LiteralPath $move.Hidden -Destination $move.Original
+    }
+
+    $extraPath = Join-Path (Split-Path -Parent $recoveryFixture.RecoveredPaths[2]) 'FY26-FW31-unmanifested.xlsx'
+    Copy-Item -LiteralPath $recoveryFixture.RecoveredPaths[2] -Destination $extraPath
+    Assert-ThrowsLike {
+        Get-GssDetailInventory -FolderPath $recoveryFixture.Folder -ReportingDate ([datetime]'2026-07-19')
+    } '*not covered by a committed manifest*' 'Recovered inventory rejects an extra XLSX'
+    Remove-Item -LiteralPath $extraPath -Force
+
+    $receiptOriginalBytes = [System.IO.File]::ReadAllBytes($recoveryFixture.ReceiptPath)
+    $nonCommittedReceipt = Get-Content -Raw -LiteralPath $recoveryFixture.ReceiptPath | ConvertFrom-Json
+    $nonCommittedReceipt.state = 'Validated'
+    Write-GssUtf8NoBomFile -Path $recoveryFixture.ReceiptPath -Value ($nonCommittedReceipt | ConvertTo-Json -Depth 20)
+    Assert-ThrowsLike {
+        Get-GssDetailInventory -FolderPath $recoveryFixture.Folder -ReportingDate ([datetime]'2026-07-19')
+    } '*no committed historical-recovery receipt covers it*' 'Recovered inventory rejects noncommitted receipt evidence'
+    [System.IO.File]::WriteAllBytes($recoveryFixture.ReceiptPath, $receiptOriginalBytes)
+
+    $manifestOriginalBytes = [System.IO.File]::ReadAllBytes($recoveryFixture.ManifestPath)
+    $manifestText = [System.IO.File]::ReadAllText($recoveryFixture.ManifestPath)
+    [System.IO.File]::WriteAllText(
+        $recoveryFixture.ManifestPath,
+        $manifestText + [Environment]::NewLine,
+        (New-Object System.Text.UTF8Encoding($false, $true))
+    )
+    Assert-ThrowsLike {
+        Get-GssDetailInventory -FolderPath $recoveryFixture.Folder -ReportingDate ([datetime]'2026-07-19')
+    } '*manifest snapshot hash mismatch*' 'Recovered inventory rejects changed manifest bytes'
+    [System.IO.File]::WriteAllBytes($recoveryFixture.ManifestPath, $manifestOriginalBytes)
 
     $pdf = Join-Path $folder '04 Email Comparison PDFs\GSS Email Comparison 071226.pdf'
     $rolling = Join-Path $folder '02 Weekly Rolling Source Workbooks\Sorensen Rolling.xlsx'
@@ -394,12 +671,242 @@ try {
         Corroboration = @()
         BaseActionItem = $true
     }
+    $populationMetricDetail = @()
+    $populationEventCounts = @{
+        low_overall = 13
+        low_service = 20
+        low_culinary = 15
+        low_value = 10
+        low_pace = 5
+    }
+    foreach ($restaurantId in @('9354', '9355')) {
+        $populationCount = if ($restaurantId -eq '9354') { 125 } else { 100 }
+        foreach ($metricPolicy in @($script:GssAnalysisPolicy.commenter_lens.metrics | Where-Object { $null -ne $_.population_metric })) {
+            $eventCount = if ($restaurantId -eq '9354') { [int]$populationEventCounts[[string]$metricPolicy.id] } else { 10 }
+            $populationMetricDetail += [pscustomobject]@{
+                RestaurantId = $restaurantId
+                Metric = [string]$metricPolicy.population_metric
+                RawMetric = [string]$metricPolicy.population_metric
+                Current = 100.0 * $eventCount / $populationCount
+                CurrentCount = $populationCount
+                IsCandidate = $false
+            }
+        }
+    }
+
+    $fixtureReportingDate = [datetime]'2026-07-12'
+    $currentLensFixture = Get-TestCommenterFixture `
+        -CommenterCount 309 `
+        -CommenterOverallEventCount 55 `
+        -PopulationCount 534 `
+        -PopulationOverallEventCount 69 `
+        -VisitDate $fixtureReportingDate
+    $currentLens = Get-GssCommenterLens `
+        -Inventory $currentLensFixture.Inventory `
+        -MetricDetail $currentLensFixture.MetricDetail `
+        -ReportingDate $fixtureReportingDate
+    Assert-GssCommenterLensContract -CommenterLens $currentLens
+    $currentRestaurantLens = @($currentLens.restaurants | Where-Object restaurant_id -eq '9354')[0]
+    $currentOverallLens = @($currentRestaurantLens.metrics | Where-Object metric_id -eq 'low_overall')[0]
+    $currentRecommendLens = @($currentRestaurantLens.metrics | Where-Object metric_id -eq 'recommend_detractor')[0]
+    Assert-Equal $currentLens.status 'Ready' 'Commenter-only lens is reviewable when its aggregate definitions are available'
+    Assert-Equal $currentLens.scope_label 'Among guests who provided comments' 'Commenter lens carries the bounded scope label'
+    Assert-True (-not [bool]$currentLens.source_design.population_raw_rows_available) 'Commenter lens explicitly records that population raw rows are unavailable'
+    Assert-True ($null -eq $currentRestaurantLens.comment_coverage_pct) 'Unverified partition alignment suppresses cross-source comment coverage'
+    Assert-Equal $currentRestaurantLens.comment_coverage_status 'SuppressedUnverifiedPartitionAlignment' 'Unverified partition alignment carries an explicit coverage status'
+    Assert-Equal ([int]$currentOverallLens.commenter_event_count) 55 'Current commenter event count'
+    Assert-Near ([double]$currentOverallLens.commenter_event_rate_pct) (100.0 * 55 / 309) 0.00000001 'Current commenter event rate'
+    Assert-Near ([double]$currentOverallLens.population_event_rate_pct) (100.0 * 69 / 534) 0.00000001 'Current population aggregate event rate'
+    Assert-True ($null -eq $currentOverallLens.commenter_minus_population_percentage_points) 'Unverified partition alignment suppresses the commenter-minus-population gap'
+    Assert-True ($null -eq $currentOverallLens.reconstructed_population_event_count) 'Unverified partition alignment suppresses cross-source event-count reconstruction'
+    Assert-Equal $currentOverallLens.comparison_status 'SuppressedUnverifiedPartitionAlignment' 'Current cross-source comparison is suppressed without verified partition alignment'
+    Assert-Equal $currentOverallLens.derived_non_comment_status 'SuppressedUnverifiedPartitionAlignment' 'Non-comment subtraction is suppressed without exact partition alignment'
+    Assert-True ($null -eq $currentOverallLens.derived_non_comment_response_count) 'Unverified alignment suppresses derived non-comment denominator'
+    Assert-True ($null -eq $currentOverallLens.derived_non_comment_event_count) 'Unverified alignment suppresses derived non-comment event count'
+    Assert-True ($null -eq $currentOverallLens.derived_non_comment_event_rate_pct) 'Unverified alignment suppresses derived non-comment event rate'
+    Assert-True (-not [bool]$currentLens.reporting_window.exact_partition_alignment_verified) 'Default visit-date inventory is explicitly not exact-partition aligned'
+    Assert-True ($null -eq $currentRecommendLens.population_metric) 'Recommend remains commenter-only without an exact population metric'
+    Assert-True ($null -eq $currentRecommendLens.population_event_rate_pct) 'Recommend population rate is unavailable'
+    Assert-True ($null -eq $currentRecommendLens.commenter_minus_population_percentage_points) 'Recommend population gap is unavailable'
+    Assert-Equal $currentRecommendLens.comparison_status 'NotAvailableNoExactPopulationMetric' 'Missing Recommend population metric is not treated as a data-quality failure'
+
+    $unexpectedTopLevelLens = Copy-TestJsonObject $currentLens
+    $unexpectedTopLevelLens | Add-Member -NotePropertyName raw_rows -NotePropertyValue @([pscustomobject]@{ guest_email = 'not-allowed@example.invalid' })
+    Assert-ThrowsLike {
+        Assert-GssCommenterLensContract -CommenterLens $unexpectedTopLevelLens
+    } "*unsupported property 'raw_rows'*" 'Commenter schema rejects arbitrary top-level row data'
+
+    $unexpectedRestaurantLens = Copy-TestJsonObject $currentLens
+    $unexpectedRestaurantLens.restaurants[0] | Add-Member -NotePropertyName guest_email_copy -NotePropertyValue 'not-allowed@example.invalid'
+    Assert-ThrowsLike {
+        Assert-GssCommenterLensContract -CommenterLens $unexpectedRestaurantLens
+    } "*unsupported property 'guest_email_copy'*" 'Commenter schema rejects arbitrary restaurant-level keys'
+
+    $unexpectedMetricLens = Copy-TestJsonObject $currentLens
+    $unexpectedMetricLens.restaurants[0].metrics[0] | Add-Member -NotePropertyName source_row_copy -NotePropertyValue 42
+    Assert-ThrowsLike {
+        Assert-GssCommenterLensContract -CommenterLens $unexpectedMetricLens
+    } "*unsupported property 'source_row_copy'*" 'Commenter schema rejects arbitrary metric-level keys'
+
+    $structuredLimitationLens = Copy-TestJsonObject $currentLens
+    $structuredLimitationLens.limitations = @([pscustomobject]@{ guest_email = 'not-allowed@example.invalid' })
+    Assert-ThrowsLike {
+        Assert-GssCommenterLensContract -CommenterLens $structuredLimitationLens
+    } '*every limitation must be a scalar string*' 'Commenter schema rejects structured limitation payloads'
+
+    $structuredIssueLens = Copy-TestJsonObject $currentLens
+    $structuredIssueLens.restaurants[0].data_quality_issues = @([pscustomobject]@{ source_row = 42 })
+    Assert-ThrowsLike {
+        Assert-GssCommenterLensContract -CommenterLens $structuredIssueLens
+    } '*data-quality issues must be scalar strings*' 'Commenter schema rejects structured data-quality payloads'
+
+    $validCommenterCsv = ConvertTo-GssCommenterLensCsv -CommenterLens $currentLens
+    Assert-GssCommenterLensCsvContract -CsvText $validCommenterCsv
+    $unexpectedCommenterCsvHeader = 'raw_row,' + $validCommenterCsv
+    Assert-ThrowsLike {
+        Assert-GssCommenterLensCsvContract -CsvText $unexpectedCommenterCsvHeader
+    } '*header column count is invalid*' 'Commenter CSV rejects arbitrary columns'
+
+    $exactPartitionLens = Get-GssCommenterLens `
+        -Inventory $currentLensFixture.Inventory `
+        -MetricDetail $currentLensFixture.MetricDetail `
+        -ReportingDate $fixtureReportingDate `
+        -ExactPartitionAlignmentVerified
+    Assert-GssCommenterLensContract -CommenterLens $exactPartitionLens
+    $exactOverallLens = @($exactPartitionLens.restaurants[0].metrics | Where-Object metric_id -eq 'low_overall')[0]
+    Assert-True ([bool]$exactPartitionLens.reporting_window.exact_partition_alignment_verified) 'Exact partition alignment requires an explicit caller assertion'
+    Assert-Near ([double]$exactPartitionLens.restaurants[0].comment_coverage_pct) (100.0 * 309 / 534) 0.00000001 'Verified exact partition permits comment coverage'
+    Assert-Equal $exactPartitionLens.restaurants[0].comment_coverage_status 'Ready' 'Verified exact partition marks coverage ready'
+    Assert-Near ([double]$exactOverallLens.commenter_minus_population_percentage_points) 4.87800444 0.00000001 'Verified exact partition permits the commenter-minus-population gap'
+    Assert-Equal ([int]$exactOverallLens.reconstructed_population_event_count) 69 'Verified exact partition permits population event-count reconstruction'
+    Assert-Equal $exactOverallLens.comparison_status 'Ready' 'Verified exact partition permits the aggregate comparison'
+    Assert-Equal $exactOverallLens.derived_non_comment_status 'Ready' 'Verified exact partition permits derived non-comment arithmetic'
+    Assert-Equal ([int]$exactOverallLens.derived_non_comment_response_count) 225 'Verified exact partition non-comment denominator'
+    Assert-Equal ([int]$exactOverallLens.derived_non_comment_event_count) 14 'Verified exact partition non-comment event count'
+    Assert-Near ([double]$exactOverallLens.derived_non_comment_event_rate_pct) (100.0 * 14 / 225) 0.00000001 'Verified exact partition non-comment event rate'
+
+    $previousLensFixture = Get-TestCommenterFixture `
+        -CommenterCount 333 `
+        -CommenterOverallEventCount 57 `
+        -PopulationCount 621 `
+        -PopulationOverallEventCount 76 `
+        -VisitDate $fixtureReportingDate
+    $previousLens = Get-GssCommenterLens `
+        -Inventory $previousLensFixture.Inventory `
+        -MetricDetail $previousLensFixture.MetricDetail `
+        -ReportingDate $fixtureReportingDate
+    $previousOverallLens = @($previousLens.restaurants[0].metrics | Where-Object metric_id -eq 'low_overall')[0]
+    Assert-Near ([double]$previousOverallLens.commenter_event_rate_pct) (100.0 * 57 / 333) 0.00000001 'Previous commenter event rate'
+    Assert-Near ([double]$previousOverallLens.population_event_rate_pct) (100.0 * 76 / 621) 0.00000001 'Previous population aggregate event rate'
+    Assert-True ($null -eq $previousOverallLens.commenter_minus_population_percentage_points) 'Previous cross-source gap is suppressed without verified partition alignment'
+    Assert-True ($null -eq $previousOverallLens.reconstructed_population_event_count) 'Previous event-count reconstruction is suppressed without verified partition alignment'
+
+    $missingScoreFixture = Get-TestCommenterFixture `
+        -CommenterCount 3 `
+        -CommenterOverallEventCount 1 `
+        -PopulationCount 10 `
+        -PopulationOverallEventCount 2 `
+        -VisitDate $fixtureReportingDate `
+        -MissingOverallCount 1
+    $missingScoreLens = Get-GssCommenterLens `
+        -Inventory $missingScoreFixture.Inventory `
+        -MetricDetail $missingScoreFixture.MetricDetail `
+        -ReportingDate $fixtureReportingDate `
+        -ExactPartitionAlignmentVerified
+    Assert-GssCommenterLensContract -CommenterLens $missingScoreLens
+    $missingOverallLens = @($missingScoreLens.restaurants[0].metrics | Where-Object metric_id -eq 'low_overall')[0]
+    Assert-Equal ([int]$missingOverallLens.commenter_scored_response_count) 2 'Missing-score commenter denominator uses nonmissing scores'
+    Assert-Equal ([int]$missingOverallLens.commenter_missing_score_count) 1 'Missing commenter score is explicit'
+    Assert-Near ([double]$missingOverallLens.commenter_event_rate_pct) 50.0 0.00000001 'Missing-score commenter rate uses the nonmissing denominator'
+    Assert-Near ([double]$missingOverallLens.population_event_rate_pct) 20.0 0.00000001 'Population rate retains the aggregate denominator'
+    Assert-Equal $missingOverallLens.comparison_status 'SuppressedMissingCommenterScores' 'Missing commenter score suppresses the cross-source gap'
+    Assert-True ($null -eq $missingOverallLens.commenter_minus_population_percentage_points) 'Missing commenter score leaves no cross-source gap'
+    Assert-True ($null -eq $missingOverallLens.material_gap) 'Missing commenter score leaves no material-gap flag'
+    Assert-Equal $missingOverallLens.derived_non_comment_status 'SuppressedMissingCommenterScores' 'Missing commenter score suppresses non-comment derivation'
+    Assert-True ($null -eq $missingOverallLens.derived_non_comment_event_count) 'Missing commenter score leaves no derived event count'
+
+    $boundaryFixture = Get-TestCommenterFixture `
+        -CommenterCount 4 `
+        -CommenterOverallEventCount 0 `
+        -PopulationCount 10 `
+        -PopulationOverallEventCount 0 `
+        -VisitDate $fixtureReportingDate
+    $windowStart = $fixtureReportingDate.AddDays(-90)
+    $boundaryFixture.Inventory.UniqueResponses[0].VisitDate = $windowStart
+    $boundaryFixture.Inventory.UniqueResponses[1].VisitDate = $windowStart.AddDays(-1)
+    $boundaryFixture.Inventory.UniqueResponses[2].VisitDate = $fixtureReportingDate
+    $boundaryFixture.Inventory.UniqueResponses[3].VisitDate = $fixtureReportingDate.AddDays(1)
+    $boundaryLens = Get-GssCommenterLens `
+        -Inventory $boundaryFixture.Inventory `
+        -MetricDetail $boundaryFixture.MetricDetail `
+        -ReportingDate $fixtureReportingDate
+    Assert-Equal ([int]$boundaryLens.restaurants[0].commenter_response_count) 2 'Inclusive 13-week visit-date window includes both boundaries only'
+
+    $definitionMismatchFixture = Get-TestCommenterFixture `
+        -CommenterCount 2 `
+        -CommenterOverallEventCount 1 `
+        -PopulationCount 10 `
+        -PopulationOverallEventCount 2 `
+        -VisitDate $fixtureReportingDate
+    $definitionMismatchFixture.MetricDetail[0].Metric = 'Different aggregate'
+    $definitionMismatchFixture.MetricDetail[0].RawMetric = 'Different aggregate'
+    $definitionMismatchLens = Get-GssCommenterLens `
+        -Inventory $definitionMismatchFixture.Inventory `
+        -MetricDetail $definitionMismatchFixture.MetricDetail `
+        -ReportingDate $fixtureReportingDate `
+        -ExactPartitionAlignmentVerified
+    $definitionMismatchOverall = @($definitionMismatchLens.restaurants[0].metrics | Where-Object metric_id -eq 'low_overall')[0]
+    Assert-Equal $definitionMismatchLens.status 'DataQualityReview' 'Population metric-definition mismatch requires data-quality review'
+    Assert-Equal $definitionMismatchOverall.comparison_status 'SuppressedPopulationMetricDefinitionMismatch' 'Definition mismatch suppresses the population comparison'
+    Assert-True ($null -eq $definitionMismatchOverall.commenter_minus_population_percentage_points) 'Definition mismatch leaves no population gap'
+
+    $overCoverageFixture = Get-TestCommenterFixture `
+        -CommenterCount 2 `
+        -CommenterOverallEventCount 1 `
+        -PopulationCount 1 `
+        -PopulationOverallEventCount 1 `
+        -VisitDate $fixtureReportingDate
+    $overCoverageLens = Get-GssCommenterLens `
+        -Inventory $overCoverageFixture.Inventory `
+        -MetricDetail $overCoverageFixture.MetricDetail `
+        -ReportingDate $fixtureReportingDate `
+        -ExactPartitionAlignmentVerified
+    Assert-Equal $overCoverageLens.status 'DataQualityReview' 'Commenter count above population count requires data-quality review'
+    Assert-True (@($overCoverageLens.restaurants[0].data_quality_issues) -contains 'commenter_count_exceeds_population_count') 'Over-coverage reason is explicit'
+    Assert-True ($null -eq $overCoverageLens.restaurants[0].comment_coverage_pct) 'Invalid over-coverage does not publish a percentage'
+    Assert-Equal $overCoverageLens.restaurants[0].metrics[0].comparison_status 'SuppressedInvalidCoverage' 'Invalid over-coverage suppresses comparison'
+
+    $deduplicatedLens = Get-GssCommenterLens `
+        -Inventory $inventory `
+        -MetricDetail $populationMetricDetail `
+        -ReportingDate $fixtureReportingDate
+    Assert-Equal (@($deduplicatedLens.restaurants | Measure-Object -Property commenter_response_count -Sum).Sum) 3 'Commenter lens consumes the deduplicated unique-response inventory'
+    $serializedCurrentLens = $currentLens | ConvertTo-Json -Depth 20 -Compress
+    foreach ($forbiddenRowField in @('response_hash', 'guest_first_name', 'guest_last_name', 'source_path', 'source_row', 'sanitized_text')) {
+        Assert-True ($serializedCurrentLens -notmatch ('(?i)"' + [regex]::Escape($forbiddenRowField) + '"\s*:')) "Commenter lens excludes row-level field $forbiddenRowField"
+    }
+    Assert-True (-not [bool]$currentLens.claims.population_prevalence_claimed) 'Commenter lens makes no population prevalence claim'
+    Assert-True (-not [bool]$currentLens.claims.statistical_significance_claimed) 'Commenter lens makes no significance claim'
+    Assert-True (-not [bool]$currentLens.claims.causal_driver_claimed) 'Commenter lens makes no causal claim'
+    Assert-True (-not [bool]$currentLens.claims.individual_prediction_produced) 'Commenter lens makes no individual prediction'
+    Assert-True (
+        @($currentLens.limitations | Where-Object {
+            $_ -match '(?i)stable vendor response IDs' -and $_ -match '(?i)low residual risk'
+        }).Count -eq 1
+    ) 'Commenter lens discloses the low-residual stable vendor response-ID limitation'
+    Assert-ThrowsLike {
+        Get-GssCommenterLens `
+            -Inventory $currentLensFixture.Inventory `
+            -MetricDetail $currentLensFixture.MetricDetail `
+            -ReportingDate ([datetime]'2026-07-13')
+    } '*reporting date must be a Sunday*' 'Commenter lens rejects a non-Sunday reporting date'
+
     $analysis = [pscustomobject]@{
         WorkbookStatus = 'Ready'
         AnalysisStatus = 'Review'
         EmailReadiness = 'Ready'
         LogPath = $logPath
-        MetricDetail = @($finding)
+        MetricDetail = @($finding) + $populationMetricDetail
         RestaurantFindings = @(Select-GssRestaurantFindings @($finding))
     }
     $ledgerPath = Join-Path $folder '_automation_runs\state\fixture_ledger.json'
@@ -454,7 +961,7 @@ try {
     Assert-Equal $package.EmailReadiness 'Ready' 'Package email readiness'
     Assert-True (Test-Path -LiteralPath $package.ReadyMarkerPath -PathType Leaf) 'Ready marker exists'
     $strictUtf8 = New-Object System.Text.UTF8Encoding($false, $true)
-    foreach ($portableName in @('email_manifest.json', 'analysis.json', 'email_preview.txt', 'email_preview.html', 'RESTRICTED.txt')) {
+    foreach ($portableName in @('email_manifest.json', 'analysis.json', 'commenter_lens.json', 'commenter_lens.csv', 'email_preview.txt', 'email_preview.html', 'RESTRICTED.txt')) {
         $portablePath = Join-Path $package.PackagePath $portableName
         $portableBytes = [System.IO.File]::ReadAllBytes($portablePath)
         $hasUtf8Bom = $portableBytes.Length -ge 3 -and
@@ -471,8 +978,10 @@ try {
     }
     $manifest = Read-GssUtf8NoBomFile $package.ManifestPath | ConvertFrom-Json
     $analysisJson = Read-GssUtf8NoBomFile (Join-Path $package.PackagePath 'analysis.json') | ConvertFrom-Json
-    Assert-Equal $manifest.schema_version 'gss-email-package/v1' 'Package schema version'
-    Assert-Equal $manifest.policy_version 'gss-analysis-policy/v3' 'Versioned analysis policy'
+    $commenterLensJson = Read-GssUtf8NoBomFile $package.CommenterLensJsonPath | ConvertFrom-Json
+    $commenterLensCsv = Read-GssUtf8NoBomFile $package.CommenterLensCsvPath
+    Assert-Equal $manifest.schema_version 'gss-email-package/v2' 'Package schema version'
+    Assert-Equal $manifest.policy_version 'gss-analysis-policy/v4' 'Versioned analysis policy'
     Assert-Equal $manifest.classification $script:GssRestrictedClassification 'Package restricted personal-data classification'
     Assert-True ([bool]$manifest.package_contains_personal_data) 'Package explicitly contains personal data'
     Assert-True (-not [bool]$manifest.distribution_controls.automatic_sending_enabled) 'Automatic sending remains disabled'
@@ -487,6 +996,19 @@ try {
     Assert-True ([string]$manifest.feedback_selection_sha256 -match '^[a-f0-9]{64}$') 'Manifest carries the selected-feedback fingerprint'
     Assert-Equal $analysisJson.feedback_selection_sha256 $manifest.feedback_selection_sha256 'Analysis and manifest feedback selection agree'
     Assert-Equal @($manifest.attachments).Count 3 'Three attachment policy'
+    Assert-Equal @($manifest.portable_artifacts).Count 6 'Six hash-bound non-attachment package artifacts'
+    foreach ($artifact in @($manifest.portable_artifacts)) {
+        $artifactPath = Join-Path $package.PackagePath ([string]$artifact.path).Replace('/', '\')
+        Assert-True (@($manifest.attachments.path) -notcontains [string]$artifact.path) "Portable artifact is not an email attachment: $($artifact.role)"
+        Assert-Equal (Get-GssSha256 $artifactPath) ([string]$artifact.sha256) "Portable artifact hash for $($artifact.role)"
+        Assert-Equal ([long](Get-Item -LiteralPath $artifactPath).Length) ([long]$artifact.byte_size) "Portable artifact size for $($artifact.role)"
+    }
+    Assert-Equal $manifest.commenter_lens_json_path 'commenter_lens.json' 'Manifest points to the reviewer commenter-lens JSON'
+    Assert-Equal $manifest.commenter_lens_csv_path 'commenter_lens.csv' 'Manifest points to the reviewer commenter-lens CSV'
+    Assert-True (Test-Path -LiteralPath $package.CommenterLensJsonPath -PathType Leaf) 'Commenter-lens JSON exists'
+    Assert-True (Test-Path -LiteralPath $package.CommenterLensCsvPath -PathType Leaf) 'Commenter-lens CSV exists'
+    Assert-True (@($manifest.attachments.path) -notcontains 'commenter_lens.json') 'Commenter-lens JSON is not a fourth attachment'
+    Assert-True (@($manifest.attachments.path) -notcontains 'commenter_lens.csv') 'Commenter-lens CSV is not a fourth attachment'
     $detailAttachment = @($manifest.attachments | Where-Object role -eq 'detail_workbook')
     Assert-Equal $detailAttachment.Count 1 'One raw guest detail attachment'
     Assert-True ([bool]$detailAttachment[0].contains_personal_data) 'Raw guest detail attachment is marked as containing personal data'
@@ -501,6 +1023,41 @@ try {
     Assert-Equal $analysisJson.methodology.feedback_response_count 2 'Initial package includes only current-file new feedback'
     Assert-Equal $analysisJson.methodology.feedback_visit_date_start '2026-07-10' 'Actual feedback visit-date start'
     Assert-Equal $analysisJson.methodology.feedback_visit_date_end '2026-07-11' 'Actual feedback visit-date end'
+    Assert-Equal $commenterLensJson.scope_label 'Among guests who provided comments' 'Packaged commenter lens carries the bounded scope'
+    Assert-Equal $commenterLensJson.status 'Ready' 'Packaged commenter lens is reviewable'
+    Assert-True (-not [bool]$commenterLensJson.source_design.population_raw_rows_available) 'Package explicitly records unavailable population raw rows'
+    Assert-True (-not [bool]$commenterLensJson.reporting_window.exact_partition_alignment_verified) 'Package does not assert exact partition alignment'
+    Assert-True ([string]$commenterLensJson.reporting_window.source_alignment -match '(?i)not exact source-report-week row alignment') 'Package discloses visit-date versus rolling-period alignment'
+    Assert-True (
+        @($commenterLensJson.limitations | Where-Object {
+            $_ -match '(?i)stable vendor response IDs' -and $_ -match '(?i)low residual risk'
+        }).Count -eq 1
+    ) 'Packaged commenter lens carries the stable vendor response-ID limitation'
+    Assert-Equal ([int](@($commenterLensJson.restaurants | Measure-Object -Property commenter_response_count -Sum).Sum)) 3 'Packaged commenter lens uses all deduplicated comment-bearing rows in the window'
+    $packagedRichmondLens = @($commenterLensJson.restaurants | Where-Object restaurant_id -eq '9354')[0]
+    $packagedOverallLens = @($packagedRichmondLens.metrics | Where-Object metric_id -eq 'low_overall')[0]
+    $packagedRecommendLens = @($packagedRichmondLens.metrics | Where-Object metric_id -eq 'recommend_detractor')[0]
+    Assert-Equal ([int]$packagedRichmondLens.commenter_response_count) 2 'Packaged Richmond commenter count'
+    Assert-True ($null -eq $packagedRichmondLens.comment_coverage_pct) 'Packaged cross-source coverage is suppressed without verified alignment'
+    Assert-Equal $packagedRichmondLens.comment_coverage_status 'SuppressedUnverifiedPartitionAlignment' 'Packaged coverage carries the alignment-suppression status'
+    Assert-Equal ([int]$packagedOverallLens.commenter_event_count) 0 'Packaged Richmond low-overall commenter event count'
+    Assert-True ($null -eq $packagedOverallLens.commenter_minus_population_percentage_points) 'Packaged commenter-minus-population gap is suppressed without verified alignment'
+    Assert-Equal $packagedOverallLens.comparison_status 'SuppressedUnverifiedPartitionAlignment' 'Packaged population comparison carries the alignment-suppression status'
+    Assert-Equal $packagedOverallLens.derived_non_comment_status 'SuppressedUnverifiedPartitionAlignment' 'Packaged non-comment derivation is alignment-gated'
+    Assert-True ($null -eq $packagedOverallLens.derived_non_comment_response_count) 'Packaged lens has no derived non-comment denominator'
+    Assert-True ($null -eq $packagedOverallLens.derived_non_comment_event_count) 'Packaged lens has no derived non-comment event count'
+    Assert-True ($null -eq $packagedRecommendLens.population_metric) 'Packaged Recommend metric remains commenter-only'
+    Assert-Equal $packagedRecommendLens.comparison_status 'NotAvailableNoExactPopulationMetric' 'Packaged Recommend metric is unavailable without causing data-quality review'
+    Assert-True (-not [bool]$commenterLensJson.claims.population_prevalence_claimed) 'Packaged commenter lens makes no prevalence claim'
+    Assert-True (-not [bool]$commenterLensJson.claims.statistical_significance_claimed) 'Packaged commenter lens makes no significance claim'
+    Assert-True (-not [bool]$commenterLensJson.claims.causal_driver_claimed) 'Packaged commenter lens makes no causal claim'
+    Assert-True (-not [bool]$commenterLensJson.claims.individual_prediction_produced) 'Packaged commenter lens makes no individual prediction'
+    Assert-True (-not [bool]$commenterLensJson.row_level_data_persisted) 'Packaged commenter lens persists no row-level data'
+    Assert-Equal $analysisJson.commenter_lens.scope_label $commenterLensJson.scope_label 'Analysis and restricted commenter-lens JSON agree'
+    Assert-Equal $analysisJson.commenter_lens.status $commenterLensJson.status 'Analysis and restricted commenter-lens status agree'
+    Assert-True ($commenterLensCsv -match 'exact_partition_alignment_verified') 'Commenter-lens CSV exposes the partition-alignment gate'
+    Assert-True ($commenterLensCsv -match 'SuppressedUnverifiedPartitionAlignment') 'Commenter-lens CSV exposes non-comment suppression'
+    Assert-True ($commenterLensCsv -notmatch '(?i)response_hash|guest_first_name|guest_last_name|source_path|source_row|sanitized_text') 'Commenter-lens CSV contains no row-level fields'
     Assert-Equal @($analysisJson.sanitized_feedback).Count 1 'DNC response excluded from individual evidence'
     Assert-True ([string]$analysisJson.sanitized_feedback[0].sanitized_text -match '\[REDACTED URL\],') 'Bare URL is redacted without swallowing sentence punctuation'
     Assert-True ([string]$analysisJson.sanitized_feedback[0].sanitized_text -match '\[REDACTED PHONE\]') 'Short local phone number is redacted'
@@ -537,11 +1094,16 @@ try {
     Assert-Equal ([int]$serviceThemeEvidence.do_not_contact_count) 1 'Theme evidence do-not-contact-count contract'
     Assert-True (Test-GssAnalysisEvidenceContract -Analysis $analysisJson) 'Serialized analysis satisfies structured evidence contract'
     Assert-Equal $analysisJson.metric_evidence[0].level.rolling_weeks 13 'Metric level is explicit'
+    Assert-Equal $analysisJson.metric_evidence[0].response_volume_tier 'High' 'Metric response-volume tier is explicit'
     Assert-Equal $analysisJson.metric_evidence[0].confidence_tier 'High' 'Metric confidence tier is explicit'
+    Assert-Equal $analysisJson.metric_evidence[0].confidence_tier $analysisJson.metric_evidence[0].response_volume_tier 'Confidence tier remains only a compatibility alias'
+    Assert-Equal $analysisJson.metric_evidence[0].level.response_volume_tier 'High' 'Metric level carries response-volume tier'
     Assert-Equal $analysisJson.metric_evidence[0].movement.adjacent_window_overlap_weeks 12 'Metric movement declares 12-week adjacent overlap'
     Assert-Equal ([double]$analysisJson.metric_evidence[0].benchmark.vs_all_franchisees) ([double]$finding.VsAllFranchisees) 'Metric benchmark is explicit'
     Assert-Equal $analysisJson.methodology.analysis_description 'risk-reduced' 'Analysis is described as risk-reduced'
     Assert-True ([bool]$analysisJson.methodology.human_review_required) 'Analysis methodology requires human review'
+    Assert-True (-not [bool]$analysisJson.methodology.commenter_exact_partition_alignment_verified) 'Methodology does not claim exact commenter/population partition alignment'
+    Assert-True ([string]$analysisJson.methodology.commenter_alignment_basis -match '(?i)not exact source-report-week row alignment') 'Methodology discloses source-period alignment limits'
     Assert-Equal $analysisJson.reporting.adjacent_window_overlap_weeks 12 'Reporting metadata declares adjacent-window overlap'
 
     $nullableComparison = Copy-TestJsonObject $analysisJson
@@ -596,6 +1158,63 @@ try {
             sha256 = $_.sha256
         }
     })
+
+    $missingPortableArtifactManifest = Copy-TestJsonObject $manifest
+    $missingPortableArtifactManifest.portable_artifacts = @($missingPortableArtifactManifest.portable_artifacts | Select-Object -First 5)
+    Write-GssUtf8NoBomFile -Path $package.ManifestPath -Value ($missingPortableArtifactManifest | ConvertTo-Json -Depth 20)
+    Assert-ThrowsLike {
+        Test-GssExistingEmailPackage -PackagePath $package.PackagePath -PackageId $package.PackageId -ExpectedSourceDescriptors $validationDescriptors -ExpectedFeedbackSelectionFingerprint $manifest.feedback_selection_sha256
+    } '*exactly 6 portable artifact records*' 'Existing package rejects an incomplete portable-artifact inventory'
+
+    $duplicatePortableArtifactManifest = Copy-TestJsonObject $manifest
+    $duplicatePortableArtifactManifest.portable_artifacts[-1].role = 'analysis_json'
+    Write-GssUtf8NoBomFile -Path $package.ManifestPath -Value ($duplicatePortableArtifactManifest | ConvertTo-Json -Depth 20)
+    Assert-ThrowsLike {
+        Test-GssExistingEmailPackage -PackagePath $package.PackagePath -PackageId $package.PackageId -ExpectedSourceDescriptors $validationDescriptors -ExpectedFeedbackSelectionFingerprint $manifest.feedback_selection_sha256
+    } "*exactly one portable artifact for role 'analysis_json'*" 'Existing package rejects duplicate portable-artifact roles'
+
+    $traversalPortableArtifactManifest = Copy-TestJsonObject $manifest
+    ($traversalPortableArtifactManifest.portable_artifacts | Where-Object role -eq 'analysis_json').path = '../analysis.json'
+    Write-GssUtf8NoBomFile -Path $package.ManifestPath -Value ($traversalPortableArtifactManifest | ConvertTo-Json -Depth 20)
+    Assert-ThrowsLike {
+        Test-GssExistingEmailPackage -PackagePath $package.PackagePath -PackageId $package.PackageId -ExpectedSourceDescriptors $validationDescriptors -ExpectedFeedbackSelectionFingerprint $manifest.feedback_selection_sha256
+    } "*portable artifact path is invalid for role 'analysis_json'*" 'Existing package rejects portable-artifact path traversal'
+
+    Write-GssUtf8NoBomFile -Path $package.ManifestPath -Value ($manifest | ConvertTo-Json -Depth 20)
+    foreach ($artifact in @($manifest.portable_artifacts)) {
+        $artifactPath = Join-Path $package.PackagePath ([string]$artifact.path).Replace('/', '\')
+        $originalArtifactBytes = [System.IO.File]::ReadAllBytes($artifactPath)
+        try {
+            [System.IO.File]::AppendAllText($artifactPath, 'tampered')
+            Assert-ThrowsLike {
+                Test-GssExistingEmailPackage -PackagePath $package.PackagePath -PackageId $package.PackageId -ExpectedSourceDescriptors $validationDescriptors -ExpectedFeedbackSelectionFingerprint $manifest.feedback_selection_sha256
+            } "*portable artifact does not match its manifest: $($artifact.role)*" "Existing package rejects mutated portable artifact $($artifact.role)"
+        }
+        finally {
+            [System.IO.File]::WriteAllBytes($artifactPath, $originalArtifactBytes)
+        }
+    }
+
+    $analysisPathForEqualityTest = Join-Path $package.PackagePath 'analysis.json'
+    $originalAnalysisBytes = [System.IO.File]::ReadAllBytes($analysisPathForEqualityTest)
+    try {
+        $mismatchedAnalysis = Copy-TestJsonObject $analysisJson
+        $mismatchedAnalysis.commenter_lens.reason = 'A different but otherwise schema-valid standalone reason.'
+        Write-GssUtf8NoBomFile -Path $analysisPathForEqualityTest -Value ($mismatchedAnalysis | ConvertTo-Json -Depth 20)
+        $mismatchedManifest = Copy-TestJsonObject $manifest
+        $analysisArtifactRecord = $mismatchedManifest.portable_artifacts | Where-Object role -eq 'analysis_json'
+        $analysisArtifactRecord.byte_size = [long](Get-Item -LiteralPath $analysisPathForEqualityTest).Length
+        $analysisArtifactRecord.sha256 = Get-GssSha256 $analysisPathForEqualityTest
+        Write-GssUtf8NoBomFile -Path $package.ManifestPath -Value ($mismatchedManifest | ConvertTo-Json -Depth 20)
+        Assert-ThrowsLike {
+            Test-GssExistingEmailPackage -PackagePath $package.PackagePath -PackageId $package.PackageId -ExpectedSourceDescriptors $validationDescriptors -ExpectedFeedbackSelectionFingerprint $manifest.feedback_selection_sha256
+        } '*analysis and commenter-lens output disagree*' 'Existing package requires full embedded and standalone commenter-lens equality'
+    }
+    finally {
+        [System.IO.File]::WriteAllBytes($analysisPathForEqualityTest, $originalAnalysisBytes)
+        Write-GssUtf8NoBomFile -Path $package.ManifestPath -Value ($manifest | ConvertTo-Json -Depth 20)
+    }
+
     $missingAttachmentManifest = Copy-TestJsonObject $manifest
     $missingAttachmentManifest.attachments = @($missingAttachmentManifest.attachments | Select-Object -First 2)
     Write-GssUtf8NoBomFile -Path $package.ManifestPath -Value ($missingAttachmentManifest | ConvertTo-Json -Depth 20)
@@ -616,6 +1235,8 @@ try {
     $portableTextByFile = [ordered]@{
         'email_manifest.json' = Get-Content -Raw -LiteralPath $package.ManifestPath
         'analysis.json' = Get-Content -Raw -LiteralPath (Join-Path $package.PackagePath 'analysis.json')
+        'commenter_lens.json' = Get-Content -Raw -LiteralPath $package.CommenterLensJsonPath
+        'commenter_lens.csv' = Get-Content -Raw -LiteralPath $package.CommenterLensCsvPath
         'email_preview.txt' = Get-Content -Raw -LiteralPath (Join-Path $package.PackagePath 'email_preview.txt')
         'email_preview.html' = Get-Content -Raw -LiteralPath (Join-Path $package.PackagePath 'email_preview.html')
         'RESTRICTED.txt' = Get-Content -Raw -LiteralPath (Join-Path $package.PackagePath 'RESTRICTED.txt')
@@ -624,6 +1245,8 @@ try {
     Assert-True ($nonRaw -match '(?i)exact seven-day sample') 'Required methodology wording is not mistaken for a matching guest surname'
     Assert-True ($nonRaw -match '(?i)adjacent 13-week windows overlap by 12 weeks') 'Portable narrative discloses adjacent-window overlap'
     Assert-True ($nonRaw -match '(?i)theme categories are non-exclusive') 'Portable narrative discloses non-exclusive themes'
+    Assert-True ($nonRaw -match '(?i)derived non-comment counts and rates are suppressed') 'Portable narrative discloses the partition-alignment gate'
+    Assert-True ($nonRaw -match '(?i)response-volume tier') 'Portable narrative uses response-volume tier semantics'
     Assert-True ($nonRaw -match '(?i)risk-reduced') 'Portable narrative uses risk-reduced wording'
     Assert-True ($nonRaw -notmatch '(?i)\banonym(?:ous|ized|ised)\b') 'Portable narrative makes no anonymity claim'
     foreach ($forbidden in @('Casey', 'Testperson', 'Robin', 'Sample', 'casey@example.invalid', '212-555-0199', '555-1212', 'https://example.invalid', 'bare.example.invalid', 'ABC123', 'ZX9876')) {
@@ -668,6 +1291,8 @@ try {
     $descriptors = @($manifest.sources | ForEach-Object { [pscustomobject]@{ role = $_.role; source_path = $_.path; byte_size = $_.byte_size; sha256 = $_.sha256 } })
     $sameId = Get-GssDeterministicPackageId -ReportingDate '2026-07-12' -SourceDescriptors $descriptors -FeedbackSelectionFingerprint $manifest.feedback_selection_sha256
     Assert-Equal $sameId $package.PackageId 'Deterministic package ID snapshot'
+    $legacyPackageId = Get-GssDeterministicPackageId -ReportingDate '2026-07-12' -SourceDescriptors $descriptors -FeedbackSelectionFingerprint $manifest.feedback_selection_sha256 -SchemaVersion 'gss-email-package/v1'
+    Assert-True ($legacyPackageId -ne $package.PackageId) 'Schema v2 uses a new deterministic package ID and cannot collide with legacy v1 output'
     $changedDescriptors = @($descriptors | ForEach-Object { [pscustomobject]@{ role = $_.role; source_path = $_.source_path; byte_size = $_.byte_size; sha256 = $_.sha256 } })
     $changedDescriptors[0].sha256 = ('0' * 64)
     Assert-True ((Get-GssDeterministicPackageId -ReportingDate '2026-07-12' -SourceDescriptors $changedDescriptors -FeedbackSelectionFingerprint $manifest.feedback_selection_sha256) -ne $package.PackageId) 'Source hash changes package ID'

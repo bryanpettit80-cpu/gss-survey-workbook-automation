@@ -63,10 +63,40 @@ function Get-RunSummaryContext {
     if ($snapshotPurpose -eq 'WorkbookTransaction') {
         $snapshotPurpose = [string](Get-GssDriveBackupProperty $transaction @('SnapshotPurpose', 'snapshot_purpose') 'WorkbookTransaction')
     }
-    if ($snapshotPurpose -notin @('WorkbookTransaction', 'RecoveryOnly')) {
-        throw "Run summary SnapshotPurpose must be WorkbookTransaction or RecoveryOnly: $snapshotPurpose"
+    if ($snapshotPurpose -notin @('WorkbookTransaction', 'RecoveryOnly', 'ReleaseOnly')) {
+        throw "Run summary SnapshotPurpose must be WorkbookTransaction, RecoveryOnly, or ReleaseOnly: $snapshotPurpose"
     }
-    $inventoryMode = if ($snapshotPurpose -eq 'RecoveryOnly') { 'RecoveryOnly' } else { 'Full' }
+    $inventoryMode = if ($snapshotPurpose -in @('RecoveryOnly', 'ReleaseOnly')) { $snapshotPurpose } else { 'Full' }
+
+    if ($snapshotPurpose -eq 'ReleaseOnly') {
+        $required = @(
+            'schema_version',
+            'RunId',
+            'RunFingerprint',
+            'Folder',
+            'CurrentWeekEnding',
+            'ProgramRelease',
+            'SnapshotPurpose',
+            'BackupInventory'
+        )
+        [void](Assert-GssDriveBackupObjectShape `
+            -Value $summary `
+            -Required $required `
+            -Allowed ($required + @('GeneratedAtUtc')) `
+            -Label 'ReleaseOnly Drive run summary')
+        if ([string]$summary.schema_version -cne 'gss-release-drive-summary/v1' -or
+            [string]$summary.SnapshotPurpose -cne 'ReleaseOnly' -or
+            [string]$summary.RunFingerprint -notmatch '^sha256:[a-f0-9]{64}$') {
+            throw 'ReleaseOnly Drive run summary schema, purpose, or fingerprint is invalid.'
+        }
+        foreach ($embeddedItem in @($summary.BackupInventory)) {
+            [void](Assert-GssDriveBackupObjectShape `
+                -Value $embeddedItem `
+                -Required @('SourcePath', 'PortablePath', 'Role', 'Classification') `
+                -Allowed @('SourcePath', 'PortablePath', 'Role', 'Classification') `
+                -Label 'ReleaseOnly Drive run summary BackupInventory record')
+        }
+    }
 
     if ([string]::IsNullOrWhiteSpace($resolvedRunId)) {
         throw "Run summary must contain RunId so Drive preparation is bound to the reviewed transaction: $resolved"
@@ -146,12 +176,47 @@ function Get-ContextInventory {
         [object]$Context
     )
 
-    return @(Get-GssDriveBackupInventory `
+    $inventory = @(Get-GssDriveBackupInventory `
         -GssRoot $Context.GssRoot `
         -AdditionalItems $Context.AdditionalItems `
         -TransactionArtifactPaths $Context.TransactionArtifactPaths `
         -ReleaseArchivePaths $Context.ReleaseArchivePaths `
         -InventoryMode $Context.InventoryMode)
+    if ($Context.SnapshotPurpose -eq 'ReleaseOnly') {
+        $manifestRecord = @($inventory | Where-Object Role -eq 'release_manifest')
+        if ($manifestRecord.Count -ne 1) {
+            throw 'ReleaseOnly inventory must resolve exactly one release manifest.'
+        }
+        $manifest = Read-GssDriveBackupJson -Path ([string]$manifestRecord[0].SourcePath)
+        $manifestTag = [string](Get-GssDriveBackupProperty $manifest @('release_tag'))
+        if ($Context.Release -cne $manifestTag) {
+            throw 'ReleaseOnly run summary ProgramRelease does not match the inventoried release manifest.'
+        }
+        $fingerprint = Get-GssReleaseOnlyInventoryFingerprint -Inventory $inventory -Release $manifestTag
+        $expectedFingerprint = "sha256:$fingerprint"
+        if ($Context.Fingerprint -cne $expectedFingerprint) {
+            throw 'ReleaseOnly run summary fingerprint does not match the exact three-file inventory.'
+        }
+        $expectedRunId = "gss-release-$manifestTag-$($fingerprint.Substring(0, 12))"
+        if ($Context.RunId -cne $expectedRunId) {
+            throw "ReleaseOnly run ID must be '$expectedRunId'."
+        }
+        $manifestGeneratedAt = [datetime]::MinValue
+        $dateStyles = [Globalization.DateTimeStyles]::AssumeUniversal -bor [Globalization.DateTimeStyles]::AdjustToUniversal
+        if (-not [datetime]::TryParse(
+            [string](Get-GssDriveBackupProperty $manifest @('generated_at_utc')),
+            [Globalization.CultureInfo]::InvariantCulture,
+            $dateStyles,
+            [ref]$manifestGeneratedAt
+        ) -or $Context.ReportWeek -ne $manifestGeneratedAt.Date) {
+            throw 'ReleaseOnly report date must equal the release manifest generated-at date.'
+        }
+        [void](Test-GssDriveBackupExactInventoryRecordSet `
+            -Expected $inventory `
+            -Actual @($Context.Summary.BackupInventory) `
+            -Label 'ReleaseOnly Drive run summary embedded inventory')
+    }
+    return $inventory
 }
 
 $result = switch ($Operation) {

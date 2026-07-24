@@ -3100,7 +3100,14 @@ def main(arguments: Sequence[str] | None = None) -> int:
         print(str(error), file=sys.stderr)
         return 2
     try:
-        raw_input = sys.stdin.read()
+        raw_bytes = sys.stdin.buffer.read()
+        try:
+            raw_input = raw_bytes.decode("utf-8-sig")
+        except UnicodeDecodeError as exc:
+            raise DataBlock(
+                "invalid_json",
+                "The stdin payload must be UTF-8 JSON.",
+            ) from exc
         if not raw_input.strip():
             raise DataBlock("empty_stdin", "A JSON population export is required on stdin.")
         try:

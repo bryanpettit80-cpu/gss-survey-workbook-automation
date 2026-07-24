@@ -232,6 +232,25 @@ class ShadowModelTests(unittest.TestCase):
             original_hash,
         )
 
+    def test_cli_accepts_windows_utf8_bom_on_stdin(self) -> None:
+        payload = make_payload()
+        payload.pop("source_sha256")
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(MODULE_PATH),
+                "--compute-source-sha256",
+            ],
+            input="\ufeff" + json.dumps(payload, separators=(",", ":")),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=120,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertRegex(completed.stdout.strip(), r"^[0-9a-f]{64}$")
+
     def test_mismatched_source_hash_is_data_blocked_without_cycle_append(self) -> None:
         payload = make_payload()
         payload["population_totals"][0]["response_count"] += 1

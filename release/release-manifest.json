@@ -3,7 +3,7 @@
   "release_version": "1.1.0",
   "release_tag": "v1.1.0",
   "commit_binding": "exact_release_tag",
-  "generated_at_utc": "2026-07-24T03:21:31.4561567Z",
+  "generated_at_utc": "2026-07-24T03:25:40.7071785Z",
   "classification": "PROGRAM SOURCE ONLY - NO GSS WORKBOOKS, REPORTS, OR CUSTOMER DATA",
   "runtime_contract": {
     "require_clean_tree": true,
@@ -84,8 +84,8 @@
       "path": "scripts/gss_shadow_model.py",
       "role": "runtime",
       "hash_mode": "utf8_lf",
-      "canonical_size_bytes": 113016,
-      "sha256": "db7babb2c61ff6b0e8fe9f16519bea35df1385470a375bfb46f989c96cfff460"
+      "canonical_size_bytes": 113273,
+      "sha256": "f58bb468de085debe80cb15a26c405795ec8d443a5bc7e910a2240ab10332e25"
     },
     {
       "path": "scripts/Gss-Common.ps1",
@@ -154,8 +154,8 @@
       "path": "scripts/Invoke-GSS-ShadowModel.ps1",
       "role": "runtime",
       "hash_mode": "utf8_lf",
-      "canonical_size_bytes": 7199,
-      "sha256": "ef406e85ddede2d92552e34f409de386f18bb27788373bdd7e29947e02f0f768"
+      "canonical_size_bytes": 7550,
+      "sha256": "ad28ef4f25852d93e1717f6b4de9b053b460c3e2d1dd451a90ea6797e5a9e8d5"
     },
     {
       "path": "scripts/New-GSS-ReleaseManifest.ps1",
@@ -294,8 +294,8 @@
       "path": "tests/test_gss_shadow_model.py",
       "role": "validation",
       "hash_mode": "utf8_lf",
-      "canonical_size_bytes": 37987,
-      "sha256": "b0a9ded9a3e8d8de39ffcb1d55cfab9514f14e366a8732be3f8ef986ccffed2f"
+      "canonical_size_bytes": 38655,
+      "sha256": "eaa627c0f1662d7d4ef537a494b2e60a5e218d20fc3e747050bd3f26ef2f5854"
     }
   ]
 }

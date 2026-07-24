@@ -26,6 +26,7 @@ $defaultCycleLedgerPath = Join-Path (
 ) 'shadow-model-cycle-ledger.json'
 $process = $null
 $rowJson = $null
+$inputBytes = $null
 $fullOutputDirectory = $null
 try {
     if (-not (Test-Path -LiteralPath $modelScript -PathType Leaf)) {
@@ -40,6 +41,9 @@ try {
     }
     if ([string]::IsNullOrWhiteSpace($rowJson)) {
         throw 'A gss-model-input/v1 JSON document is required on standard input.'
+    }
+    if ($rowJson.Length -gt 0 -and $rowJson[0] -eq [char]0xFEFF) {
+        $rowJson = $rowJson.Substring(1)
     }
 
     $fullRepoRoot = [System.IO.Path]::GetFullPath($repoRoot).TrimEnd(
@@ -125,8 +129,12 @@ try {
         throw 'Failed to start the managed Python modeling process.'
     }
 
-    $process.StandardInput.Write($rowJson)
-    $process.StandardInput.Close()
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    $inputBytes = $utf8NoBom.GetBytes($rowJson)
+    $inputStream = $process.StandardInput.BaseStream
+    $inputStream.Write($inputBytes, 0, $inputBytes.Length)
+    $inputStream.Flush()
+    $inputStream.Close()
     $standardOutput = $process.StandardOutput.ReadToEnd()
     $standardError = $process.StandardError.ReadToEnd()
     $process.WaitForExit()
@@ -205,4 +213,5 @@ finally {
         $process.Dispose()
     }
     $rowJson = $null
+    $inputBytes = $null
 }

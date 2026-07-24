@@ -31,3 +31,9 @@ Thumbs.db
 .env.local
 *.tmp
 *.bak
+
+# Python validation/runtime caches.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/

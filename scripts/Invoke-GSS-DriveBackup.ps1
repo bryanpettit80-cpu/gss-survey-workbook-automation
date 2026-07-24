@@ -59,6 +59,14 @@ function Get-RunSummaryContext {
     if ($release -eq 'unversioned') {
         $release = [string](Get-GssDriveBackupProperty $transaction @('ProgramRelease', 'Release', 'program_release', 'release') 'unversioned')
     }
+    $snapshotPurpose = [string](Get-GssDriveBackupProperty $summary @('SnapshotPurpose', 'snapshot_purpose') 'WorkbookTransaction')
+    if ($snapshotPurpose -eq 'WorkbookTransaction') {
+        $snapshotPurpose = [string](Get-GssDriveBackupProperty $transaction @('SnapshotPurpose', 'snapshot_purpose') 'WorkbookTransaction')
+    }
+    if ($snapshotPurpose -notin @('WorkbookTransaction', 'RecoveryOnly')) {
+        throw "Run summary SnapshotPurpose must be WorkbookTransaction or RecoveryOnly: $snapshotPurpose"
+    }
+    $inventoryMode = if ($snapshotPurpose -eq 'RecoveryOnly') { 'RecoveryOnly' } else { 'Full' }
 
     if ([string]::IsNullOrWhiteSpace($resolvedRunId)) {
         throw "Run summary must contain RunId so Drive preparation is bound to the reviewed transaction: $resolved"
@@ -124,6 +132,8 @@ function Get-RunSummaryContext {
         GssRoot = [System.IO.Path]::GetFullPath($gssRoot)
         ReportWeek = $reportWeek
         Release = $release
+        SnapshotPurpose = $snapshotPurpose
+        InventoryMode = $inventoryMode
         AdditionalItems = @($additionalItems)
         TransactionArtifactPaths = @($transactionArtifactPaths | Select-Object -Unique)
         ReleaseArchivePaths = @($releaseArchivePaths | Select-Object -Unique)
@@ -140,7 +150,8 @@ function Get-ContextInventory {
         -GssRoot $Context.GssRoot `
         -AdditionalItems $Context.AdditionalItems `
         -TransactionArtifactPaths $Context.TransactionArtifactPaths `
-        -ReleaseArchivePaths $Context.ReleaseArchivePaths)
+        -ReleaseArchivePaths $Context.ReleaseArchivePaths `
+        -InventoryMode $Context.InventoryMode)
 }
 
 $result = switch ($Operation) {
@@ -177,13 +188,14 @@ $result = switch ($Operation) {
     'Prepare' {
         if ([string]::IsNullOrWhiteSpace($RunSummaryPath)) { throw 'Prepare requires RunSummaryPath.' }
         $context = Get-RunSummaryContext -Path $RunSummaryPath
-        $inventory = Get-ContextInventory -Context $context
+        $inventory = @(Get-ContextInventory -Context $context)
         New-GssDriveBackupPreparedSnapshot `
             -RunId $context.RunId `
             -Fingerprint $context.Fingerprint `
             -ReportWeek $context.ReportWeek `
             -Inventory $inventory `
             -Release $context.Release `
+            -SnapshotPurpose $context.SnapshotPurpose `
             -SettingsPath $SettingsPath
         break
     }
@@ -191,11 +203,12 @@ $result = switch ($Operation) {
         if ([string]::IsNullOrWhiteSpace($RunSummaryPath)) { throw "$Operation requires RunSummaryPath." }
         $context = Get-RunSummaryContext -Path $RunSummaryPath
         try {
-            $inventory = Get-ContextInventory -Context $context
+            $inventory = @(Get-ContextInventory -Context $context)
             Complete-GssDriveBackupSnapshot `
                 -RunId $context.RunId `
                 -Fingerprint $context.Fingerprint `
                 -FinalInventory $inventory `
+                -SnapshotPurpose $context.SnapshotPurpose `
                 -SettingsPath $SettingsPath
         }
         catch {
@@ -231,13 +244,15 @@ $result = switch ($Operation) {
     'Inventory' {
         if ([string]::IsNullOrWhiteSpace($RunSummaryPath)) { throw 'Inventory requires RunSummaryPath.' }
         $context = Get-RunSummaryContext -Path $RunSummaryPath
-        $inventory = Get-ContextInventory -Context $context
+        $inventory = @(Get-ContextInventory -Context $context)
         [pscustomobject]@{
             Status = 'Inventoried'
             RunId = $context.RunId
             FileCount = $inventory.Count
             TotalBytes = [long](($inventory | ForEach-Object { (Get-Item -LiteralPath $_.SourcePath).Length } | Measure-Object -Sum).Sum)
             ContainsPersonalData = [bool](@($inventory | Where-Object Classification -eq 'restricted_personal_data').Count -gt 0)
+            SnapshotPurpose = $context.SnapshotPurpose
+            InventoryMode = $context.InventoryMode
             Excluded = @('test-output', '_automation_runs/backups except explicit transaction artifacts', 'quarantine', 'staging', 'temp', 'repository working tree', '.git')
             Inventory = $inventory
         }
@@ -263,7 +278,7 @@ $result = switch ($Operation) {
     'CapacityProjection' {
         if ([string]::IsNullOrWhiteSpace($RunSummaryPath)) { throw 'CapacityProjection requires RunSummaryPath.' }
         $context = Get-RunSummaryContext -Path $RunSummaryPath
-        $inventory = Get-ContextInventory -Context $context
+        $inventory = @(Get-ContextInventory -Context $context)
         $projectedBytes = [long](($inventory | ForEach-Object { (Get-Item -LiteralPath $_.SourcePath).Length } | Measure-Object -Sum).Sum)
         Get-GssDriveBackupCapacityProjection -ProjectedWeeklyBytes $projectedBytes -FreeBytes $FreeBytes -SettingsPath $SettingsPath
         break

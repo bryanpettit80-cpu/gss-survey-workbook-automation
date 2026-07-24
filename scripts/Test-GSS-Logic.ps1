@@ -192,7 +192,12 @@ Assert-True ($targetCloseIndex -lt $fileEvidenceIndex) 'Target workbook is close
 $safeLauncherSource = Get-Content -LiteralPath (Join-Path $scriptRoot 'Invoke-GSS-SafeWorkbookUpdate.ps1') -Raw
 Assert-True ($safeLauncherSource.Contains('$copyRun = & $updater')) 'Safe launcher captures copy-test run object'
 Assert-True ($safeLauncherSource.Contains('-RunId $runId')) 'Safe launcher binds copy test to unique run ID'
-Assert-True ($safeLauncherSource.Contains('-LogPath $copyRun.LogPath -OutputObject')) 'Safe launcher pairs copy analysis to exact log'
+Assert-True (
+    $safeLauncherSource.Contains('-RunLogPath $copyRun.LogPath') -and
+    $safeLauncherSource.Contains('LogPath = $RunLogPath') -and
+    $safeLauncherSource.Contains('OutputObject = $true') -and
+    $safeLauncherSource.Contains('return & $AnalyzerPath @arguments')
+) 'Safe launcher pairs copy analysis to exact log'
 Assert-True ($safeLauncherSource.Contains('$liveRun = & $updater')) 'Safe launcher captures live promotion object'
 Assert-True ($safeLauncherSource.Contains('-PreparedRunLogPath $copyRun.LogPath')) 'Live promotion reuses exact staged run'
 Assert-True ($safeLauncherSource.Contains('-ExpectedFingerprint $copyRun.RunFingerprint')) 'Live promotion requires exact reviewed fingerprint'
@@ -208,9 +213,10 @@ Assert-True ($safeLauncherSource.Contains("'RollbackBlocked'")) 'Safe launcher p
 $prepareIndex = $safeLauncherSource.IndexOf('-Operation Prepare')
 $liveApplyIndex = $safeLauncherSource.IndexOf('$liveRun = & $updater')
 $finalizeIndex = $safeLauncherSource.IndexOf('-Operation Finalize')
-$packageIndex = $safeLauncherSource.LastIndexOf('-PublishEmailPackage')
+$packageIndex = $safeLauncherSource.LastIndexOf('-PublishPackage')
 Assert-True ($prepareIndex -ge 0 -and $prepareIndex -lt $liveApplyIndex) 'Drive preparation precedes live promotion'
 Assert-True ($finalizeIndex -gt $liveApplyIndex -and $finalizeIndex -lt $packageIndex) 'Drive finalization precedes package publication'
+Assert-True ($safeLauncherSource.Contains('$arguments.PublishEmailPackage = $true')) 'Safe analysis helper maps package publication to the analyzer switch'
 Assert-True ($safeLauncherSource.Contains("if (`$confirmation -cne 'APPLY')")) 'Literal case-sensitive APPLY remains required'
 Assert-True ($updaterSource.Contains('Direct live mutation is disabled.')) 'Updater rejects unbound direct live apply'
 Assert-True ($updaterSource.Contains('Live promotion requires the hash-verified Drive prepared manifest.')) 'Updater rejects live promotion without prepared Drive evidence'

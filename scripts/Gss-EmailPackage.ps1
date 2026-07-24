@@ -54,6 +54,12 @@ function Read-GssAnalysisPolicy {
         [bool]$policy.review_controls.statistical_significance_claimed) {
         throw 'GSS analysis policy must require human review, keep automatic sending disabled, and make no causation or statistical-significance claim.'
     }
+    if ([string]$policy.population_export.reconciliation.failure_status -ne 'DataBlocked' -or
+        [bool]$policy.driver_model.blocks_workbook_or_backup_or_package -or
+        [bool]$policy.driver_model.email_attachment_allowed_in_shadow -or
+        [bool]$policy.driver_model.row_level_persistence_allowed) {
+        throw 'GSS analysis policy must isolate population-data failures, keep shadow modeling nonblocking, exclude model attachments from email, and prohibit row-level model persistence.'
+    }
 
     return $policy
 }

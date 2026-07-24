@@ -1,0 +1,24 @@
+# GSS shadow-model runtime for CPython 3.12 on Windows x86-64.
+# Install with:
+#   python -m pip install --require-hashes --only-binary=:all: -r requirements-shadow-model.lock
+#
+# This lock contains the direct numeric/modeling dependencies and every
+# transitive runtime dependency required by scikit-learn.
+
+numpy==2.5.1 \
+    --hash=sha256:f7d60026c0bdb1380e83bfa7a0419c4577ee4b9a08880afcb6dadeb74c649fa2
+
+scipy==1.18.0 \
+    --hash=sha256:71ccc8faa2dd16ac310233203474a8b5cb67f10dedd54a3116d34943f4b19132
+
+scikit-learn==1.9.0 \
+    --hash=sha256:4306775fad04cc4b472a1b15af1ae9cede1540fbfcc17fbce3767cd8dc7ae283
+
+joblib==1.5.3 \
+    --hash=sha256:5fc3c5039fc5ca8c0276333a188bbd59d6b7ab37fe6632daa76bc7f9ec18e713
+
+threadpoolctl==3.6.0 \
+    --hash=sha256:43a0b8fd5a2928500110039e43a5eed8480b918967083ea48dc3ab9f13c4a7fb
+
+narwhals==2.24.0 \
+    --hash=sha256:42fdedf44e5b2ca7505630d45b4ac3058f38d8485cba9fe1652ca23152df7489

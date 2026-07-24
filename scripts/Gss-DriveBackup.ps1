@@ -174,6 +174,41 @@ function Get-GssDriveBackupRelativePath {
     return (Assert-GssDriveBackupSafeRelativePath -Path $fullPath.Substring($fullRoot.Length + 1))
 }
 
+function Test-GssDriveBackupNoLinkTraversal {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path,
+        [Parameter(Mandatory)]
+        [string]$Root
+    )
+
+    $fullRoot = [System.IO.Path]::GetFullPath($Root).TrimEnd('\', '/')
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    if (-not $fullPath.StartsWith("$fullRoot\", [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "File is outside the expected root '$fullRoot': $fullPath"
+    }
+    $cursor = $fullPath
+    while (-not [string]::IsNullOrWhiteSpace($cursor) -and
+        ($cursor.Equals($fullRoot, [System.StringComparison]::OrdinalIgnoreCase) -or
+            $cursor.StartsWith("$fullRoot\", [System.StringComparison]::OrdinalIgnoreCase))) {
+        $item = Get-Item -LiteralPath $cursor -Force -ErrorAction Stop
+        $linkTypeProperty = $item.PSObject.Properties['LinkType']
+        $targetProperty = $item.PSObject.Properties['Target']
+        $linkType = if ($linkTypeProperty) { [string]$linkTypeProperty.Value } else { '' }
+        $targets = if ($targetProperty -and $null -ne $targetProperty.Value) { @($targetProperty.Value) } else { @() }
+        if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -and
+            (-not [string]::IsNullOrWhiteSpace($linkType) -or $targets.Count -gt 0)) {
+            throw "RecoveryOnly source paths cannot traverse a symbolic link or junction: $cursor"
+        }
+        if ($cursor.Equals($fullRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+            break
+        }
+        $cursor = Split-Path -Parent $cursor
+    }
+    return $true
+}
+
 function Get-GssDriveBackupSha256 {
     [CmdletBinding()]
     param(
@@ -535,12 +570,103 @@ function Get-GssDriveBackupInventory {
         [string]$GssRoot,
         [object[]]$AdditionalItems = @(),
         [string[]]$TransactionArtifactPaths = @(),
-        [string[]]$ReleaseArchivePaths = @()
+        [string[]]$ReleaseArchivePaths = @(),
+        [ValidateSet('Full', 'RecoveryOnly')]
+        [string]$InventoryMode = 'Full'
     )
 
     $root = [System.IO.Path]::GetFullPath($GssRoot).TrimEnd('\', '/')
     if (-not (Test-Path -LiteralPath $root -PathType Container)) {
         throw "GSS source root is unavailable: $root"
+    }
+
+    if ($InventoryMode -eq 'RecoveryOnly') {
+        if (@($TransactionArtifactPaths | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count -gt 0 -or
+            @($ReleaseArchivePaths | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count -gt 0) {
+            throw 'RecoveryOnly inventories require closed, explicit BackupInventory records and cannot use transaction or release path shortcuts.'
+        }
+        $allowedRoles = @(
+            'recovered_historical_detail',
+            'recovery_ledger',
+            'recovery_manifest',
+            'recovery_receipt',
+            'recovery_qa',
+            'recovery_run_summary'
+        )
+        $recoveryTransactionHash = ''
+        foreach ($item in @($AdditionalItems)) {
+            if ($null -eq $item -or $item -is [string]) {
+                throw 'RecoveryOnly BackupInventory entries must be structured records.'
+            }
+            $source = [string](Get-GssDriveBackupProperty $item @('SourcePath', 'source_path', 'Path', 'path'))
+            $portable = Assert-GssDriveBackupSafeRelativePath -Path ([string](Get-GssDriveBackupProperty $item @('PortablePath', 'portable_path')))
+            $role = [string](Get-GssDriveBackupProperty $item @('Role', 'role'))
+            $classification = [string](Get-GssDriveBackupProperty $item @('Classification', 'classification'))
+            if ($role -notin $allowedRoles) {
+                throw "RecoveryOnly BackupInventory role is not allowed: $role"
+            }
+            if (-not $portable.StartsWith('recovery/', [System.StringComparison]::OrdinalIgnoreCase)) {
+                throw "RecoveryOnly portable paths must stay under recovery/: $portable"
+            }
+
+            [void](Test-GssDriveBackupNoLinkTraversal -Path $source -Root $root)
+            $relativeSource = (Get-GssDriveBackupRelativePath -Path $source -Root $root).Replace('/', '\')
+            $historicalArchivePrefix = '03 Uploaded Survey Workbooks\Archive - Previous Uploads\Recovered Historical Detail\'
+            $ledgerRelativePath = '_automation_runs\state\gss_feedback_first_seen.json'
+            switch ($role) {
+                'recovered_historical_detail' {
+                    if (-not $relativeSource.StartsWith($historicalArchivePrefix, [System.StringComparison]::OrdinalIgnoreCase) -or
+                        [System.IO.Path]::GetExtension($relativeSource) -ne '.xlsx' -or
+                        $classification -ne 'restricted_personal_data') {
+                        throw 'Recovered historical detail must be an XLSX under the recovered archive and classified restricted_personal_data.'
+                    }
+                    $expectedPortable = 'recovery/recovered-detail/' + [System.IO.Path]::GetFileName($relativeSource)
+                    if (-not $portable.Equals($expectedPortable, [System.StringComparison]::OrdinalIgnoreCase)) {
+                        throw "Recovered historical detail must use its exact closed portable path: $expectedPortable"
+                    }
+                }
+                'recovery_ledger' {
+                    if (-not $relativeSource.Equals($ledgerRelativePath, [System.StringComparison]::OrdinalIgnoreCase) -or
+                        $classification -ne 'restricted_operational') {
+                        throw 'Recovery ledger must be the exact first-seen ledger and classified restricted_operational.'
+                    }
+                    if (-not $portable.Equals('recovery/state/gss_feedback_first_seen.json', [System.StringComparison]::OrdinalIgnoreCase)) {
+                        throw 'Recovery ledger must use the exact recovery/state/gss_feedback_first_seen.json portable path.'
+                    }
+                }
+                default {
+                    if ($relativeSource -notmatch '^_automation_runs\\historical-recovery\\([a-f0-9]{64})\\([^\\]+)$' -or
+                        $classification -ne 'restricted_operational') {
+                        throw "Recovery evidence role '$role' must be a direct file in a manifest-hash transaction directory and be classified restricted_operational."
+                    }
+                    $transactionHash = $matches[1].ToLowerInvariant()
+                    $leaf = $matches[2]
+                    if ([string]::IsNullOrWhiteSpace($recoveryTransactionHash)) {
+                        $recoveryTransactionHash = $transactionHash
+                    }
+                    elseif ($recoveryTransactionHash -cne $transactionHash) {
+                        throw 'Recovery evidence files must all come from the same manifest-hash transaction directory.'
+                    }
+                    $expectedLeaf = switch ($role) {
+                        'recovery_manifest' { 'recovery-manifest.json' }
+                        'recovery_receipt' { 'transaction-receipt.json' }
+                        'recovery_qa' { 'recovery-qa.json' }
+                        'recovery_run_summary' { 'drive-recovery-summary.json' }
+                        default { throw "Recovery evidence role is not bound to an approved filename: $role" }
+                    }
+                    if (-not $leaf.Equals($expectedLeaf, [System.StringComparison]::OrdinalIgnoreCase)) {
+                        throw "Recovery evidence role '$role' must use the exact filename '$expectedLeaf'."
+                    }
+                    $expectedPortable = "recovery/evidence/$expectedLeaf"
+                    if (-not $portable.Equals($expectedPortable, [System.StringComparison]::OrdinalIgnoreCase)) {
+                        throw "Recovery evidence role '$role' must use the exact closed portable path: $expectedPortable"
+                    }
+                }
+            }
+        }
+        if ([string]::IsNullOrWhiteSpace($recoveryTransactionHash)) {
+            throw 'RecoveryOnly inventories must include at least one manifest-bound transaction evidence file.'
+        }
     }
 
     $records = New-Object System.Collections.Generic.List[object]
@@ -559,52 +685,54 @@ function Get-GssDriveBackupInventory {
         $records.Add($record)
     }
 
-    foreach ($rootFileName in @('Run GSS Update After Upload.cmd', '00 START HERE - GSS Survey Updates.txt')) {
-        $source = Join-Path $root $rootFileName
-        if (Test-Path -LiteralPath $source -PathType Leaf) {
-            & $addRecord (ConvertTo-GssDriveBackupInventoryRecord -SourcePath $source -PortablePath "gss/$rootFileName" -Role 'operator_control' -Classification 'restricted_operational')
+    if ($InventoryMode -eq 'Full') {
+        foreach ($rootFileName in @('Run GSS Update After Upload.cmd', '00 START HERE - GSS Survey Updates.txt')) {
+            $source = Join-Path $root $rootFileName
+            if (Test-Path -LiteralPath $source -PathType Leaf) {
+                & $addRecord (ConvertTo-GssDriveBackupInventoryRecord -SourcePath $source -PortablePath "gss/$rootFileName" -Role 'operator_control' -Classification 'restricted_operational')
+            }
         }
-    }
 
-    $operationalFolders = @(
-        '01 Main Workbook',
-        '02 Weekly Rolling Source Workbooks',
-        '03 Uploaded Survey Workbooks',
-        '04 Email Comparison PDFs',
-        '05 Reference Materials',
-        '06 Exports and Images'
-    )
-    foreach ($folderName in $operationalFolders) {
-        $folder = Join-Path $root $folderName
-        if (-not (Test-Path -LiteralPath $folder -PathType Container)) { continue }
-        foreach ($file in Get-ChildItem -LiteralPath $folder -Recurse -File) {
-            $relative = Get-GssDriveBackupRelativePath -Path $file.FullName -Root $root
-            if (Test-GssDriveBackupExcludedPath -RelativePath $relative) { continue }
-            $role = 'operational_' + ($folderName.Substring(0, 2))
-            $classification = Get-GssDriveBackupClassification -RelativePath $relative
-            & $addRecord (ConvertTo-GssDriveBackupInventoryRecord -SourcePath $file.FullName -PortablePath "gss/$relative" -Role $role -Classification $classification)
-        }
-    }
-
-    foreach ($runFolderName in @('qa', 'logs', 'state')) {
-        $folder = Join-Path $root "_automation_runs\$runFolderName"
-        if (-not (Test-Path -LiteralPath $folder -PathType Container)) { continue }
-        foreach ($file in Get-ChildItem -LiteralPath $folder -Recurse -File) {
-            $relative = Get-GssDriveBackupRelativePath -Path $file.FullName -Root $root
-            if (Test-GssDriveBackupExcludedPath -RelativePath $relative) { continue }
-            & $addRecord (ConvertTo-GssDriveBackupInventoryRecord -SourcePath $file.FullName -PortablePath "gss/$relative" -Role $runFolderName -Classification (Get-GssDriveBackupClassification $relative))
-        }
-    }
-
-    $outbox = Join-Path $root '_automation_runs\email_outbox'
-    if (Test-Path -LiteralPath $outbox -PathType Container) {
-        foreach ($packageFolder in Get-ChildItem -LiteralPath $outbox -Directory) {
-            if ($packageFolder.Name.StartsWith('.staging', [System.StringComparison]::OrdinalIgnoreCase)) { continue }
-            if (-not (Test-Path -LiteralPath (Join-Path $packageFolder.FullName 'READY') -PathType Leaf)) { continue }
-            foreach ($file in Get-ChildItem -LiteralPath $packageFolder.FullName -Recurse -File) {
+        $operationalFolders = @(
+            '01 Main Workbook',
+            '02 Weekly Rolling Source Workbooks',
+            '03 Uploaded Survey Workbooks',
+            '04 Email Comparison PDFs',
+            '05 Reference Materials',
+            '06 Exports and Images'
+        )
+        foreach ($folderName in $operationalFolders) {
+            $folder = Join-Path $root $folderName
+            if (-not (Test-Path -LiteralPath $folder -PathType Container)) { continue }
+            foreach ($file in Get-ChildItem -LiteralPath $folder -Recurse -File) {
                 $relative = Get-GssDriveBackupRelativePath -Path $file.FullName -Root $root
                 if (Test-GssDriveBackupExcludedPath -RelativePath $relative) { continue }
-                & $addRecord (ConvertTo-GssDriveBackupInventoryRecord -SourcePath $file.FullName -PortablePath "gss/$relative" -Role 'ready_package' -Classification (Get-GssDriveBackupClassification $relative))
+                $role = 'operational_' + ($folderName.Substring(0, 2))
+                $classification = Get-GssDriveBackupClassification -RelativePath $relative
+                & $addRecord (ConvertTo-GssDriveBackupInventoryRecord -SourcePath $file.FullName -PortablePath "gss/$relative" -Role $role -Classification $classification)
+            }
+        }
+
+        foreach ($runFolderName in @('qa', 'logs', 'state')) {
+            $folder = Join-Path $root "_automation_runs\$runFolderName"
+            if (-not (Test-Path -LiteralPath $folder -PathType Container)) { continue }
+            foreach ($file in Get-ChildItem -LiteralPath $folder -Recurse -File) {
+                $relative = Get-GssDriveBackupRelativePath -Path $file.FullName -Root $root
+                if (Test-GssDriveBackupExcludedPath -RelativePath $relative) { continue }
+                & $addRecord (ConvertTo-GssDriveBackupInventoryRecord -SourcePath $file.FullName -PortablePath "gss/$relative" -Role $runFolderName -Classification (Get-GssDriveBackupClassification $relative))
+            }
+        }
+
+        $outbox = Join-Path $root '_automation_runs\email_outbox'
+        if (Test-Path -LiteralPath $outbox -PathType Container) {
+            foreach ($packageFolder in Get-ChildItem -LiteralPath $outbox -Directory) {
+                if ($packageFolder.Name.StartsWith('.staging', [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+                if (-not (Test-Path -LiteralPath (Join-Path $packageFolder.FullName 'READY') -PathType Leaf)) { continue }
+                foreach ($file in Get-ChildItem -LiteralPath $packageFolder.FullName -Recurse -File) {
+                    $relative = Get-GssDriveBackupRelativePath -Path $file.FullName -Root $root
+                    if (Test-GssDriveBackupExcludedPath -RelativePath $relative) { continue }
+                    & $addRecord (ConvertTo-GssDriveBackupInventoryRecord -SourcePath $file.FullName -PortablePath "gss/$relative" -Role 'ready_package' -Classification (Get-GssDriveBackupClassification $relative))
+                }
             }
         }
     }
@@ -645,7 +773,11 @@ function Get-GssDriveBackupInventory {
         & $addRecord (ConvertTo-GssDriveBackupInventoryRecord -SourcePath $source -PortablePath $portable -Role $role -Classification $classification)
     }
 
-    return @($records | Sort-Object PortablePath)
+    $result = @($records | Sort-Object PortablePath)
+    if ($InventoryMode -eq 'RecoveryOnly') {
+        [void](Assert-GssRecoveryOnlyInventoryContract -GssRoot $root -Inventory $result)
+    }
+    return $result
 }
 
 function Enter-GssDriveBackupMutex {
@@ -788,6 +920,402 @@ function Copy-GssDriveBackupInventory {
     return ($results | ForEach-Object { $_ })
 }
 
+function ConvertTo-GssDriveBackupInventoryEvidence {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [object[]]$Inventory
+    )
+
+    return @($Inventory | ForEach-Object {
+        $source = [System.IO.Path]::GetFullPath([string]$_.SourcePath)
+        $sourceInfo = Get-Item -LiteralPath $source -Force -ErrorAction Stop
+        [pscustomobject][ordered]@{
+            portable_path = Assert-GssDriveBackupSafeRelativePath -Path ([string]$_.PortablePath)
+            role = [string]$_.Role
+            classification = [string]$_.Classification
+            byte_size = [long]$sourceInfo.Length
+            sha256 = Get-GssDriveBackupSha256 -Path $source
+        }
+    })
+}
+
+function Test-GssDriveBackupExactFileSet {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [object[]]$ExpectedFiles,
+        [Parameter(Mandatory)]
+        [object[]]$ActualFiles,
+        [string]$Label = 'RecoveryOnly inventory'
+    )
+
+    $expectedByPath = @{}
+    foreach ($file in @($ExpectedFiles)) {
+        $portable = Assert-GssDriveBackupSafeRelativePath -Path ([string](Get-GssDriveBackupProperty $file @('portable_path', 'PortablePath')))
+        $key = $portable.ToLowerInvariant()
+        if ($expectedByPath.ContainsKey($key)) {
+            throw "$Label contains a duplicate prepared path: $portable"
+        }
+        $expectedByPath[$key] = $file
+    }
+    if (@($ActualFiles).Count -ne $expectedByPath.Count) {
+        throw "$Label count does not match the prepared inventory."
+    }
+    $seen = @{}
+    foreach ($file in @($ActualFiles)) {
+        $portable = Assert-GssDriveBackupSafeRelativePath -Path ([string](Get-GssDriveBackupProperty $file @('portable_path', 'PortablePath')))
+        $key = $portable.ToLowerInvariant()
+        if ($seen.ContainsKey($key) -or -not $expectedByPath.ContainsKey($key)) {
+            throw "$Label contains an unprepared or duplicate path: $portable"
+        }
+        $seen[$key] = $true
+        $expected = $expectedByPath[$key]
+        foreach ($field in @('role', 'classification', 'sha256', 'byte_size')) {
+            $expectedValue = [string](Get-GssDriveBackupProperty $expected @($field))
+            $actualValue = [string](Get-GssDriveBackupProperty $file @($field))
+            if ($actualValue -cne $expectedValue) {
+                throw "$Label changed $field after preparation: $portable"
+            }
+        }
+    }
+    return $true
+}
+
+function Assert-GssDriveBackupObjectShape {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [object]$Value,
+        [Parameter(Mandatory)]
+        [string[]]$Required,
+        [Parameter(Mandatory)]
+        [string[]]$Allowed,
+        [Parameter(Mandatory)]
+        [string]$Label
+    )
+
+    if ($null -eq $Value -or $Value -is [string]) {
+        throw "$Label must be a structured JSON object."
+    }
+    $propertyNames = @($Value.PSObject.Properties.Name)
+    foreach ($requiredName in $Required) {
+        if ($propertyNames -notcontains $requiredName) {
+            throw "$Label is missing required property '$requiredName'."
+        }
+    }
+    foreach ($propertyName in $propertyNames) {
+        if ($Allowed -notcontains $propertyName) {
+            throw "$Label contains unsupported property '$propertyName'."
+        }
+    }
+    return $true
+}
+
+function Test-GssDriveBackupExactInventoryRecordSet {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [object[]]$Expected,
+        [Parameter(Mandatory)]
+        [object[]]$Actual,
+        [Parameter(Mandatory)]
+        [string]$Label
+    )
+
+    $expectedByPortablePath = @{}
+    foreach ($item in @($Expected)) {
+        $portable = Assert-GssDriveBackupSafeRelativePath -Path ([string](Get-GssDriveBackupProperty $item @('PortablePath', 'portable_path')))
+        $key = $portable.ToLowerInvariant()
+        if ($expectedByPortablePath.ContainsKey($key)) {
+            throw "$Label expected inventory contains duplicate portable path '$portable'."
+        }
+        $expectedByPortablePath[$key] = $item
+    }
+    if (@($Actual).Count -ne $expectedByPortablePath.Count) {
+        throw "$Label count does not match the requested RecoveryOnly inventory."
+    }
+
+    $seen = @{}
+    foreach ($item in @($Actual)) {
+        $portable = Assert-GssDriveBackupSafeRelativePath -Path ([string](Get-GssDriveBackupProperty $item @('PortablePath', 'portable_path')))
+        $key = $portable.ToLowerInvariant()
+        if ($seen.ContainsKey($key) -or -not $expectedByPortablePath.ContainsKey($key)) {
+            throw "$Label contains an unexpected or duplicate portable path '$portable'."
+        }
+        $seen[$key] = $true
+        $expectedItem = $expectedByPortablePath[$key]
+        $expectedSource = [System.IO.Path]::GetFullPath([string](Get-GssDriveBackupProperty $expectedItem @('SourcePath', 'source_path')))
+        $actualSource = [System.IO.Path]::GetFullPath([string](Get-GssDriveBackupProperty $item @('SourcePath', 'source_path')))
+        if (-not $actualSource.Equals($expectedSource, [System.StringComparison]::OrdinalIgnoreCase) -or
+            [string](Get-GssDriveBackupProperty $item @('Role', 'role')) -cne [string](Get-GssDriveBackupProperty $expectedItem @('Role', 'role')) -or
+            [string](Get-GssDriveBackupProperty $item @('Classification', 'classification')) -cne [string](Get-GssDriveBackupProperty $expectedItem @('Classification', 'classification'))) {
+            throw "$Label changed the source, role, or classification for '$portable'."
+        }
+    }
+    return $true
+}
+
+function Assert-GssRecoveryOnlyInventoryContract {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$GssRoot,
+        [Parameter(Mandatory)]
+        [object[]]$Inventory
+    )
+
+    $root = [System.IO.Path]::GetFullPath($GssRoot).TrimEnd('\', '/')
+    $roles = @(
+        'recovered_historical_detail',
+        'recovery_ledger',
+        'recovery_manifest',
+        'recovery_receipt',
+        'recovery_qa',
+        'recovery_run_summary'
+    )
+    $byRole = @{}
+    foreach ($role in $roles) { $byRole[$role] = @() }
+    foreach ($item in @($Inventory)) {
+        $role = [string](Get-GssDriveBackupProperty $item @('Role', 'role'))
+        if (-not $byRole.ContainsKey($role)) {
+            throw "RecoveryOnly inventory contains unsupported role '$role'."
+        }
+        $byRole[$role] = @($byRole[$role]) + @($item)
+    }
+
+    foreach ($role in @('recovery_ledger', 'recovery_manifest', 'recovery_receipt', 'recovery_qa', 'recovery_run_summary')) {
+        if (@($byRole[$role]).Count -ne 1) {
+            throw "RecoveryOnly inventory requires exactly one '$role' record."
+        }
+    }
+    if (@($byRole['recovered_historical_detail']).Count -lt 1) {
+        throw "RecoveryOnly inventory requires at least one 'recovered_historical_detail' XLSX."
+    }
+
+    $manifestRecord = @($byRole['recovery_manifest'])[0]
+    $receiptRecord = @($byRole['recovery_receipt'])[0]
+    $ledgerRecord = @($byRole['recovery_ledger'])[0]
+    $qaRecord = @($byRole['recovery_qa'])[0]
+    $summaryRecord = @($byRole['recovery_run_summary'])[0]
+    $manifestPath = [System.IO.Path]::GetFullPath([string]$manifestRecord.SourcePath)
+    $receiptPath = [System.IO.Path]::GetFullPath([string]$receiptRecord.SourcePath)
+    $ledgerPath = [System.IO.Path]::GetFullPath([string]$ledgerRecord.SourcePath)
+    $qaPath = [System.IO.Path]::GetFullPath([string]$qaRecord.SourcePath)
+    $summaryPath = [System.IO.Path]::GetFullPath([string]$summaryRecord.SourcePath)
+    $transactionRoot = [System.IO.Path]::GetFullPath((Split-Path -Parent $manifestPath)).TrimEnd('\', '/')
+    $transactionHash = [System.IO.Path]::GetFileName($transactionRoot).ToLowerInvariant()
+    $manifestHash = Get-GssDriveBackupSha256 -Path $manifestPath
+    if ($transactionHash -notmatch '^[a-f0-9]{64}$' -or $transactionHash -cne $manifestHash) {
+        throw 'Recovery manifest SHA-256 must exactly match its manifest-hash transaction directory.'
+    }
+    foreach ($evidencePath in @($receiptPath, $qaPath, $summaryPath)) {
+        $evidenceRoot = [System.IO.Path]::GetFullPath((Split-Path -Parent $evidencePath)).TrimEnd('\', '/')
+        if (-not $evidenceRoot.Equals($transactionRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Recovery transaction manifest, receipt, QA, and run summary must share one manifest-hash directory.'
+        }
+    }
+
+    $manifest = Read-GssDriveBackupJson -Path $manifestPath
+    $receipt = Read-GssDriveBackupJson -Path $receiptPath
+    if ([string](Get-GssDriveBackupProperty $manifest @('schema_version')) -cne 'gss-historical-recovery/v1') {
+        throw 'Recovery manifest schema_version must be gss-historical-recovery/v1.'
+    }
+    if ([string](Get-GssDriveBackupProperty $receipt @('schema_version')) -cne 'gss-historical-recovery-receipt/v1' -or
+        [string](Get-GssDriveBackupProperty $receipt @('state')) -cne 'Committed') {
+        throw 'Recovery transaction receipt must use gss-historical-recovery-receipt/v1 and be Committed.'
+    }
+    if ([string](Get-GssDriveBackupProperty $receipt @('manifest_sha256')) -cne $manifestHash -or
+        [string](Get-GssDriveBackupProperty $receipt @('transaction_id')) -cne "historical-recovery:$manifestHash") {
+        throw 'Recovery transaction receipt identity does not match the manifest SHA-256.'
+    }
+    $receiptManifestPath = [System.IO.Path]::GetFullPath([string](Get-GssDriveBackupProperty $receipt @('manifest_snapshot_path')))
+    if (-not $receiptManifestPath.Equals($manifestPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Recovery receipt manifest_snapshot_path does not identify the inventoried manifest.'
+    }
+
+    $manifestSources = @(Get-GssDriveBackupProperty $manifest @('sources') @())
+    $receiptFiles = @(Get-GssDriveBackupProperty $receipt @('files') @())
+    $recoveredItems = @($byRole['recovered_historical_detail'])
+    if ($manifestSources.Count -lt 1 -or
+        $receiptFiles.Count -ne $manifestSources.Count -or
+        $recoveredItems.Count -ne $manifestSources.Count) {
+        throw 'Recovery manifest, receipt, and recovered XLSX inventory counts must match exactly.'
+    }
+
+    $recoveredBySourcePath = @{}
+    foreach ($recoveredItem in $recoveredItems) {
+        $sourcePath = [System.IO.Path]::GetFullPath([string]$recoveredItem.SourcePath)
+        $key = $sourcePath.ToLowerInvariant()
+        if ($recoveredBySourcePath.ContainsKey($key)) {
+            throw "RecoveryOnly inventory repeats recovered XLSX '$sourcePath'."
+        }
+        $recoveredBySourcePath[$key] = $recoveredItem
+    }
+    $seenDestinations = @{}
+    $totalRows = [long]0
+    for ($sourceIndex = 0; $sourceIndex -lt $manifestSources.Count; $sourceIndex++) {
+        $source = $manifestSources[$sourceIndex]
+        $destinationRelative = Assert-GssDriveBackupSafeRelativePath -Path ([string](Get-GssDriveBackupProperty $source @('destination_path')))
+        if (-not $destinationRelative.StartsWith('03 Uploaded Survey Workbooks/Archive - Previous Uploads/Recovered Historical Detail/', [System.StringComparison]::OrdinalIgnoreCase) -or
+            [System.IO.Path]::GetExtension($destinationRelative) -ne '.xlsx') {
+            throw "Recovery manifest source $($sourceIndex + 1) has an invalid recovered archive destination."
+        }
+        $destinationFullPath = [System.IO.Path]::GetFullPath((Join-Path $root $destinationRelative.Replace('/', '\')))
+        [void](Get-GssDriveBackupRelativePath -Path $destinationFullPath -Root $root)
+        $destinationKey = $destinationFullPath.ToLowerInvariant()
+        if ($seenDestinations.ContainsKey($destinationKey) -or -not $recoveredBySourcePath.ContainsKey($destinationKey)) {
+            throw "Recovery manifest destination is duplicated or absent from the closed inventory: $destinationRelative"
+        }
+        $seenDestinations[$destinationKey] = $true
+
+        $sourceHash = [string](Get-GssDriveBackupProperty $source @('sha256'))
+        $sourceBytes = [long](Get-GssDriveBackupProperty $source @('byte_size'))
+        $sourceRows = [long](Get-GssDriveBackupProperty $source @('row_count'))
+        if ($sourceHash -notmatch '^[a-f0-9]{64}$' -or
+            $sourceBytes -lt 1 -or
+            $sourceRows -lt 0 -or
+            (Get-GssDriveBackupSha256 -Path $destinationFullPath) -cne $sourceHash -or
+            [long](Get-Item -LiteralPath $destinationFullPath -Force).Length -ne $sourceBytes) {
+            throw "Recovered XLSX bytes do not match manifest source $($sourceIndex + 1)."
+        }
+        $totalRows += $sourceRows
+
+        $receiptFile = @($receiptFiles | Where-Object { [int](Get-GssDriveBackupProperty $_ @('source_index')) -eq ($sourceIndex + 1) })
+        if ($receiptFile.Count -ne 1) {
+            throw "Recovery receipt must identify manifest source $($sourceIndex + 1) exactly once."
+        }
+        $receiptDestinationFullPath = [System.IO.Path]::GetFullPath([string](Get-GssDriveBackupProperty $receiptFile[0] @('destination_full_path')))
+        $receiptDestinationRelative = ([string](Get-GssDriveBackupProperty $receiptFile[0] @('destination_path'))).Replace('\', '/').Trim('/')
+        if (-not $receiptDestinationFullPath.Equals($destinationFullPath, [System.StringComparison]::OrdinalIgnoreCase) -or
+            -not $receiptDestinationRelative.Equals($destinationRelative, [System.StringComparison]::OrdinalIgnoreCase) -or
+            [string](Get-GssDriveBackupProperty $receiptFile[0] @('sha256')) -cne $sourceHash -or
+            [long](Get-GssDriveBackupProperty $receiptFile[0] @('byte_size')) -ne $sourceBytes -or
+            [long](Get-GssDriveBackupProperty $receiptFile[0] @('row_count')) -ne $sourceRows) {
+            throw "Recovery receipt file $($sourceIndex + 1) does not exactly match its manifest destination."
+        }
+    }
+    if ($seenDestinations.Count -ne $recoveredBySourcePath.Count) {
+        throw 'RecoveryOnly inventory contains an unrelated recovered XLSX not named by the manifest and receipt.'
+    }
+
+    $receiptLedgerPath = [System.IO.Path]::GetFullPath([string](Get-GssDriveBackupProperty $receipt @('ledger_path')))
+    $receiptLedgerHash = [string](Get-GssDriveBackupProperty $receipt @('ledger_sha256_after'))
+    if (-not $receiptLedgerPath.Equals($ledgerPath, [System.StringComparison]::OrdinalIgnoreCase) -or
+        $receiptLedgerHash -notmatch '^[a-f0-9]{64}$' -or
+        (Get-GssDriveBackupSha256 -Path $ledgerPath) -cne $receiptLedgerHash) {
+        throw 'Recovery ledger path or SHA-256 does not match the Committed receipt.'
+    }
+    $ledger = Read-GssDriveBackupJson -Path $ledgerPath
+    if ([string](Get-GssDriveBackupProperty $ledger @('schema_version')) -cne 'gss-feedback-first-seen/v1') {
+        throw 'Recovery ledger schema_version must be gss-feedback-first-seen/v1.'
+    }
+    $ledgerEntryCount = @(Get-GssDriveBackupProperty $ledger @('entries') @()).Count
+    $plannedEntryCount = @(Get-GssDriveBackupProperty $receipt @('planned_entries') @()).Count
+    $insertedResponseCount = @(Get-GssDriveBackupProperty $receipt @('inserted_response_hashes') @()).Count
+    $publishedFileCount = [int](Get-GssDriveBackupProperty $receipt @('published_file_count') 0)
+    foreach ($receiptFileControl in $receiptFiles) {
+        $publishedValue = Get-GssDriveBackupProperty $receiptFileControl @('published_by_transaction') $null
+        if ($publishedValue -isnot [bool]) {
+            throw 'Recovery receipt published_by_transaction controls must be JSON booleans.'
+        }
+    }
+    $publishedReceiptCount = @($receiptFiles | Where-Object {
+        (Get-GssDriveBackupProperty $_ @('published_by_transaction') $false) -eq $true
+    }).Count
+    if ($publishedFileCount -ne $publishedReceiptCount) {
+        throw 'Recovery receipt published_file_count does not match its file controls.'
+    }
+
+    $qa = Read-GssDriveBackupJson -Path $qaPath
+    $qaRequired = @(
+        'schema_version',
+        'status',
+        'manifest_sha256',
+        'transaction_id',
+        'source_count',
+        'recovered_file_count',
+        'row_count',
+        'unique_response_count',
+        'inserted_response_count',
+        'published_file_count',
+        'ledger_entry_count_after',
+        'controls'
+    )
+    [void](Assert-GssDriveBackupObjectShape -Value $qa -Required $qaRequired -Allowed ($qaRequired + @('generated_at_utc')) -Label 'Recovery QA')
+    if ([string]$qa.schema_version -cne 'gss-historical-recovery-qa/v1' -or
+        [string]$qa.status -cne 'Passed' -or
+        [string]$qa.manifest_sha256 -cne $manifestHash -or
+        [string]$qa.transaction_id -cne "historical-recovery:$manifestHash" -or
+        [int]$qa.source_count -ne $manifestSources.Count -or
+        [int]$qa.recovered_file_count -ne $recoveredItems.Count -or
+        [long]$qa.row_count -ne $totalRows -or
+        [int]$qa.unique_response_count -ne $plannedEntryCount -or
+        [int]$qa.inserted_response_count -ne $insertedResponseCount -or
+        [int]$qa.published_file_count -ne $publishedFileCount -or
+        [int]$qa.ledger_entry_count_after -ne $ledgerEntryCount) {
+        throw 'Recovery QA identity or aggregate counts do not match the manifest, receipt, and ledger.'
+    }
+    $qaControlNames = @(
+        'manifest_hash_verified',
+        'receipt_committed',
+        'destinations_verified',
+        'ledger_hash_verified',
+        'no_unrelated_recovered_xlsx',
+        'live_workbook_unchanged',
+        'email_package_unchanged',
+        'automatic_sending_disabled',
+        'scheduled_task_disabled',
+        'contains_row_level_data'
+    )
+    [void](Assert-GssDriveBackupObjectShape -Value $qa.controls -Required $qaControlNames -Allowed $qaControlNames -Label 'Recovery QA controls')
+    foreach ($controlName in $qaControlNames) {
+        $controlValue = Get-GssDriveBackupProperty $qa.controls @($controlName)
+        if ($controlValue -isnot [bool]) {
+            throw "Recovery QA control '$controlName' must be a JSON boolean."
+        }
+        if ($controlName -eq 'contains_row_level_data') {
+            if ($controlValue) { throw 'Recovery QA must remain aggregate-only and cannot contain row-level data.' }
+        }
+        elseif (-not $controlValue) {
+            throw "Recovery QA control '$controlName' must be true."
+        }
+    }
+
+    $summary = Read-GssDriveBackupJson -Path $summaryPath
+    $summaryRequired = @(
+        'schema_version',
+        'RunId',
+        'RunFingerprint',
+        'Folder',
+        'CurrentWeekEnding',
+        'ProgramRelease',
+        'SnapshotPurpose',
+        'BackupInventory'
+    )
+    [void](Assert-GssDriveBackupObjectShape -Value $summary -Required $summaryRequired -Allowed ($summaryRequired + @('GeneratedAtUtc')) -Label 'Recovery Drive run summary')
+    if ([string]$summary.schema_version -cne 'gss-recovery-drive-summary/v1' -or
+        [string]$summary.SnapshotPurpose -cne 'RecoveryOnly' -or
+        [string]$summary.RunFingerprint -cne "sha256:$manifestHash" -or
+        [string]::IsNullOrWhiteSpace([string]$summary.RunId)) {
+        throw 'Recovery Drive run summary schema, purpose, run ID, or manifest fingerprint is invalid.'
+    }
+    $summaryRoot = [System.IO.Path]::GetFullPath([string]$summary.Folder).TrimEnd('\', '/')
+    if (-not $summaryRoot.Equals($root, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Recovery Drive run summary Folder does not match the requested GSS root.'
+    }
+    $embeddedInventory = @($summary.BackupInventory)
+    foreach ($embeddedItem in $embeddedInventory) {
+        [void](Assert-GssDriveBackupObjectShape `
+            -Value $embeddedItem `
+            -Required @('SourcePath', 'PortablePath', 'Role', 'Classification') `
+            -Allowed @('SourcePath', 'PortablePath', 'Role', 'Classification') `
+            -Label 'Recovery Drive run summary BackupInventory record')
+    }
+    [void](Test-GssDriveBackupExactInventoryRecordSet -Expected $Inventory -Actual $embeddedInventory -Label 'Recovery Drive run summary embedded inventory')
+    return $true
+}
+
 function Test-GssDriveBackupPayload {
     [CmdletBinding()]
     param(
@@ -895,6 +1423,8 @@ function New-GssDriveBackupPreparedSnapshot {
         [Parameter(Mandatory)]
         [object[]]$Inventory,
         [string]$Release = 'unversioned',
+        [ValidateSet('WorkbookTransaction', 'RecoveryOnly')]
+        [string]$SnapshotPurpose = 'WorkbookTransaction',
         [string]$SettingsPath = (Get-GssDriveBackupDefaultSettingsPath)
     )
 
@@ -927,11 +1457,16 @@ function New-GssDriveBackupPreparedSnapshot {
             }
             $existing = Read-GssDriveBackupJson -Path $preparedPath
             if ([string](Get-GssDriveBackupProperty $existing @('run_id')) -ne $RunId -or
-                [string](Get-GssDriveBackupProperty $existing @('fingerprint')) -ne $Fingerprint) {
+                [string](Get-GssDriveBackupProperty $existing @('fingerprint')) -ne $Fingerprint -or
+                [string](Get-GssDriveBackupProperty $existing @('snapshot_purpose') 'WorkbookTransaction') -ne $SnapshotPurpose) {
                 throw "Existing prepared backup does not match the requested run: $partialPath"
             }
             $files = @(Get-GssDriveBackupProperty $existing @('files') @())
             [void](Test-GssDriveBackupPayload -SnapshotDirectory $partialPath -Files $files)
+            if ($SnapshotPurpose -eq 'RecoveryOnly') {
+                $requestedFiles = @(ConvertTo-GssDriveBackupInventoryEvidence -Inventory $Inventory)
+                [void](Test-GssDriveBackupExactFileSet -ExpectedFiles $files -ActualFiles $requestedFiles -Label 'Idempotent RecoveryOnly preparation inventory')
+            }
             return [pscustomobject]@{
                 Status = 'Prepared'
                 BackupStatus = 'Prepared'
@@ -970,6 +1505,7 @@ function New-GssDriveBackupPreparedSnapshot {
                 prepared_at_utc = [datetime]::UtcNow.ToString('o')
                 host = [Environment]::MachineName
                 release = $Release
+                snapshot_purpose = $SnapshotPurpose
                 prior_manifest_sha256 = if ($chainHead) { $chainHead.ManifestSha256 } else { $null }
                 drive = [ordered]@{
                     folder_id = $context.Settings.DriveFolderId
@@ -982,6 +1518,7 @@ function New-GssDriveBackupPreparedSnapshot {
                     contains_personal_data = $true
                 }
                 scope = [ordered]@{
+                    inventory_mode = if ($SnapshotPurpose -eq 'RecoveryOnly') { 'RecoveryOnly' } else { 'Full' }
                     included_roles = @($files.role | Sort-Object -Unique)
                     excluded = @('test-output', '_automation_runs/backups except explicit transaction artifacts', 'quarantine', 'staging', 'temp', 'repository working tree', '.git')
                 }
@@ -1159,6 +1696,12 @@ function Test-GssCommittedBackupSnapshot {
     $receipt = Read-GssDriveBackupJson -Path $receiptPath
     $manifest = Read-GssDriveBackupJson -Path $manifestPath
     $preparedManifest = Read-GssDriveBackupJson -Path $preparedManifestPath
+    $receiptPurpose = [string](Get-GssDriveBackupProperty $receipt @('snapshot_purpose') 'WorkbookTransaction')
+    $manifestPurpose = [string](Get-GssDriveBackupProperty $manifest @('snapshot_purpose') 'WorkbookTransaction')
+    $preparedPurpose = [string](Get-GssDriveBackupProperty $preparedManifest @('snapshot_purpose') 'WorkbookTransaction')
+    if ($receiptPurpose -ne $manifestPurpose -or $receiptPurpose -ne $preparedPurpose) {
+        throw "Committed snapshot purpose does not match across its prepared manifest, final manifest, and receipt: $SnapshotPath"
+    }
     $expectedManifestHash = [string](Get-GssDriveBackupProperty $receipt @('backup_manifest_sha256'))
     $actualManifestHash = Get-GssDriveBackupSha256 -Path $manifestPath
     if ($actualManifestHash -ne $expectedManifestHash) {
@@ -1175,6 +1718,9 @@ function Test-GssCommittedBackupSnapshot {
     $validatedCount = Test-GssDriveBackupPayload -SnapshotDirectory $SnapshotPath -Files $files
     $preparedFiles = @(Get-GssDriveBackupProperty $preparedManifest @('files') @())
     $validatedPreparedCount = Test-GssDriveBackupPayload -SnapshotDirectory $SnapshotPath -Files $preparedFiles
+    if ($receiptPurpose -eq 'RecoveryOnly') {
+        [void](Test-GssDriveBackupExactFileSet -ExpectedFiles $preparedFiles -ActualFiles $files -Label 'Committed RecoveryOnly inventory')
+    }
     return [pscustomobject]@{
         Receipt = $receipt
         Manifest = $manifest
@@ -1197,6 +1743,8 @@ function Complete-GssDriveBackupSnapshot {
         [Parameter(Mandatory)]
         [string]$Fingerprint,
         [object[]]$FinalInventory,
+        [ValidateSet('WorkbookTransaction', 'RecoveryOnly')]
+        [string]$SnapshotPurpose = 'WorkbookTransaction',
         [string]$SettingsPath = (Get-GssDriveBackupDefaultSettingsPath)
     )
 
@@ -1222,8 +1770,14 @@ function Complete-GssDriveBackupSnapshot {
         if (Test-Path -LiteralPath $receiptPath -PathType Leaf) {
             $validated = Test-GssCommittedBackupSnapshot -SnapshotPath $activePath
             if ([string](Get-GssDriveBackupProperty $validated.Manifest @('run_id')) -ne $RunId -or
-                [string](Get-GssDriveBackupProperty $validated.Manifest @('fingerprint')) -ne $Fingerprint) {
+                [string](Get-GssDriveBackupProperty $validated.Manifest @('fingerprint')) -ne $Fingerprint -or
+                [string](Get-GssDriveBackupProperty $validated.Manifest @('snapshot_purpose') 'WorkbookTransaction') -ne $SnapshotPurpose) {
                 throw 'Committed snapshot identity does not match the requested run.'
+            }
+            if ($SnapshotPurpose -eq 'RecoveryOnly' -and $null -ne $FinalInventory -and @($FinalInventory).Count -gt 0) {
+                $requestedFiles = @(ConvertTo-GssDriveBackupInventoryEvidence -Inventory $FinalInventory)
+                $committedFiles = @(Get-GssDriveBackupProperty $validated.Manifest @('files') @())
+                [void](Test-GssDriveBackupExactFileSet -ExpectedFiles $committedFiles -ActualFiles $requestedFiles -Label 'Idempotent committed RecoveryOnly inventory')
             }
             $head = Get-GssDriveBackupChainHead -RootPath $context.RootPath
             $priorHash = [string](Get-GssDriveBackupProperty $validated.Manifest @('prior_manifest_sha256'))
@@ -1256,7 +1810,8 @@ function Complete-GssDriveBackupSnapshot {
         $preparedPath = Join-Path $activePath 'prepared-manifest.json'
         $prepared = Read-GssDriveBackupJson -Path $preparedPath
         if ([string](Get-GssDriveBackupProperty $prepared @('run_id')) -ne $RunId -or
-            [string](Get-GssDriveBackupProperty $prepared @('fingerprint')) -ne $Fingerprint) {
+            [string](Get-GssDriveBackupProperty $prepared @('fingerprint')) -ne $Fingerprint -or
+            [string](Get-GssDriveBackupProperty $prepared @('snapshot_purpose') 'WorkbookTransaction') -ne $SnapshotPurpose) {
             throw 'Prepared snapshot identity does not match the requested run.'
         }
         $preparedFiles = @(Get-GssDriveBackupProperty $prepared @('files') @())
@@ -1265,18 +1820,56 @@ function Complete-GssDriveBackupSnapshot {
         $manifestPath = Join-Path $activePath 'backup-manifest.json'
         if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
             $backupManifest = Read-GssDriveBackupJson -Path $manifestPath
+            if ([string](Get-GssDriveBackupProperty $backupManifest @('run_id')) -ne $RunId -or
+                [string](Get-GssDriveBackupProperty $backupManifest @('fingerprint')) -ne $Fingerprint -or
+                [string](Get-GssDriveBackupProperty $backupManifest @('snapshot_purpose') 'WorkbookTransaction') -ne $SnapshotPurpose -or
+                [string](Get-GssDriveBackupProperty $backupManifest @('prepared_manifest_sha256')) -ne (Get-GssDriveBackupSha256 -Path $preparedPath)) {
+                throw 'Existing final manifest identity does not match the prepared snapshot.'
+            }
             $finalFiles = @(Get-GssDriveBackupProperty $backupManifest @('files') @())
             [void](Test-GssDriveBackupPayload -SnapshotDirectory $activePath -Files $finalFiles)
             $manifestPreparedFiles = @(Get-GssDriveBackupProperty $backupManifest @('prepared_files') @())
             [void](Test-GssDriveBackupPayload -SnapshotDirectory $activePath -Files $manifestPreparedFiles)
+            [void](Test-GssDriveBackupExactFileSet -ExpectedFiles $preparedFiles -ActualFiles $manifestPreparedFiles -Label 'Final manifest prepared inventory')
+            if ($SnapshotPurpose -eq 'RecoveryOnly') {
+                [void](Test-GssDriveBackupExactFileSet -ExpectedFiles $preparedFiles -ActualFiles $finalFiles -Label 'Existing RecoveryOnly final inventory')
+            }
         }
         else {
             if ($null -eq $FinalInventory -or @($FinalInventory).Count -eq 0) {
                 throw 'Finalization requires the current curated inventory so the post-apply state can be captured.'
             }
 
+            if ($SnapshotPurpose -eq 'RecoveryOnly') {
+                $preparedByPortablePath = @{}
+                foreach ($preparedFile in @($preparedFiles)) {
+                    $preparedKey = ([string](Get-GssDriveBackupProperty $preparedFile @('portable_path'))).ToLowerInvariant()
+                    $preparedByPortablePath[$preparedKey] = $preparedFile
+                }
+                if (@($FinalInventory).Count -ne $preparedByPortablePath.Count) {
+                    throw 'RecoveryOnly final inventory does not match the prepared inventory count.'
+                }
+                foreach ($item in @($FinalInventory)) {
+                    $portable = Assert-GssDriveBackupSafeRelativePath -Path ([string]$item.PortablePath)
+                    $key = $portable.ToLowerInvariant()
+                    if (-not $preparedByPortablePath.ContainsKey($key)) {
+                        throw "RecoveryOnly final inventory added an unprepared path: $portable"
+                    }
+                    $expected = $preparedByPortablePath[$key]
+                    $actualHash = Get-GssDriveBackupSha256 -Path ([string]$item.SourcePath)
+                    if ($actualHash -ne [string](Get-GssDriveBackupProperty $expected @('sha256')) -or
+                        [string]$item.Role -ne [string](Get-GssDriveBackupProperty $expected @('role')) -or
+                        [string]$item.Classification -ne [string](Get-GssDriveBackupProperty $expected @('classification'))) {
+                        throw "RecoveryOnly final inventory changed after preparation: $portable"
+                    }
+                }
+            }
+
             $finalFiles = @(Copy-GssDriveBackupInventory -Inventory $FinalInventory -SnapshotDirectory $activePath -PayloadPrefix 'payload')
             [void](Test-GssDriveBackupPayload -SnapshotDirectory $activePath -Files $finalFiles)
+            if ($SnapshotPurpose -eq 'RecoveryOnly') {
+                [void](Test-GssDriveBackupExactFileSet -ExpectedFiles $preparedFiles -ActualFiles $finalFiles -Label 'Copied RecoveryOnly final inventory')
+            }
             $expectedPrior = [string](Get-GssDriveBackupProperty $prepared @('prior_manifest_sha256'))
 
             $backupManifest = [ordered]@{
@@ -1290,6 +1883,7 @@ function Complete-GssDriveBackupSnapshot {
                 finalized_at_utc = [datetime]::UtcNow.ToString('o')
                 host = [string](Get-GssDriveBackupProperty $prepared @('host'))
                 release = [string](Get-GssDriveBackupProperty $prepared @('release'))
+                snapshot_purpose = [string](Get-GssDriveBackupProperty $prepared @('snapshot_purpose') 'WorkbookTransaction')
                 prior_manifest_sha256 = if ([string]::IsNullOrWhiteSpace($expectedPrior)) { $null } else { $expectedPrior }
                 prepared_manifest_sha256 = Get-GssDriveBackupSha256 -Path $preparedPath
                 drive = Get-GssDriveBackupProperty $prepared @('drive')
@@ -1340,6 +1934,7 @@ function Complete-GssDriveBackupSnapshot {
             status = 'Committed'
             run_id = $RunId
             fingerprint = $Fingerprint
+            snapshot_purpose = [string](Get-GssDriveBackupProperty $manifest @('snapshot_purpose') 'WorkbookTransaction')
             committed_at_utc = [datetime]::UtcNow.ToString('o')
             backup_manifest_sha256 = $manifestHash
             prepared_manifest_sha256 = Get-GssDriveBackupSha256 -Path $preparedPath

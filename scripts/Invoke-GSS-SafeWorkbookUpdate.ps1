@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
-    [string]$Folder
+    [string]$Folder,
+    [string]$PopulationExportPath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -93,6 +94,29 @@ function Invoke-GssPreparedBackupAbort {
     return $abort
 }
 
+function Invoke-GssSafeAnalysis {
+    param(
+        [Parameter(Mandatory)][string]$AnalyzerPath,
+        [Parameter(Mandatory)][string]$FolderPath,
+        [Parameter(Mandatory)][string]$RunLogPath,
+        [string]$PopulationPath,
+        [switch]$PublishPackage
+    )
+
+    $arguments = @{
+        Folder = $FolderPath
+        LogPath = $RunLogPath
+        OutputObject = $true
+    }
+    if (-not [string]::IsNullOrWhiteSpace($PopulationPath)) {
+        $arguments.PopulationExportPath = $PopulationPath
+    }
+    if ($PublishPackage) {
+        $arguments.PublishEmailPackage = $true
+    }
+    return & $AnalyzerPath @arguments
+}
+
 if ([string]::IsNullOrWhiteSpace($Folder)) {
     $Folder = Split-Path -Parent $repoRoot
 }
@@ -178,7 +202,11 @@ try {
 
     Write-Information '' -InformationAction Continue
     Write-Information 'STEP 2 OF 4 - Checking the test results' -InformationAction Continue
-    $copyReview = & $analyzer -Folder $Folder -LogPath $copyRun.LogPath -OutputObject
+    $copyReview = Invoke-GssSafeAnalysis `
+        -AnalyzerPath $analyzer `
+        -FolderPath $Folder `
+        -RunLogPath $copyRun.LogPath `
+        -PopulationPath $PopulationExportPath
     if ($copyReview.WorkbookStatus -eq 'Blocked') {
         $receipt.TransactionStatus = 'Blocked'
         $receipt.Error = 'Copy-test review blocked live promotion.'
@@ -262,7 +290,11 @@ try {
     Write-GssSafeAtomicJson -Path $receiptPath -InputObject $receipt
 
     Write-Information 'Checking the completed live update before finalizing Drive.' -InformationAction Continue
-    $liveReview = & $analyzer -Folder $Folder -LogPath $liveRun.LogPath -OutputObject
+    $liveReview = Invoke-GssSafeAnalysis `
+        -AnalyzerPath $analyzer `
+        -FolderPath $Folder `
+        -RunLogPath $liveRun.LogPath `
+        -PopulationPath $PopulationExportPath
     if ($liveReview.WorkbookStatus -eq 'Blocked') {
         $receipt.TransactionStatus = 'RollbackAttempting'
         $receipt.BackupStatus = 'Prepared'
@@ -367,11 +399,12 @@ try {
     $receipt.UpdatedUtc = [datetime]::UtcNow.ToString('o')
     Write-GssSafeAtomicJson -Path $activeRunPath -InputObject $receipt
     Write-GssSafeAtomicJson -Path $receiptPath -InputObject $receipt
-    $publishedReview = & $analyzer `
-        -Folder $Folder `
-        -LogPath $liveRun.LogPath `
-        -OutputObject `
-        -PublishEmailPackage
+    $publishedReview = Invoke-GssSafeAnalysis `
+        -AnalyzerPath $analyzer `
+        -FolderPath $Folder `
+        -RunLogPath $liveRun.LogPath `
+        -PopulationPath $PopulationExportPath `
+        -PublishPackage
     $receipt.PackagePublished = [bool]($publishedReview.EmailReadiness -eq 'Ready' -and $publishedReview.EmailPackage)
     $receipt.PackagePath = if ($publishedReview.EmailPackage) { [string]$publishedReview.EmailPackage.PackagePath } else { $null }
     if ($receipt.PackagePublished) {

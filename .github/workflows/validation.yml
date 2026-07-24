@@ -9,6 +9,16 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
+      - name: Set up pinned Python runtime
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install hash-locked shadow-model dependencies
+        shell: powershell
+        run: python -m pip install --disable-pip-version-check --require-hashes --only-binary=:all: -r requirements-shadow-model.lock
+      - name: Run privacy-safe shadow-model tests
+        shell: powershell
+        run: python -m unittest discover -s tests -p "test_gss_shadow_model.py" -v
       - name: Install pinned PowerShell validation modules
         shell: powershell
         run: |
@@ -35,6 +45,9 @@ jobs:
       - name: Run Drive backup state-machine tests
         shell: powershell
         run: .\scripts\Test-GSS-DriveBackup.ps1
+      - name: Run historical recovery transaction tests
+        shell: powershell
+        run: .\scripts\Test-GSS-HistoricalRecovery.ps1
       - name: Verify release manifest file hashes
         shell: powershell
         run: .\scripts\Test-GSS-ReleaseIntegrity.ps1 -SkipTagCheck

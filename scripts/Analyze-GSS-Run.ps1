@@ -4,6 +4,7 @@ param(
     [string]$LogPath,
     [int]$LookbackWeeks = 8,
     [string]$MainWorkbookName = 'GSS Score Trends - Main.xlsx',
+    [string]$PopulationExportPath,
     [switch]$OutputObject,
     [switch]$PublishEmailPackage
 )
@@ -59,6 +60,141 @@ function Resolve-GssAnalysisFolder {
 
     $FolderPath = $FolderPath.Trim('"')
     return (Resolve-Path -LiteralPath $FolderPath).Path
+}
+
+function Invoke-GssShadowModelReview {
+    param(
+        [Parameter(Mandatory)][string]$ReviewFolder,
+        [string]$InputPath
+    )
+
+    $nonblocking = $true
+    if ([string]::IsNullOrWhiteSpace($InputPath)) {
+        return [pscustomobject][ordered]@{
+            Status = 'DataBlocked'
+            ReasonCode = 'population_export_not_provided'
+            Reason = 'A complete, reconciled gss-model-input/v1 population export was not provided.'
+            NonBlocking = $nonblocking
+            SummaryPath = $null
+            EstimatesPath = $null
+            DiagnosticsPath = $null
+            InputManifestPath = $null
+            ModelCardPath = $null
+            TechnicalError = $null
+            Summary = $null
+        }
+    }
+
+    $candidatePath = $InputPath.Trim('"')
+    if (-not (Test-Path -LiteralPath $candidatePath -PathType Leaf)) {
+        return [pscustomobject][ordered]@{
+            Status = 'DataBlocked'
+            ReasonCode = 'population_export_missing'
+            Reason = 'The configured population export is not locally available.'
+            NonBlocking = $nonblocking
+            SummaryPath = $null
+            EstimatesPath = $null
+            DiagnosticsPath = $null
+            InputManifestPath = $null
+            ModelCardPath = $null
+            TechnicalError = $null
+            Summary = $null
+        }
+    }
+
+    $wrapperPath = Join-Path $scriptRoot 'Invoke-GSS-ShadowModel.ps1'
+    $modelOutputDirectory = Join-Path $ReviewFolder 'modeling'
+    $inputJson = $null
+    $inputPayload = $null
+    try {
+        $resolvedInput = (Resolve-Path -LiteralPath $candidatePath).Path
+        $inputJson = [System.IO.File]::ReadAllText(
+            $resolvedInput,
+            (New-Object System.Text.UTF8Encoding($false, $true))
+        )
+        $inputPayload = $inputJson | ConvertFrom-Json
+        $sourceProperty = $inputPayload.PSObject.Properties['source_sha256']
+        $sourceHashRequired = $null -eq $sourceProperty -or
+            [string]::IsNullOrWhiteSpace([string]$sourceProperty.Value)
+        if ($null -eq $sourceProperty) {
+            $inputPayload | Add-Member `
+                -NotePropertyName 'source_sha256' `
+                -NotePropertyValue ''
+        }
+        if ($sourceHashRequired) {
+            # Normalize once before hashing so the subsequent in-memory hash
+            # insertion cannot change numeric JSON representation.
+            $inputJson = $inputPayload | ConvertTo-Json -Depth 100 -Compress
+        }
+
+        $hashResult = & $wrapperPath `
+            -ComputeSourceHash `
+            -InputJson $inputJson
+        if ([string]$hashResult.Status -eq 'TechnicalError') {
+            throw ([string]$hashResult.TechnicalError)
+        }
+        if ([string]$hashResult.SourceSha256 -notmatch '^[0-9a-f]{64}$') {
+            throw 'The shadow-model hash helper returned an invalid source SHA-256.'
+        }
+
+        if ($sourceHashRequired) {
+            $inputPayload.source_sha256 = [string]$hashResult.SourceSha256
+            $inputJson = $inputPayload | ConvertTo-Json -Depth 100 -Compress
+        }
+        $modelResult = & $wrapperPath `
+            -OutputDirectory $modelOutputDirectory `
+            -InputJson $inputJson
+    }
+    catch {
+        return [pscustomobject][ordered]@{
+            Status = 'TechnicalError'
+            ReasonCode = 'model_transport_failure'
+            Reason = 'The nonblocking shadow-model transport failed.'
+            NonBlocking = $nonblocking
+            SummaryPath = $null
+            EstimatesPath = $null
+            DiagnosticsPath = $null
+            InputManifestPath = $null
+            ModelCardPath = $null
+            TechnicalError = $_.Exception.Message
+            Summary = $null
+        }
+    }
+    finally {
+        $inputJson = $null
+        $inputPayload = $null
+    }
+
+    if ([string]$modelResult.Status -eq 'TechnicalError') {
+        return [pscustomobject][ordered]@{
+            Status = 'TechnicalError'
+            ReasonCode = 'model_runtime_failure'
+            Reason = 'The nonblocking shadow-model runtime failed.'
+            NonBlocking = $nonblocking
+            SummaryPath = $null
+            EstimatesPath = $null
+            DiagnosticsPath = $null
+            InputManifestPath = $null
+            ModelCardPath = $null
+            TechnicalError = [string]$modelResult.TechnicalError
+            Summary = $null
+        }
+    }
+
+    $summary = Get-Content -LiteralPath $modelResult.SummaryPath -Raw | ConvertFrom-Json
+    return [pscustomobject][ordered]@{
+        Status = [string]$modelResult.Status
+        ReasonCode = $null
+        Reason = 'Shadow-model results are aggregate-only and do not affect workbook, backup, or email-package status.'
+        NonBlocking = $nonblocking
+        SummaryPath = [string]$modelResult.SummaryPath
+        EstimatesPath = [string]$modelResult.EstimatesPath
+        DiagnosticsPath = [string]$modelResult.DiagnosticsPath
+        InputManifestPath = [string]$modelResult.InputManifestPath
+        ModelCardPath = [string]$modelResult.ModelCardPath
+        TechnicalError = $null
+        Summary = $summary
+    }
 }
 
 function Get-LatestGssRunLog {
@@ -903,6 +1039,14 @@ function New-GssReviewMarkdown {
         }
     }
     $lines += ''
+    $lines += '## Shadow Modeling'
+    $lines += "- Status: $($Result.Modeling.Status)"
+    $lines += "- Nonblocking: $($Result.Modeling.NonBlocking)"
+    $lines += "- Detail: $($Result.Modeling.Reason)"
+    if ($Result.Modeling.ModelCardPath) {
+        $lines += "- Model card: $($Result.Modeling.ModelCardPath)"
+    }
+    $lines += ''
     $lines += '## Files'
     $lines += "- Detail CSV: $($Result.DetailCsvPath)"
     $lines += "- JSON: $($Result.JsonPath)"
@@ -938,6 +1082,7 @@ function Invoke-GssRunAnalysis {
         [string]$RunLogPath,
         [int]$Weeks,
         [string]$WorkbookName,
+        [string]$PopulationPath,
         [switch]$ReturnObject,
         [switch]$PublishPackage
     )
@@ -967,6 +1112,9 @@ function Invoke-GssRunAnalysis {
     $markdownPath = Join-Path $reviewFolder 'review.md'
     $jsonPath = Join-Path $reviewFolder 'review.json'
     $detailCsvPath = Join-Path $reviewFolder 'metric_detail.csv'
+    $modeling = Invoke-GssShadowModelReview `
+        -ReviewFolder $reviewFolder `
+        -InputPath $PopulationPath
 
     $result = [pscustomobject]@{
         OverallStatus = $qa.Status
@@ -984,6 +1132,9 @@ function Invoke-GssRunAnalysis {
             LowMinimumResponses = [int]$script:GssAnalysisPolicy.confidence.low_minimum_responses
             HumanReviewRequired = [bool]$script:GssAnalysisPolicy.review_controls.human_review_required
             AutomaticSendingEnabled = [bool]$script:GssAnalysisPolicy.review_controls.automatic_sending_enabled
+            ShadowModelMode = [string]$script:GssAnalysisPolicy.driver_model.mode
+            ShadowModelBlocksOperations = [bool]$script:GssAnalysisPolicy.driver_model.blocks_workbook_or_backup_or_package
+            ForecastingStatus = [string]$script:GssAnalysisPolicy.forecasting.status
         }
         Folder = $FolderPath
         ReviewFolder = $reviewFolder
@@ -997,6 +1148,7 @@ function Invoke-GssRunAnalysis {
         TopStrengths = $strengthItems
         RestaurantFindings = $restaurantFindings
         MetricDetail = $metricDetail
+        Modeling = $modeling
         EmailPackage = $null
         RawDataSummary = [pscustomobject]@{
             RowCount = $workbookData.RawRows.Count
@@ -1028,7 +1180,7 @@ function Invoke-GssRunAnalysis {
 
     $markdown = New-GssReviewMarkdown $result $attentionItems $strengthItems
     Write-GssAnalysisAtomicText -Path $markdownPath -Content (@($markdown) -join [Environment]::NewLine)
-    Write-GssAnalysisAtomicText -Path $jsonPath -Content ($result | ConvertTo-Json -Depth 8)
+    Write-GssAnalysisAtomicText -Path $jsonPath -Content ($result | ConvertTo-Json -Depth 12)
     Write-GssAnalysisAtomicText -Path $detailCsvPath -Content (@($metricDetail | ConvertTo-Csv -NoTypeInformation) -join [Environment]::NewLine)
 
     Write-GssAnalysisSummary $result
@@ -1038,5 +1190,12 @@ function Invoke-GssRunAnalysis {
 }
 
 if ($MyInvocation.InvocationName -ne '.') {
-    Invoke-GssRunAnalysis -FolderPath $Folder -RunLogPath $LogPath -Weeks $LookbackWeeks -WorkbookName $MainWorkbookName -ReturnObject:$OutputObject -PublishPackage:$PublishEmailPackage
+    Invoke-GssRunAnalysis `
+        -FolderPath $Folder `
+        -RunLogPath $LogPath `
+        -Weeks $LookbackWeeks `
+        -WorkbookName $MainWorkbookName `
+        -PopulationPath $PopulationExportPath `
+        -ReturnObject:$OutputObject `
+        -PublishPackage:$PublishEmailPackage
 }

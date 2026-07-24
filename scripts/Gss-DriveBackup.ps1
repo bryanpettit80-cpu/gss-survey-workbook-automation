@@ -29,25 +29,27 @@ function Write-GssDriveBackupAtomicJson {
         New-Item -ItemType Directory -Path $parent -Force | Out-Null
     }
 
+    $json = $Value | ConvertTo-Json -Depth $Depth
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    $content = $json + [Environment]::NewLine
+    $contentBytes = $encoding.GetBytes($content)
+    if (Test-Path -LiteralPath $fullPath -PathType Leaf) {
+        $existingBytes = [System.IO.File]::ReadAllBytes($fullPath)
+        if ($contentBytes.Length -eq $existingBytes.Length -and
+            (Get-GssDriveBackupByteSha256 -Bytes $contentBytes) -ceq
+                (Get-GssDriveBackupByteSha256 -Bytes $existingBytes)) {
+            return
+        }
+    }
+
     # Keep atomic helper names short. Verify-only restore paths can approach the
     # legacy Windows MAX_PATH limit, and appending the full destination filename
     # plus a GUID makes an otherwise valid restore intermittently fail.
     $temporaryPath = Join-Path $parent ('.t-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
-    $json = $Value | ConvertTo-Json -Depth $Depth
-    $encoding = New-Object System.Text.UTF8Encoding($false)
-    [System.IO.File]::WriteAllText($temporaryPath, ($json + [Environment]::NewLine), $encoding)
-
+    [System.IO.File]::WriteAllText($temporaryPath, $content, $encoding)
     $replacementBackupPath = Join-Path $parent ('.b-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
     try {
         if (Test-Path -LiteralPath $fullPath -PathType Leaf) {
-            $temporaryFile = Get-Item -LiteralPath $temporaryPath
-            $existingFile = Get-Item -LiteralPath $fullPath
-            if ($temporaryFile.Length -eq $existingFile.Length -and
-                (Get-FileHash -LiteralPath $temporaryPath -Algorithm SHA256).Hash -ceq
-                    (Get-FileHash -LiteralPath $fullPath -Algorithm SHA256).Hash) {
-                Remove-Item -LiteralPath $temporaryPath -Force
-                return
-            }
             [System.IO.File]::Replace($temporaryPath, $fullPath, $replacementBackupPath, $true)
         }
         else {

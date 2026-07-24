@@ -40,6 +40,14 @@ function Write-GssDriveBackupAtomicJson {
     $replacementBackupPath = Join-Path $parent ('.b-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
     try {
         if (Test-Path -LiteralPath $fullPath -PathType Leaf) {
+            $temporaryFile = Get-Item -LiteralPath $temporaryPath
+            $existingFile = Get-Item -LiteralPath $fullPath
+            if ($temporaryFile.Length -eq $existingFile.Length -and
+                (Get-FileHash -LiteralPath $temporaryPath -Algorithm SHA256).Hash -ceq
+                    (Get-FileHash -LiteralPath $fullPath -Algorithm SHA256).Hash) {
+                Remove-Item -LiteralPath $temporaryPath -Force
+                return
+            }
             [System.IO.File]::Replace($temporaryPath, $fullPath, $replacementBackupPath, $true)
         }
         else {

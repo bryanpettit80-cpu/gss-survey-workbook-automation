@@ -105,6 +105,12 @@ try {
     $longAtomicPath = Join-Path $longAtomicParent ('restore-validation-' + ('y' * 50) + '.json')
     Write-GssDriveBackupAtomicJson -Path $longAtomicPath -Value ([ordered]@{ status = 'Verified' })
     Assert-GssDriveBackupTest ((Read-GssDriveBackupJson -Path $longAtomicPath).status -eq 'Verified') 'Atomic JSON failed near the legacy Windows path-length boundary.'
+    (Get-Item -LiteralPath $longAtomicPath).LastWriteTimeUtc = [datetime]'2020-01-02T03:04:05Z'
+    $unchangedTimestamp = (Get-Item -LiteralPath $longAtomicPath).LastWriteTimeUtc
+    Write-GssDriveBackupAtomicJson -Path $longAtomicPath -Value ([ordered]@{ status = 'Verified' })
+    Assert-GssDriveBackupTest `
+        ((Get-Item -LiteralPath $longAtomicPath).LastWriteTimeUtc -eq $unchangedTimestamp) `
+        'Atomic JSON rewrote an already-identical synced-file payload.'
 
     $metadataReadback = & $invokeScript `
         -Operation RecordMetadataReadback `

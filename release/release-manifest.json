@@ -3,7 +3,7 @@
   "release_version": "1.1.0",
   "release_tag": "v1.1.0",
   "commit_binding": "exact_release_tag",
-  "generated_at_utc": "2026-07-24T03:15:52.0585816Z",
+  "generated_at_utc": "2026-07-24T03:17:44.3498909Z",
   "classification": "PROGRAM SOURCE ONLY - NO GSS WORKBOOKS, REPORTS, OR CUSTOMER DATA",
   "runtime_contract": {
     "require_clean_tree": true,
@@ -28,8 +28,8 @@
       "path": ".github/workflows/validation.yml",
       "role": "ci",
       "hash_mode": "utf8_lf",
-      "canonical_size_bytes": 2083,
-      "sha256": "0486783c6d46c4d98b0bd93f48aa80abd2555152b5459a358f54d033ef135a71"
+      "canonical_size_bytes": 2106,
+      "sha256": "91a71740a93f3b0dbf671e209cde2367ea5c4db1f82129ab9055dc6f613d2e4f"
     },
     {
       "path": "AGENTS.md",

@@ -23,11 +23,12 @@ function Write-GssSafeAtomicJson {
     $directory = Split-Path -Parent $Path
     New-Item -ItemType Directory -Path $directory -Force | Out-Null
     $temporaryPath = Join-Path $directory ('.t-{0}' -f ([guid]::NewGuid().ToString('N').Substring(0, 8)))
+    $replacementBackupPath = Join-Path $directory ('.b-{0}' -f ([guid]::NewGuid().ToString('N').Substring(0, 8)))
     try {
         $json = $InputObject | ConvertTo-Json -Depth 10
         [System.IO.File]::WriteAllText($temporaryPath, $json, (New-Object System.Text.UTF8Encoding($false)))
         if (Test-Path -LiteralPath $Path -PathType Leaf) {
-            [System.IO.File]::Replace($temporaryPath, $Path, $null, $true)
+            [System.IO.File]::Replace($temporaryPath, $Path, $replacementBackupPath, $true)
         }
         else {
             [System.IO.File]::Move($temporaryPath, $Path)
@@ -36,6 +37,9 @@ function Write-GssSafeAtomicJson {
     finally {
         if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) {
             Remove-Item -LiteralPath $temporaryPath -Force
+        }
+        if (Test-Path -LiteralPath $replacementBackupPath -PathType Leaf) {
+            Remove-Item -LiteralPath $replacementBackupPath -Force
         }
     }
 }

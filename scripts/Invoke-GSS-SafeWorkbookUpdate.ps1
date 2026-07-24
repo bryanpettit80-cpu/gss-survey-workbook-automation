@@ -1,7 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Folder,
-    [string]$PopulationExportPath
+    [string]$Folder
 )
 
 $ErrorActionPreference = 'Stop'
@@ -115,7 +114,6 @@ function Invoke-GssSafeAnalysis {
         [Parameter(Mandatory)][string]$AnalyzerPath,
         [Parameter(Mandatory)][string]$FolderPath,
         [Parameter(Mandatory)][string]$RunLogPath,
-        [string]$PopulationPath,
         [switch]$PublishPackage
     )
 
@@ -123,9 +121,6 @@ function Invoke-GssSafeAnalysis {
         Folder = $FolderPath
         LogPath = $RunLogPath
         OutputObject = $true
-    }
-    if (-not [string]::IsNullOrWhiteSpace($PopulationPath)) {
-        $arguments.PopulationExportPath = $PopulationPath
     }
     if ($PublishPackage) {
         $arguments.PublishEmailPackage = $true
@@ -221,8 +216,7 @@ try {
     $copyReview = Invoke-GssSafeAnalysis `
         -AnalyzerPath $analyzer `
         -FolderPath $Folder `
-        -RunLogPath $copyRun.LogPath `
-        -PopulationPath $PopulationExportPath
+        -RunLogPath $copyRun.LogPath
     if ($copyReview.WorkbookStatus -eq 'Blocked') {
         $receipt.TransactionStatus = 'Blocked'
         $receipt.Error = 'Copy-test review blocked live promotion.'
@@ -309,8 +303,7 @@ try {
     $liveReview = Invoke-GssSafeAnalysis `
         -AnalyzerPath $analyzer `
         -FolderPath $Folder `
-        -RunLogPath $liveRun.LogPath `
-        -PopulationPath $PopulationExportPath
+        -RunLogPath $liveRun.LogPath
     if ($liveReview.WorkbookStatus -eq 'Blocked') {
         $receipt.TransactionStatus = 'RollbackAttempting'
         $receipt.BackupStatus = 'Prepared'
@@ -419,7 +412,6 @@ try {
         -AnalyzerPath $analyzer `
         -FolderPath $Folder `
         -RunLogPath $liveRun.LogPath `
-        -PopulationPath $PopulationExportPath `
         -PublishPackage
     $receipt.PackagePublished = [bool]($publishedReview.EmailReadiness -eq 'Ready' -and $publishedReview.EmailPackage)
     $receipt.PackagePath = if ($publishedReview.EmailPackage) { [string]$publishedReview.EmailPackage.PackagePath } else { $null }

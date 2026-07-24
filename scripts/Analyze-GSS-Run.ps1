@@ -4,7 +4,6 @@ param(
     [string]$LogPath,
     [int]$LookbackWeeks = 8,
     [string]$MainWorkbookName = 'GSS Score Trends - Main.xlsx',
-    [string]$PopulationExportPath,
     [switch]$OutputObject,
     [switch]$PublishEmailPackage
 )
@@ -78,138 +77,19 @@ function Resolve-GssAnalysisFolder {
     return (Resolve-Path -LiteralPath $FolderPath).Path
 }
 
-function Invoke-GssShadowModelReview {
-    param(
-        [Parameter(Mandatory)][string]$ReviewFolder,
-        [string]$InputPath
-    )
-
-    $nonblocking = $true
-    if ([string]::IsNullOrWhiteSpace($InputPath)) {
-        return [pscustomobject][ordered]@{
-            Status = 'DataBlocked'
-            ReasonCode = 'population_export_not_provided'
-            Reason = 'A complete, reconciled gss-model-input/v1 population export was not provided.'
-            NonBlocking = $nonblocking
-            SummaryPath = $null
-            EstimatesPath = $null
-            DiagnosticsPath = $null
-            InputManifestPath = $null
-            ModelCardPath = $null
-            TechnicalError = $null
-            Summary = $null
-        }
-    }
-
-    $candidatePath = $InputPath.Trim('"')
-    if (-not (Test-Path -LiteralPath $candidatePath -PathType Leaf)) {
-        return [pscustomobject][ordered]@{
-            Status = 'DataBlocked'
-            ReasonCode = 'population_export_missing'
-            Reason = 'The configured population export is not locally available.'
-            NonBlocking = $nonblocking
-            SummaryPath = $null
-            EstimatesPath = $null
-            DiagnosticsPath = $null
-            InputManifestPath = $null
-            ModelCardPath = $null
-            TechnicalError = $null
-            Summary = $null
-        }
-    }
-
-    $wrapperPath = Join-Path $scriptRoot 'Invoke-GSS-ShadowModel.ps1'
-    $modelOutputDirectory = Join-Path $ReviewFolder 'modeling'
-    $inputJson = $null
-    $inputPayload = $null
-    try {
-        $resolvedInput = (Resolve-Path -LiteralPath $candidatePath).Path
-        $inputJson = [System.IO.File]::ReadAllText(
-            $resolvedInput,
-            (New-Object System.Text.UTF8Encoding($false, $true))
-        )
-        $inputPayload = $inputJson | ConvertFrom-Json
-        $sourceProperty = $inputPayload.PSObject.Properties['source_sha256']
-        $sourceHashRequired = $null -eq $sourceProperty -or
-            [string]::IsNullOrWhiteSpace([string]$sourceProperty.Value)
-        if ($null -eq $sourceProperty) {
-            $inputPayload | Add-Member `
-                -NotePropertyName 'source_sha256' `
-                -NotePropertyValue ''
-        }
-        if ($sourceHashRequired) {
-            # Normalize once before hashing so the subsequent in-memory hash
-            # insertion cannot change numeric JSON representation.
-            $inputJson = $inputPayload | ConvertTo-Json -Depth 100 -Compress
-        }
-
-        $hashResult = & $wrapperPath `
-            -ComputeSourceHash `
-            -InputJson $inputJson
-        if ([string]$hashResult.Status -eq 'TechnicalError') {
-            throw ([string]$hashResult.TechnicalError)
-        }
-        if ([string]$hashResult.SourceSha256 -notmatch '^[0-9a-f]{64}$') {
-            throw 'The shadow-model hash helper returned an invalid source SHA-256.'
-        }
-
-        if ($sourceHashRequired) {
-            $inputPayload.source_sha256 = [string]$hashResult.SourceSha256
-            $inputJson = $inputPayload | ConvertTo-Json -Depth 100 -Compress
-        }
-        $modelResult = & $wrapperPath `
-            -OutputDirectory $modelOutputDirectory `
-            -InputJson $inputJson
-    }
-    catch {
-        return [pscustomobject][ordered]@{
-            Status = 'TechnicalError'
-            ReasonCode = 'model_transport_failure'
-            Reason = 'The nonblocking shadow-model transport failed.'
-            NonBlocking = $nonblocking
-            SummaryPath = $null
-            EstimatesPath = $null
-            DiagnosticsPath = $null
-            InputManifestPath = $null
-            ModelCardPath = $null
-            TechnicalError = $_.Exception.Message
-            Summary = $null
-        }
-    }
-    finally {
-        $inputJson = $null
-        $inputPayload = $null
-    }
-
-    if ([string]$modelResult.Status -eq 'TechnicalError') {
-        return [pscustomobject][ordered]@{
-            Status = 'TechnicalError'
-            ReasonCode = 'model_runtime_failure'
-            Reason = 'The nonblocking shadow-model runtime failed.'
-            NonBlocking = $nonblocking
-            SummaryPath = $null
-            EstimatesPath = $null
-            DiagnosticsPath = $null
-            InputManifestPath = $null
-            ModelCardPath = $null
-            TechnicalError = [string]$modelResult.TechnicalError
-            Summary = $null
-        }
-    }
-
-    $summary = Get-Content -LiteralPath $modelResult.SummaryPath -Raw | ConvertFrom-Json
+function Get-GssPopulationModelingAvailability {
     return [pscustomobject][ordered]@{
-        Status = [string]$modelResult.Status
-        ReasonCode = $null
-        Reason = 'Shadow-model results are aggregate-only and do not affect workbook, backup, or email-package status.'
-        NonBlocking = $nonblocking
-        SummaryPath = [string]$modelResult.SummaryPath
-        EstimatesPath = [string]$modelResult.EstimatesPath
-        DiagnosticsPath = [string]$modelResult.DiagnosticsPath
-        InputManifestPath = [string]$modelResult.InputManifestPath
-        ModelCardPath = [string]$modelResult.ModelCardPath
+        Status = [string]$script:GssAnalysisPolicy.modeling.status
+        ReasonCode = [string]$script:GssAnalysisPolicy.source_design.population_driver_modeling_reason_code
+        Reason = [string]$script:GssAnalysisPolicy.modeling.reason
+        NonBlocking = [bool]$script:GssAnalysisPolicy.modeling.nonblocking
+        SummaryPath = $null
+        EstimatesPath = $null
+        DiagnosticsPath = $null
+        InputManifestPath = $null
+        ModelCardPath = $null
         TechnicalError = $null
-        Summary = $summary
+        Summary = $null
     }
 }
 
@@ -648,6 +528,7 @@ function New-GssMetricDetail {
                 RollingAverage = $null
                 PreviousRollingWindow = $priorWeekValue
                 CurrentCount = $currentCount
+                ResponseVolumeTier = $confidenceTier
                 ConfidenceTier = $confidenceTier
                 WoWImprovement = $wow
                 ChangeVsPreviousRollingWindow = $wow
@@ -1039,8 +920,9 @@ function New-GssReviewMarkdown {
     }
     else {
         foreach ($item in $AttentionItems) {
-            $lines += ('- {0}: {1}. Level: 13-week rolling value {2} ({3} confidence, n={4}). Movement: {5} versus the previous rolling window and {6} versus prior year. Benchmark: {7} versus all franchisees.' -f `
-                $item.Entity, $item.Metric, (Format-GssNumber $item.Current), $item.ConfidenceTier, (Format-GssNumber $item.CurrentCount 0), (Format-GssMovementNumber $item.ChangeVsPreviousRollingWindow), (Format-GssMovementNumber $item.YoYImprovement), (Format-GssMovementNumber $item.VsAllFranchisees))
+            $volumeTier = if ($item.PSObject.Properties['ResponseVolumeTier']) { $item.ResponseVolumeTier } else { $item.ConfidenceTier }
+            $lines += ('- {0}: {1}. Level: 13-week rolling value {2} ({3} response-volume tier, n={4}). Movement: {5} versus the previous rolling window and {6} versus prior year. Benchmark: {7} versus all franchisees.' -f `
+                $item.Entity, $item.Metric, (Format-GssNumber $item.Current), $volumeTier, (Format-GssNumber $item.CurrentCount 0), (Format-GssMovementNumber $item.ChangeVsPreviousRollingWindow), (Format-GssMovementNumber $item.YoYImprovement), (Format-GssMovementNumber $item.VsAllFranchisees))
         }
     }
     $lines += ''
@@ -1050,21 +932,44 @@ function New-GssReviewMarkdown {
     }
     else {
         foreach ($item in $StrengthItems) {
-            $lines += ('- {0}: {1}. Level: 13-week rolling value {2} ({3} confidence, n={4}). Movement: {5} versus the previous rolling window and {6} versus prior year. Benchmark: {7} versus Sorensen total.' -f `
-                $item.Entity, $item.Metric, (Format-GssNumber $item.Current), $item.ConfidenceTier, (Format-GssNumber $item.CurrentCount 0), (Format-GssMovementNumber $item.ChangeVsPreviousRollingWindow), (Format-GssMovementNumber $item.YoYImprovement), (Format-GssMovementNumber $item.VsSorensenTotal))
+            $volumeTier = if ($item.PSObject.Properties['ResponseVolumeTier']) { $item.ResponseVolumeTier } else { $item.ConfidenceTier }
+            $lines += ('- {0}: {1}. Level: 13-week rolling value {2} ({3} response-volume tier, n={4}). Movement: {5} versus the previous rolling window and {6} versus prior year. Benchmark: {7} versus Sorensen total.' -f `
+                $item.Entity, $item.Metric, (Format-GssNumber $item.Current), $volumeTier, (Format-GssNumber $item.CurrentCount 0), (Format-GssMovementNumber $item.ChangeVsPreviousRollingWindow), (Format-GssMovementNumber $item.YoYImprovement), (Format-GssMovementNumber $item.VsSorensenTotal))
         }
     }
     $lines += ''
-    $lines += '## Shadow Modeling'
+    $lines += '## Population Modeling'
     $lines += "- Status: $($Result.Modeling.Status)"
     $lines += "- Nonblocking: $($Result.Modeling.NonBlocking)"
     $lines += "- Detail: $($Result.Modeling.Reason)"
-    if ($Result.Modeling.ModelCardPath) {
-        $lines += "- Model card: $($Result.Modeling.ModelCardPath)"
+    $lines += ''
+    $lines += '## Commenter Lens'
+    if ($null -eq $Result.CommenterLens) {
+        $lines += '- Status: NotEvaluated'
+        $lines += "- Scope: $($Result.AnalysisPolicy.CommenterLensScope)"
+        $lines += '- Detail: The aggregate commenter lens was not evaluated.'
+    }
+    else {
+        $lines += "- Status: $($Result.CommenterLens.status)"
+        $lines += "- Scope: $($Result.CommenterLens.scope_label)"
+        $lines += "- Reporting window: $($Result.CommenterLens.reporting_window.start_date) through $($Result.CommenterLens.reporting_window.end_date)"
+        $lines += "- Source alignment: $($Result.CommenterLens.reporting_window.source_alignment)"
+        foreach ($restaurant in @($Result.CommenterLens.restaurants)) {
+            $coverage = if ($null -eq $restaurant.comment_coverage_pct) { 'n/a' } else { '{0:N1}%' -f [double]$restaurant.comment_coverage_pct }
+            $lines += "- $($restaurant.restaurant_id): $($restaurant.commenter_response_count) comment-bearing surveys of $($restaurant.population_response_count) population responses ($coverage coverage)."
+            foreach ($metric in @($restaurant.metrics)) {
+                $populationGap = if ($null -eq $metric.commenter_minus_population_percentage_points) { 'n/a' } else { '{0:+0.0;-0.0;0.0} pp' -f [double]$metric.commenter_minus_population_percentage_points }
+                $nonCommentGap = if ($null -eq $metric.commenter_minus_non_comment_percentage_points) { 'n/a' } else { '{0:+0.0;-0.0;0.0} pp' -f [double]$metric.commenter_minus_non_comment_percentage_points }
+                $lines += "  - $($metric.metric_id): commenter event rate $(Format-GssNumber $metric.commenter_event_rate_pct)% (n=$($metric.commenter_scored_response_count)); gap versus population $populationGap; gap versus derived non-comment surveys $nonCommentGap; comparison $($metric.comparison_status); non-comment derivation $($metric.derived_non_comment_status)."
+            }
+        }
+        $lines += '- Interpretation: these score distributions describe guests who provided comments and do not estimate population drivers or theme prevalence. Derived non-comment counts and rates remain suppressed unless exact commenter/population reporting-partition alignment is explicitly verified.'
     }
     $lines += ''
     $lines += '## Files'
     $lines += "- Detail CSV: $($Result.DetailCsvPath)"
+    $lines += "- Commenter lens JSON: $($Result.CommenterLensJsonPath)"
+    $lines += "- Commenter lens CSV: $($Result.CommenterLensCsvPath)"
     $lines += "- JSON: $($Result.JsonPath)"
     $lines += "- Review folder: $($Result.ReviewFolder)"
     $lines += ''
@@ -1098,7 +1003,6 @@ function Invoke-GssRunAnalysis {
         [string]$RunLogPath,
         [int]$Weeks,
         [string]$WorkbookName,
-        [string]$PopulationPath,
         [switch]$ReturnObject,
         [switch]$PublishPackage
     )
@@ -1128,9 +1032,23 @@ function Invoke-GssRunAnalysis {
     $markdownPath = Join-Path $reviewFolder 'review.md'
     $jsonPath = Join-Path $reviewFolder 'review.json'
     $detailCsvPath = Join-Path $reviewFolder 'metric_detail.csv'
-    $modeling = Invoke-GssShadowModelReview `
-        -ReviewFolder $reviewFolder `
-        -InputPath $PopulationPath
+    $commenterLensJsonPath = Join-Path $reviewFolder 'commenter_lens.json'
+    $commenterLensCsvPath = Join-Path $reviewFolder 'commenter_lens.csv'
+    $modeling = Get-GssPopulationModelingAvailability
+    try {
+        $commenterInventory = Get-GssDetailInventory -FolderPath $FolderPath -ReportingDate $currentWeek
+        $commenterLens = Get-GssCommenterLens `
+            -Inventory $commenterInventory `
+            -MetricDetail $metricDetail `
+            -ReportingDate $currentWeek
+    }
+    catch {
+        $commenterLens = Get-GssCommenterLensFallback `
+            -ReportingDate $currentWeek `
+            -Status DataQualityReview `
+            -Reason 'Commenter detail inventory could not be evaluated. Inspect the local source files; no raw error text was persisted.'
+    }
+    Assert-GssCommenterLensContract -CommenterLens $commenterLens
 
     $result = [pscustomobject]@{
         OverallStatus = $qa.Status
@@ -1148,8 +1066,13 @@ function Invoke-GssRunAnalysis {
             LowMinimumResponses = [int]$script:GssAnalysisPolicy.confidence.low_minimum_responses
             HumanReviewRequired = [bool]$script:GssAnalysisPolicy.review_controls.human_review_required
             AutomaticSendingEnabled = [bool]$script:GssAnalysisPolicy.review_controls.automatic_sending_enabled
-            ShadowModelMode = [string]$script:GssAnalysisPolicy.driver_model.mode
-            ShadowModelBlocksOperations = [bool]$script:GssAnalysisPolicy.driver_model.blocks_workbook_or_backup_or_package
+            PopulationScoresSource = [string]$script:GssAnalysisPolicy.source_design.population_scores_source
+            PopulationRawRowsAvailable = [bool]$script:GssAnalysisPolicy.source_design.population_raw_rows_available
+            RowLevelScoresSource = [string]$script:GssAnalysisPolicy.source_design.row_level_scores_source
+            PopulationDriverModelingSupported = [bool]$script:GssAnalysisPolicy.source_design.population_driver_modeling_supported
+            PopulationDriverModelingStatus = [string]$script:GssAnalysisPolicy.source_design.population_driver_modeling_status
+            CommenterLensEnabled = [bool]$script:GssAnalysisPolicy.commenter_lens.enabled
+            CommenterLensScope = [string]$script:GssAnalysisPolicy.commenter_lens.scope_label
             ForecastingStatus = [string]$script:GssAnalysisPolicy.forecasting.status
         }
         Folder = $FolderPath
@@ -1157,6 +1080,8 @@ function Invoke-GssRunAnalysis {
         MarkdownPath = $markdownPath
         JsonPath = $jsonPath
         DetailCsvPath = $detailCsvPath
+        CommenterLensJsonPath = $commenterLensJsonPath
+        CommenterLensCsvPath = $commenterLensCsvPath
         LogPath = $RunLogPath
         Run = $runLog
         Qa = $qa
@@ -1165,6 +1090,7 @@ function Invoke-GssRunAnalysis {
         RestaurantFindings = $restaurantFindings
         MetricDetail = $metricDetail
         Modeling = $modeling
+        CommenterLens = $commenterLens
         EmailPackage = $null
         RawDataSummary = [pscustomobject]@{
             RowCount = $workbookData.RawRows.Count
@@ -1181,7 +1107,7 @@ function Invoke-GssRunAnalysis {
             $result.Qa.EmailReadiness = $package.EmailReadiness
         }
         catch {
-            $packageBlocker = $_.Exception.Message
+            $packageBlocker = 'Email package creation failed. Inspect the local source files and rerun after correction; no raw error text was persisted.'
             $result.EmailReadiness = 'Blocked'
             $result.Qa.EmailReadiness = 'Blocked'
             $result.Qa.EmailBlockers = @($result.Qa.EmailBlockers) + $packageBlocker
@@ -1198,6 +1124,8 @@ function Invoke-GssRunAnalysis {
     Write-GssAnalysisAtomicText -Path $markdownPath -Content (@($markdown) -join [Environment]::NewLine)
     Write-GssAnalysisAtomicText -Path $jsonPath -Content ($result | ConvertTo-Json -Depth 12)
     Write-GssAnalysisAtomicText -Path $detailCsvPath -Content (@($metricDetail | ConvertTo-Csv -NoTypeInformation) -join [Environment]::NewLine)
+    Write-GssAnalysisAtomicText -Path $commenterLensJsonPath -Content ($result.CommenterLens | ConvertTo-Json -Depth 12)
+    Write-GssAnalysisAtomicText -Path $commenterLensCsvPath -Content (ConvertTo-GssCommenterLensCsv -CommenterLens $result.CommenterLens)
 
     Write-GssAnalysisSummary $result
     if ($ReturnObject) {
@@ -1211,7 +1139,6 @@ if ($MyInvocation.InvocationName -ne '.') {
         -RunLogPath $LogPath `
         -Weeks $LookbackWeeks `
         -WorkbookName $MainWorkbookName `
-        -PopulationPath $PopulationExportPath `
         -ReturnObject:$OutputObject `
         -PublishPackage:$PublishEmailPackage
 }

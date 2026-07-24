@@ -47,12 +47,11 @@ The repository is intentionally program-only. Do not commit survey workbooks, PD
 - `scripts\Invoke-GSS-SafeWorkbookUpdate.ps1`: canonical safe workflow used by the operator launcher.
 - `scripts\Update-GSS-MainWorkbook.ps1`: Excel updater.
 - `scripts\Analyze-GSS-Run.ps1`: deterministic post-run QA and insight review.
-- `scripts\Invoke-GSS-ShadowModel.ps1`: privacy-safe bridge to the optional Python shadow-model runtime.
-- `scripts\gss_shadow_model.py`: aggregate-only population reconciliation, inference, and associated-factor modeling.
 - `scripts\Import-GSS-HistoricalGuestDetail.ps1`: one-time, manifest-bound historical guest-detail recovery.
 - `scripts\Gss-EmailPackage.ps1`: restricted email-package publisher with risk-reduced analysis text and an explicitly labeled raw personal-data attachment.
 - `scripts\Gss-Common.ps1`: shared conversion and path helpers.
 - `scripts\Invoke-GSS-DriveBackup.ps1`: private Drive backup, finalization, retention reporting, capacity projection, and verify-only restore entry point.
+- `scripts\Invoke-GSS-ReleaseBackup.ps1`: closed three-file Drive backup for an exact tagged release, manifest, and local Excel receipt.
 - `scripts\Gss-DriveBackup.ps1`: hash-verified DriveFS backup functions.
 - `scripts\Resume-GSS-PendingFinalize.ps1`: idempotent backup/package continuation that never reapplies the workbook.
 - `scripts\Invoke-GSS-QuarterlyRestoreDrill.ps1`: isolated Drive restore plus desktop Excel validation.
@@ -78,7 +77,7 @@ The repository is intentionally program-only. Do not commit survey workbooks, PD
 - JSON logs go to `..\_automation_runs\logs`.
 - QA packages go to `..\_automation_runs\qa\run_review_YYYYMMDD_HHMMSS`.
 - Ready email packages go to `..\_automation_runs\email_outbox\<package-id>` only after a successful live apply, final workbook validation, and committed Drive snapshot.
-- The post-run result reports `WorkbookStatus`, `AnalysisStatus`, `EmailReadiness`, and `Modeling.Status` separately. Only workbook blockers prevent apply; detail-data or attachment-evidence blockers prevent drafting. `DataBlocked`, `ShadowSuppressed`, and `ShadowReady` modeling states never block the workbook, Drive backup, or package.
+- The post-run result reports `WorkbookStatus`, `AnalysisStatus`, `EmailReadiness`, `CommenterLens.Status`, and `Modeling.Status` separately. Only workbook blockers prevent apply; detail-data or attachment-evidence blockers prevent drafting. The structural `PopulationRawDataUnavailable` modeling status never blocks the workbook, Drive backup, or package.
 - A blocked copy-test review prevents live apply.
 - Exact entity-set checks block partial, duplicate, or unexpected current/prior-year week rows before mutation.
 - Live promotion rechecks the starting workbook and source hashes, uses a same-volume atomic replace, and rolls back only when the live file still matches this run's promoted hash.
@@ -94,6 +93,8 @@ The curated recovery set includes operator guides, folders `01` through `06`, ra
 
 Historical recovery uses a separate `RecoveryOnly` snapshot purpose. Its inventory contains only the explicitly reviewed recovered archive files, first-seen ledger, QA, manifest, and transaction receipt. It does not sweep the live workbook or unrelated operational files into the recovery snapshot.
 
+Tagged program delivery uses a separate `ReleaseOnly` snapshot purpose. It accepts exactly three hash-bound, non-row-level artifacts: the tagged ZIP archive, `release-manifest.json`, and the passed local Excel validation receipt. It validates the clean tag, archive contents, manifest controls, receipt, copy-test workbook hash, and source-run fingerprint before preparing or committing the Drive snapshot. It never applies or replaces the live workbook.
+
 Retention is report-only: keep the newest completed snapshot in each of the latest 13 ISO weeks plus the latest snapshot in each of the prior 12 calendar months. The automation reports older candidates but never deletes them. Quarterly restore drills extract to `%LOCALAPPDATA%` and verify hashes without overwriting the live Dropbox tree.
 
 Useful commands:
@@ -105,6 +106,10 @@ Useful commands:
 .\scripts\Invoke-GSS-DriveBackup.ps1 -Operation VerifyRestore -RunId <committed-run-id> -OutputObject
 .\scripts\Resume-GSS-PendingFinalize.ps1 -LiveRunLogPath <exact-apply-log.json>
 .\scripts\Invoke-GSS-QuarterlyRestoreDrill.ps1 -RunId <committed-run-id>
+.\scripts\Invoke-GSS-ReleaseBackup.ps1 -Operation Inventory -OutputObject
+.\scripts\Invoke-GSS-ReleaseBackup.ps1 -Operation Prepare -OutputObject
+.\scripts\Invoke-GSS-ReleaseBackup.ps1 -Operation Finalize -OutputObject
+.\scripts\Invoke-GSS-ReleaseBackup.ps1 -Operation VerifyRestore -OutputObject
 ```
 
 The resume command never reapplies the workbook. It revalidates the exact run and live hashes, retries the Drive commit idempotently, and publishes the READY package only after the backup is committed. The quarterly drill adds desktop Excel validation to the hash-verified restore and writes a combined receipt inside the isolated restore folder.
@@ -115,6 +120,8 @@ Historical imports require a closed `gss-historical-recovery/v1` manifest and ex
 
 `Plan` is read-only. `Apply` takes the global GSS transaction mutex, validates file bytes, row/date bounds, response identities, and destination paths, then baselines recovered response hashes in the first-seen ledger before any historical XLSX becomes visible. A manifest-bound receipt supports idempotent resume and conservative rollback. The live score-trends workbook, current email package, scheduled task, and automatic-sending setting are outside the recovery transaction.
 
+When commenter analytics sees XLSX files in `Recovered Historical Detail`, it requires the committed recovery receipt and sibling manifest, reconstructs every destination from the current GSS root, and rechecks the exact file set, sizes, SHA-256 values, row counts, and response-set hashes before and after parsing. A missing, added, substituted, or uncommitted recovered file produces a commenter-lens data-quality review; it does not block or modify the live workbook. Current and ordinary archived uploads outside that recovered subtree retain the normal weekly workflow.
+
 ```powershell
 .\scripts\Import-GSS-HistoricalGuestDetail.ps1 -Operation Plan -FolderPath <gss-root> -ManifestPath <manifest.json> -SourcePath <staged-xlsx[]> -OutputObject
 .\scripts\Import-GSS-HistoricalGuestDetail.ps1 -Operation Apply -FolderPath <gss-root> -ManifestPath <manifest.json> -SourcePath <staged-xlsx[]> -OutputObject
@@ -122,27 +129,26 @@ Historical imports require a closed `gss-historical-recovery/v1` manifest and ex
 
 `source_report_week` identifies the file/report assignment. Per-response fiscal week remains based on the local visit date, so late or boundary responses can fall in a different response week without changing the source file's assignment.
 
-### Shadow Statistical Modeling
+### Analytics Source Contract
 
-Analysis policy v3 requires a complete `gss-model-input/v1` population export before inference or modeling. Required row fields are `response_id`, `restaurant_id`, `visit_date`, the six rating fields, `first_visit`, `questionnaire_version`, and `conditional_eligibility`. The optional `manager_visit` rating is accepted only when its conditional-eligibility flag is true. Unexpected row fields are a privacy blocker. Local visit dates are assigned to Monday-Sunday reporting weeks. The runner is bound to tracked `config\analysis-policy.json` and records that file's policy version and SHA-256 in its aggregate artifacts.
+Analysis policy v4 reflects the source design actually delivered by the survey system:
 
-The Guest Detail/comment workbooks are not a population export. Their recovered FY26 rows reconcile to only a subset of the authoritative rolling response counts, so they may support comment review and historical archiving but must not be used to make restaurant-population modeling claims. Modeling stays `DataBlocked` until a complete approved vendor export passes the count, score, identifier, completeness, date, and location reconciliation gates.
+- The weekly rolling workbook is the authoritative population aggregate for all submitted surveys.
+- Row-level ratings exist only for surveys that include comments.
+- Row-level ratings for non-comment surveys are not provided.
+- Comment-bearing surveys are a structurally selected subset and are not assumed to represent the population.
 
-The runner verifies `source_sha256` against the complete canonical JSON payload with the top-level hash field omitted, so both responses and authoritative population totals are bound to the run. `Analyze-GSS-Run.ps1` computes and injects this hash in memory when an otherwise valid export omits it; maintainers can use `Invoke-GSS-ShadowModel.ps1 -ComputeSourceHash` for the same stdin-only operation. The enriched row payload is never written by the model bridge.
+The review therefore keeps population results descriptive: current 13-week score and response count, movement versus the adjacent rolling window, prior-year movement, and benchmark gaps. The existing response-count tier is exposed as `ResponseVolumeTier`; it is not a statistical confidence interval. Adjacent 13-week windows overlap for 12 weeks, and restaurant results are nested in the broader benchmarks, so those comparisons do not support significance claims.
 
-The runner then reconciles restaurant/window counts, scores, identifiers, completeness, dates, and locations. Failure returns `DataBlocked`. A valid but insufficient sample returns `ShadowSuppressed`; sufficient data without durable cycle evidence returns `ShadowUnverified`; only an eligible run with at least eight verified distinct weeks in the external aggregate cycle ledger returns `ShadowReady`. These statuses are nonblocking and remain outside the three-attachment email package.
+The separate commenter lens is always labeled **Among guests who provided comments**. For each restaurant and supported score it reports the separately labeled population aggregate, unique comment-survey count, and commenter event count and rate. It reports cross-source comment coverage and commenter-versus-population gaps only when the commenter rows and population aggregate are explicitly verified as the same reporting partition. When that same alignment is verified, the population aggregate reconstructs to an exact event count, and commenter scores are complete, it may also derive the non-comment survey count and event rate and report a descriptive commenter-versus-non-commenter selection gap.
 
-The primary outcome is Overall 1–3; the secondary outcome is Recommend 0–6. Current and previous non-overlapping 13-week windows use the Newcombe independent-proportions score interval, Benjamini-Hochberg control, minimum sample, and practical-change gates. Separate L2 models for both outcomes estimate aggregate associations for one-point worsening in Service, Culinary, Value, and Pace, with restaurant, First Visit, questionnaire version, and time controls. Manager Visit can appear only in a separate primary-outcome sensitivity model and never in the primary driver ranking. Every selected validation fold, final model, and all 1,000 requested week-block bootstrap fits must converge before the corresponding model is `ShadowReady`. It writes only:
+The reporting date must be a Sunday, making the commenter window an explicit inclusive Monday-through-Sunday 13-week period. Stable vendor response IDs are not consistently available across the exports, so deduplication is deterministic and content-based; the reviewer output discloses the resulting low residual risk of a false or missed match.
 
-- `model_summary.json`
-- `model_estimates.csv`
-- `model_diagnostics.json`
-- `input_manifest.json`
-- `model_card.md`
+Selection diagnostics are suppressed for the affected metric when report-week alignment, restaurant mapping, deduplication, score completeness, population numerator reconstruction, or `commenter count <= population count` does not validate. `Recommend` detractor results remain commenter-only unless an exact matching population aggregate becomes available. Themes are shares among comment-bearing surveys, use unique survey denominators, and may overlap.
 
-Raw rows, comments, contacts, and individual predictions are never persisted. The hash-chained aggregate ledger is stored outside the repository at `..\_automation_runs\state\shadow-model-cycle-ledger.json`; it records only reporting week, source/policy hashes, result status, and chain hashes. An OS-backed cross-process lock covers ledger validation, counting, inference, idempotence, and append, so concurrent runs cannot lose a cycle. Repeating the same week/source is idempotent, and any unexpected ledger or entry field is rejected. Input-reported cycle counts are advisory only and can never create `ShadowReady` or satisfy promotion. Promotion additionally requires successful calibration convergence, every other documented criterion, and separate explicit approval. Forecasting remains deferred until the required contiguous population history exists.
+The commenter lens writes aggregate-only `commenter_lens.json` and `commenter_lens.csv` files into the restricted QA package and is also summarized in `review.json`, `review.md`, the restricted analysis document, and the email preview. The restricted email-package manifest hash-binds those reviewer files, the analysis, both previews, and the classification notice as six non-attachment artifacts. They do not add a fourth email attachment: the package still contains exactly three reviewed attachments. Raw rows, comments, contacts, and individual predictions are never written to an analytics artifact.
 
-The required managed runtime is Python 3.12 under `..\_automation_runs\runtime\shadow-model-py312`. Dependencies are installed once from `requirements-shadow-model.lock` with `--require-hashes`; normal weekly runs install nothing and use no network. The wrapper does not silently fall back to a system Python. Maintainers may pass explicit `-PythonPath` and `-CycleLedgerPath` values only for controlled validation; both production artifacts and cycle state are rejected inside the program repository.
+Population driver modeling is unsupported under this source contract and always reports the nonblocking status `PopulationRawDataUnavailable` with reason `non_comment_survey_rows_not_provided`. The program does not produce logistic driver models, causal or significance claims, population prevalence estimates from commenter rows, or individual predictions. Forecasting remains deferred and may use only sufficiently long aggregate population history in a separately reviewed future change.
 
 ### Validation
 
@@ -158,7 +164,6 @@ Run these before committing script changes:
 .\scripts\Test-GSS-DriveBackup.ps1
 .\scripts\Test-GSS-HistoricalRecovery.ps1
 .\scripts\Test-GSS-ReleaseIntegrity.ps1 -SkipTagCheck
-python -m unittest discover -s tests -p "test_gss_shadow_model.py" -v
 ```
 
 PSScriptAnalyzer `1.25.0` and Pester `5.8.0` are pinned in CI. The analyzer baseline records reviewed legacy warnings and fails on any new warning fingerprint; Pester covers new modules while the established regression harnesses remain in place.
@@ -174,8 +179,8 @@ Production execution requires a clean, exact tagged release at `HEAD`, a matchin
 .\scripts\Test-GSS-ReleaseIntegrity.ps1 -SkipTagCheck
 ```
 
-After the manifest commit is merged and CI is green, create the annotated release tag on that exact `main` commit, run the local Excel validation, archive the exact tag, and include both archive and validation receipt in the Drive snapshot. The production launcher performs the full tag and receipt checks and refuses mutable or unapproved code.
+After the manifest commit is merged and CI is green, create the annotated release tag on that exact `main` commit, run the local Excel validation, archive the exact tag, and back up the release manifest, archive, and validation receipt with the closed `ReleaseOnly` Drive workflow. The production launcher performs the full tag and receipt checks and refuses mutable or unapproved code.
 
-Requirements are Windows, Microsoft Excel desktop, PowerShell, and managed Python 3.12 for optional shadow modeling.
+Requirements are Windows, Microsoft Excel desktop, and PowerShell.
 
 The Windows task `GSS Survey Main Workbook Weekly Update` is intentionally disabled. Manual execution is the supported workflow unless scheduled live updates are explicitly approved.

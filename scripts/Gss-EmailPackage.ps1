@@ -5,10 +5,55 @@ if (-not (Get-Command ConvertTo-GssDropboxRelativePath -ErrorAction SilentlyCont
     . (Join-Path $scriptRoot 'Gss-Common.ps1')
 }
 
-$script:GssEmailPackageSchemaVersion = 'gss-email-package/v1'
+$script:GssEmailPackageSchemaVersion = 'gss-email-package/v2'
 $script:GssFeedbackLedgerVersion = 'gss-feedback-first-seen/v1'
+$script:GssHistoricalRecoveryManifestVersion = 'gss-historical-recovery/v1'
+$script:GssHistoricalRecoveryReceiptVersion = 'gss-historical-recovery-receipt/v1'
+$script:GssHistoricalResponseSetVersion = 'gss-historical-response-set/v1'
+$script:GssHistoricalRecoveryArchivePrefix = '03 Uploaded Survey Workbooks/Archive - Previous Uploads/Recovered Historical Detail'
 $script:GssThemeNames = @('service', 'culinary', 'pace', 'value', 'hospitality/recovery', 'recognition')
 $script:GssRestrictedClassification = 'CONTAINS PERSONAL DATA ' + [char]0x2014 + ' RESTRICTED'
+$script:GssPortableArtifactPaths = [ordered]@{
+    analysis_json = 'analysis.json'
+    commenter_lens_json = 'commenter_lens.json'
+    commenter_lens_csv = 'commenter_lens.csv'
+    email_preview_text = 'email_preview.txt'
+    email_preview_html = 'email_preview.html'
+    classification_notice = 'RESTRICTED.txt'
+}
+$script:GssCommenterLensCsvColumns = @(
+    'status',
+    'scope_label',
+    'reporting_window_start',
+    'reporting_window_end',
+    'exact_partition_alignment_verified',
+    'restaurant_id',
+    'restaurant_status',
+    'population_response_count',
+    'commenter_response_count',
+    'comment_coverage_pct',
+    'comment_coverage_status',
+    'metric_id',
+    'response_field',
+    'population_metric',
+    'commenter_scored_response_count',
+    'commenter_missing_score_count',
+    'commenter_event_count',
+    'commenter_event_rate_pct',
+    'commenter_rate_denominator_label',
+    'population_event_rate_pct',
+    'population_rate_denominator_label',
+    'denominator_alignment_status',
+    'commenter_minus_population_percentage_points',
+    'material_gap',
+    'reconstructed_population_event_count',
+    'derived_non_comment_response_count',
+    'derived_non_comment_event_count',
+    'derived_non_comment_event_rate_pct',
+    'commenter_minus_non_comment_percentage_points',
+    'comparison_status',
+    'derived_non_comment_status'
+)
 
 function Read-GssAnalysisPolicy {
     $policyPath = Join-Path (Split-Path -Parent $scriptRoot) 'config\analysis-policy.json'
@@ -54,11 +99,55 @@ function Read-GssAnalysisPolicy {
         [bool]$policy.review_controls.statistical_significance_claimed) {
         throw 'GSS analysis policy must require human review, keep automatic sending disabled, and make no causation or statistical-significance claim.'
     }
-    if ([string]$policy.population_export.reconciliation.failure_status -ne 'DataBlocked' -or
-        [bool]$policy.driver_model.blocks_workbook_or_backup_or_package -or
-        [bool]$policy.driver_model.email_attachment_allowed_in_shadow -or
-        [bool]$policy.driver_model.row_level_persistence_allowed) {
-        throw 'GSS analysis policy must isolate population-data failures, keep shadow modeling nonblocking, exclude model attachments from email, and prohibit row-level model persistence.'
+    $populationRawRowsProperty = $policy.source_design.PSObject.Properties['population_raw_rows_available']
+    if ($null -eq $populationRawRowsProperty -or
+        $populationRawRowsProperty.Value -isnot [bool] -or
+        [bool]$populationRawRowsProperty.Value -or
+        [string]$policy.source_design.population_scores_source -ne 'rolling_aggregate_workbook' -or
+        [string]$policy.source_design.row_level_scores_source -ne 'surveys_with_comments_only' -or
+        [bool]$policy.source_design.non_comment_row_level_scores_available -or
+        [bool]$policy.source_design.commenter_rows_population_representative -or
+        [bool]$policy.source_design.population_driver_modeling_supported -or
+        [string]$policy.source_design.population_driver_modeling_status -ne 'PopulationRawDataUnavailable') {
+        throw 'GSS analysis policy must identify aggregate population scores, commenter-only row scores, and unavailable population driver modeling.'
+    }
+    if (-not [bool]$policy.commenter_lens.enabled -or
+        [string]$policy.commenter_lens.scope_label -ne 'Among guests who provided comments' -or
+        [int]$policy.commenter_lens.reporting_window_weeks -ne 13 -or
+        [double]$policy.commenter_lens.material_gap_percentage_points -lt 0 -or
+        [double]$policy.commenter_lens.maximum_reconstructed_event_count_error -lt 0 -or
+        [bool]$policy.commenter_lens.population_prevalence_claim_allowed -or
+        [bool]$policy.commenter_lens.statistical_significance_claim_allowed -or
+        [bool]$policy.commenter_lens.individual_prediction_allowed) {
+        throw 'GSS analysis policy must keep the commenter lens descriptive, scoped to comment-providing guests, and free of population prevalence, significance, and individual-prediction claims.'
+    }
+    $commenterMetricIds = @()
+    foreach ($metric in @($policy.commenter_lens.metrics)) {
+        if ([string]::IsNullOrWhiteSpace([string]$metric.id) -or
+            [string]::IsNullOrWhiteSpace([string]$metric.response_field) -or
+            $null -eq $metric.event_minimum -or
+            $null -eq $metric.event_maximum -or
+            [double]$metric.event_minimum -gt [double]$metric.event_maximum) {
+            throw 'Every commenter-lens metric must define an ID, response field, exact population metric, and valid inclusive event range.'
+        }
+        $commenterMetricIds += [string]$metric.id
+    }
+    if ($commenterMetricIds.Count -eq 0 -or
+        @($commenterMetricIds | Group-Object | Where-Object Count -gt 1).Count -gt 0 -or
+        'commenter_lens.json' -notin @($policy.commenter_lens.outputs) -or
+        'commenter_lens.csv' -notin @($policy.commenter_lens.outputs)) {
+        throw 'GSS analysis policy must define distinct commenter-lens metrics and the aggregate JSON and CSV outputs.'
+    }
+    if ([string]$policy.modeling.status -ne 'PopulationRawDataUnavailable' -or
+        [string]::IsNullOrWhiteSpace([string]$policy.modeling.reason) -or
+        -not [bool]$policy.modeling.nonblocking -or
+        [bool]$policy.modeling.blocks_workbook_or_backup_or_package -or
+        [bool]$policy.modeling.email_attachment_allowed -or
+        [bool]$policy.modeling.row_level_persistence_allowed -or
+        [bool]$policy.commenter_lens.causation_claim_allowed -or
+        [bool]$policy.commenter_lens.email_attachment_allowed -or
+        [bool]$policy.commenter_lens.row_level_persistence_allowed) {
+        throw 'GSS analysis policy must keep population modeling unavailable, nonblocking, unattached, and free of row-level persistence.'
     }
 
     return $policy
@@ -95,6 +184,43 @@ function Read-GssUtf8NoBomFile {
 
     $encoding = New-Object System.Text.UTF8Encoding($false, $true)
     return [System.IO.File]::ReadAllText($Path, $encoding)
+}
+
+function Assert-GssExactObjectSchema {
+    param(
+        [Parameter(Mandatory)][AllowNull()][object]$Value,
+        [Parameter(Mandatory)][string[]]$AllowedProperties,
+        [Parameter(Mandatory)][string]$Label
+    )
+
+    if ($null -eq $Value) {
+        throw "$Label must be a structured object."
+    }
+    $actualProperties = @($Value.PSObject.Properties | ForEach-Object { [string]$_.Name })
+    $unexpected = @($actualProperties | Where-Object { $AllowedProperties -cnotcontains $_ })
+    if ($unexpected.Count -gt 0) {
+        throw "$Label contains unsupported property '$($unexpected[0])'."
+    }
+    $missing = @($AllowedProperties | Where-Object { $actualProperties -cnotcontains $_ })
+    if ($missing.Count -gt 0) {
+        throw "$Label is missing required property '$($missing[0])'."
+    }
+}
+
+function Assert-GssScalarValue {
+    param(
+        [AllowNull()][object]$Value,
+        [Parameter(Mandatory)][string]$Label,
+        [switch]$AllowNull
+    )
+
+    if ($null -eq $Value) {
+        if ($AllowNull) { return }
+        throw "$Label must not be null."
+    }
+    $baseValue = $Value.PSObject.BaseObject
+    if ($baseValue -is [string] -or $baseValue -is [System.ValueType]) { return }
+    throw "$Label must be a scalar value."
 }
 
 function Assert-GssUtf8NoBomFile {
@@ -164,10 +290,10 @@ function Read-GssXlsxFirstWorksheet {
     param([Parameter(Mandatory)][string]$Path)
 
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
-        throw "Detail workbook is missing: $Path"
+        throw 'Detail workbook is missing.'
     }
     if ((Get-Item -LiteralPath $Path).Length -le 0) {
-        throw "Detail workbook is empty or not fully synced: $Path"
+        throw 'Detail workbook is empty or not fully synced.'
     }
 
     Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -244,7 +370,7 @@ function Read-GssXlsxFirstWorksheet {
         $normalizedHeaders = @($headers | ForEach-Object { Normalize-GssFeedbackHeader $_ })
         $duplicateHeaders = @($normalizedHeaders | Where-Object { $_ } | Group-Object | Where-Object { $_.Count -gt 1 })
         if ($duplicateHeaders.Count -gt 0) {
-            throw "Detail workbook contains duplicate normalized header: $($duplicateHeaders[0].Name)"
+            throw 'Detail workbook contains a duplicate normalized header.'
         }
 
         $records = @()
@@ -270,7 +396,7 @@ function Read-GssXlsxFirstWorksheet {
         }
     }
     catch {
-        throw "Detail workbook is corrupt or unsupported ($Path): $($_.Exception.Message)"
+        throw 'Detail workbook is corrupt or unsupported.'
     }
     finally {
         if ($archive) { $archive.Dispose() }
@@ -298,7 +424,7 @@ function Get-GssFeedbackProperty {
 }
 
 function Test-GssFeedbackAnswers {
-    param([object]$Record, [string]$SourceLabel)
+    param([object]$Record)
 
     $ranges = [ordered]@{
         overall = @(1, 5)
@@ -314,7 +440,7 @@ function Test-GssFeedbackAnswers {
         if ([string]::IsNullOrWhiteSpace($raw)) { continue }
         $number = 0.0
         if (-not [double]::TryParse($raw, [ref]$number) -or $number -lt $ranges[$name][0] -or $number -gt $ranges[$name][1]) {
-            throw "Invalid $name answer '$raw' in $SourceLabel."
+            throw "Invalid $name answer in the detail workbook."
         }
     }
 }
@@ -328,7 +454,7 @@ function Read-GssDetailWorkbook {
     $table = Read-GssXlsxFirstWorksheet $Path
     foreach ($required in @('restaurantname', 'reservationdate', 'text')) {
         if (-not $table.NormalizedHeaders.Contains($required)) {
-            throw "Detail workbook is missing required header '$required': $Path"
+            throw "Detail workbook is missing required header '$required'."
         }
     }
 
@@ -343,9 +469,9 @@ function Read-GssDetailWorkbook {
             continue
         }
         if ([string]::IsNullOrWhiteSpace($restaurant) -or $null -eq $visitDate) {
-            throw "Detail workbook contains an incomplete response at row ${rowNumber}: $portablePath"
+            throw "Detail workbook contains an incomplete response at row ${rowNumber}."
         }
-        Test-GssFeedbackAnswers $record "$portablePath row $rowNumber"
+        Test-GssFeedbackAnswers -Record $record
 
         $restaurantIdMatch = [regex]::Match($restaurant, '^\s*(\d{4})\b')
         $restaurantId = if ($restaurantIdMatch.Success) { $restaurantIdMatch.Groups[1].Value } else { Normalize-GssFeedbackHeader $restaurant }
@@ -379,7 +505,7 @@ function Read-GssDetailWorkbook {
             SourceRow = $rowNumber
         }
     }
-    if ($responses.Count -eq 0) { throw "Detail workbook contains no usable responses: $portablePath" }
+    if ($responses.Count -eq 0) { throw 'Detail workbook contains no usable responses.' }
 
     return [pscustomobject]@{
         Path = $Path
@@ -628,12 +754,247 @@ function Write-GssFeedbackLedger {
     }
 }
 
+function Assert-GssSundayReportingDate {
+    param([Parameter(Mandatory)][datetime]$ReportingDate)
+
+    if ($ReportingDate.Date.DayOfWeek -ne [System.DayOfWeek]::Sunday) {
+        throw "GSS reporting date must be a Sunday: $($ReportingDate.ToString('yyyy-MM-dd'))."
+    }
+}
+
+function Get-GssHistoricalRecoveryResponseSetSha256 {
+    param([Parameter(Mandatory)][object]$Workbook)
+
+    $responseHashes = @(
+        $Workbook.Responses.ResponseHash |
+            ForEach-Object { ([string]$_).ToLowerInvariant() } |
+            Sort-Object -Unique
+    )
+    if ($responseHashes.Count -eq 0) {
+        throw 'A recovered historical detail workbook has no response identities.'
+    }
+    $material = "$($script:GssHistoricalResponseSetVersion)`n" + ($responseHashes -join "`n")
+    return Get-GssStringSha256 $material
+}
+
+function Get-GssVerifiedHistoricalRecoveryInventory {
+    param(
+        [Parameter(Mandatory)][string]$FolderPath,
+        [Parameter(Mandatory)][AllowEmptyCollection()][System.IO.FileInfo[]]$RecoveredFiles
+    )
+
+    $resolvedFolder = [System.IO.Path]::GetFullPath($FolderPath).TrimEnd('\', '/')
+    $recoveredRoot = [System.IO.Path]::GetFullPath(
+        (Join-Path $resolvedFolder $script:GssHistoricalRecoveryArchivePrefix.Replace('/', '\'))
+    ).TrimEnd('\', '/')
+    $recoveredPrefix = "$recoveredRoot\"
+
+    $runtimeRoot = Join-Path $resolvedFolder '_automation_runs\historical-recovery'
+    if (-not (Test-Path -LiteralPath $runtimeRoot -PathType Container)) {
+        if (@($RecoveredFiles).Count -eq 0) {
+            return [pscustomobject]@{
+                DescriptorsByPath = @{}
+                ManifestSha256 = @()
+            }
+        }
+        throw 'Recovered historical detail exists without a historical-recovery transaction directory.'
+    }
+
+    $receiptPaths = @(
+        Get-ChildItem -LiteralPath $runtimeRoot -Directory |
+            ForEach-Object {
+                $candidate = Join-Path $_.FullName 'transaction-receipt.json'
+                if (Test-Path -LiteralPath $candidate -PathType Leaf) { $candidate }
+            } |
+            Sort-Object
+    )
+    $expectedByPath = @{}
+    $manifestHashes = @()
+    foreach ($receiptPath in $receiptPaths) {
+        try {
+            $receipt = Get-Content -Raw -LiteralPath $receiptPath | ConvertFrom-Json
+        }
+        catch {
+            throw "Historical recovery receipt is not valid JSON: $receiptPath"
+        }
+        if ([string]$receipt.schema_version -ne $script:GssHistoricalRecoveryReceiptVersion) {
+            throw "Unsupported historical recovery receipt version: $($receipt.schema_version)"
+        }
+        if ([string]$receipt.state -ne 'Committed') {
+            continue
+        }
+
+        $manifestSha256 = ([string]$receipt.manifest_sha256).ToLowerInvariant()
+        if ($manifestSha256 -notmatch '^[a-f0-9]{64}$') {
+            throw "Committed historical recovery receipt has an invalid manifest SHA-256: $receiptPath"
+        }
+        $transactionDirectory = Split-Path -Parent $receiptPath
+        if ((Split-Path -Leaf $transactionDirectory) -cne $manifestSha256) {
+            throw "Committed historical recovery receipt is outside its manifest-hash transaction directory: $receiptPath"
+        }
+        if ([string]$receipt.transaction_id -ne "historical-recovery:$manifestSha256") {
+            throw "Committed historical recovery receipt has an invalid transaction ID: $receiptPath"
+        }
+        if ((Split-Path -Leaf ([string]$receipt.manifest_snapshot_path)) -cne 'recovery-manifest.json') {
+            throw "Committed historical recovery receipt has an invalid manifest snapshot name: $receiptPath"
+        }
+
+        $manifestPath = Join-Path $transactionDirectory 'recovery-manifest.json'
+        if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+            throw "Committed historical recovery manifest snapshot is missing: $manifestPath"
+        }
+        if ((Get-GssSha256 $manifestPath) -cne $manifestSha256) {
+            throw "Committed historical recovery manifest snapshot hash mismatch: $manifestPath"
+        }
+        try {
+            $manifest = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
+        }
+        catch {
+            throw "Committed historical recovery manifest is not valid JSON: $manifestPath"
+        }
+        if ([string]$manifest.schema_version -ne $script:GssHistoricalRecoveryManifestVersion) {
+            throw "Unsupported historical recovery manifest version: $($manifest.schema_version)"
+        }
+        $fiscalYear = [string]$manifest.fiscal_year
+        if ($fiscalYear -notmatch '^FY\d{2}$') {
+            throw "Committed historical recovery manifest has an invalid fiscal year: '$fiscalYear'."
+        }
+        $manifestSources = @($manifest.sources)
+        $receiptFiles = @($receipt.files)
+        if ($manifestSources.Count -eq 0 -or
+            $receiptFiles.Count -ne $manifestSources.Count -or
+            [int]$receipt.published_file_count -ne $manifestSources.Count) {
+            throw "Committed historical recovery receipt and manifest file counts disagree: $receiptPath"
+        }
+
+        for ($index = 0; $index -lt $manifestSources.Count; $index++) {
+            $source = $manifestSources[$index]
+            $sourceIndex = $index + 1
+            $reportWeek = [string]$source.source_report_week
+            if ($reportWeek -notmatch '^FY\d{2} FW(?:[1-9]|[1-4]\d|5[0-3])$' -or
+                -not $reportWeek.StartsWith("$fiscalYear ", [System.StringComparison]::Ordinal)) {
+                throw "Committed historical recovery manifest source $sourceIndex has an invalid report week: '$reportWeek'."
+            }
+            $sha256 = ([string]$source.sha256).ToLowerInvariant()
+            $responseSetSha256 = ([string]$source.response_set_sha256).ToLowerInvariant()
+            if ($sha256 -notmatch '^[a-f0-9]{64}$' -or $responseSetSha256 -notmatch '^[a-f0-9]{64}$') {
+                throw "Committed historical recovery manifest source $sourceIndex has an invalid SHA-256."
+            }
+            try {
+                $byteSize = [long]$source.byte_size
+                $rowCount = [int]$source.row_count
+            }
+            catch {
+                throw "Committed historical recovery manifest source $sourceIndex has invalid numeric evidence."
+            }
+            if ($byteSize -lt 1 -or $rowCount -lt 1) {
+                throw "Committed historical recovery manifest source $sourceIndex has nonpositive size or row-count evidence."
+            }
+
+            $expectedDestination = "$($script:GssHistoricalRecoveryArchivePrefix)/$fiscalYear/$($reportWeek.Replace(' ', '-'))-$sha256.xlsx"
+            $portableDestination = ([string]$source.destination_path).Replace('\', '/').Trim('/')
+            if (-not $portableDestination.Equals($expectedDestination, [System.StringComparison]::OrdinalIgnoreCase)) {
+                throw "Committed historical recovery manifest source $sourceIndex has a noncanonical destination."
+            }
+            $destinationFullPath = [System.IO.Path]::GetFullPath(
+                (Join-Path $resolvedFolder $portableDestination.Replace('/', '\'))
+            )
+            if (-not $destinationFullPath.StartsWith($recoveredPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+                throw "Committed historical recovery destination escapes the recovered-detail root: $portableDestination"
+            }
+
+            $receiptMatches = @($receiptFiles | Where-Object { [int]$_.source_index -eq $sourceIndex })
+            if ($receiptMatches.Count -ne 1) {
+                throw "Committed historical recovery receipt does not contain exactly one file for source $sourceIndex."
+            }
+            $receiptFile = $receiptMatches[0]
+            if ([string]$receiptFile.sha256 -cne $sha256 -or
+                [long]$receiptFile.byte_size -ne $byteSize -or
+                [int]$receiptFile.row_count -ne $rowCount -or
+                [string]$receiptFile.response_set_sha256 -cne $responseSetSha256 -or
+                -not ([string]$receiptFile.destination_path).Replace('\', '/').Trim('/').Equals(
+                    $portableDestination,
+                    [System.StringComparison]::OrdinalIgnoreCase
+                )) {
+                throw "Committed historical recovery receipt source $sourceIndex disagrees with its manifest."
+            }
+
+            $pathKey = $destinationFullPath.ToLowerInvariant()
+            if ($expectedByPath.ContainsKey($pathKey)) {
+                throw "Recovered historical detail destination is attested more than once: $portableDestination"
+            }
+            $expectedByPath[$pathKey] = [pscustomobject]@{
+                Path = $destinationFullPath
+                PortablePath = $portableDestination
+                SourceReportWeek = $reportWeek
+                Sha256 = $sha256
+                ByteSize = $byteSize
+                RowCount = $rowCount
+                ResponseSetSha256 = $responseSetSha256
+                ManifestSha256 = $manifestSha256
+            }
+        }
+        $manifestHashes += $manifestSha256
+    }
+
+    if ($expectedByPath.Count -eq 0) {
+        if (@($RecoveredFiles).Count -eq 0) {
+            return [pscustomobject]@{
+                DescriptorsByPath = @{}
+                ManifestSha256 = @()
+            }
+        }
+        throw 'Recovered historical detail exists but no committed historical-recovery receipt covers it.'
+    }
+    $actualByPath = @{}
+    foreach ($file in @($RecoveredFiles)) {
+        $actualPath = [System.IO.Path]::GetFullPath($file.FullName)
+        if (-not $actualPath.StartsWith($recoveredPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Recovered historical detail inventory contains an out-of-scope file: $actualPath"
+        }
+        $actualByPath[$actualPath.ToLowerInvariant()] = $file
+        if (-not $expectedByPath.ContainsKey($actualPath.ToLowerInvariant())) {
+            throw "Recovered historical detail file is not covered by a committed manifest: $actualPath"
+        }
+    }
+    foreach ($pathKey in @($expectedByPath.Keys)) {
+        if (-not $actualByPath.ContainsKey($pathKey)) {
+            throw "Committed historical recovery file is missing: $($expectedByPath[$pathKey].PortablePath)"
+        }
+    }
+    if ($actualByPath.Count -ne $expectedByPath.Count) {
+        throw 'Recovered historical detail exact-set verification failed.'
+    }
+
+    return [pscustomobject]@{
+        DescriptorsByPath = $expectedByPath
+        ManifestSha256 = @($manifestHashes | Sort-Object -Unique)
+    }
+}
+
+function Assert-GssHistoricalRecoveryFileIntegrity {
+    param(
+        [Parameter(Mandatory)][object]$Descriptor,
+        [Parameter(Mandatory)][string]$Phase
+    )
+
+    if (-not (Test-Path -LiteralPath $Descriptor.Path -PathType Leaf)) {
+        throw "Recovered historical detail file disappeared during $Phase verification: $($Descriptor.PortablePath)"
+    }
+    $item = Get-Item -LiteralPath $Descriptor.Path
+    if ([long]$item.Length -ne [long]$Descriptor.ByteSize -or
+        (Get-GssSha256 $Descriptor.Path) -cne [string]$Descriptor.Sha256) {
+        throw "Recovered historical detail file hash or size mismatch during $Phase verification: $($Descriptor.PortablePath)"
+    }
+}
+
 function Get-GssDetailInventory {
     param(
         [Parameter(Mandatory)][string]$FolderPath,
         [Parameter(Mandatory)][datetime]$ReportingDate
     )
 
+    Assert-GssSundayReportingDate -ReportingDate $ReportingDate
     $detailFolder = Join-Path $FolderPath '03 Uploaded Survey Workbooks'
     if (-not (Test-Path -LiteralPath $detailFolder -PathType Container)) {
         throw "Guest-detail folder is missing: 03 Uploaded Survey Workbooks"
@@ -643,9 +1004,41 @@ function Get-GssDetailInventory {
         Sort-Object FullName)
     if ($files.Count -eq 0) { throw 'No guest-detail workbooks were found.' }
 
+    $recoveredRoot = [System.IO.Path]::GetFullPath(
+        (Join-Path $FolderPath $script:GssHistoricalRecoveryArchivePrefix.Replace('/', '\'))
+    ).TrimEnd('\', '/')
+    $recoveredPrefix = "$recoveredRoot\"
+    $recoveredFiles = @($files | Where-Object {
+        ([System.IO.Path]::GetFullPath($_.FullName)).StartsWith(
+            $recoveredPrefix,
+            [System.StringComparison]::OrdinalIgnoreCase
+        )
+    })
+    $recoveryInventory = Get-GssVerifiedHistoricalRecoveryInventory `
+        -FolderPath $FolderPath `
+        -RecoveredFiles $recoveredFiles
+
     $workbooks = @()
     foreach ($file in $files) {
-        $workbooks += Read-GssDetailWorkbook -Path $file.FullName -FolderPath $FolderPath
+        $pathKey = ([System.IO.Path]::GetFullPath($file.FullName)).ToLowerInvariant()
+        $recoveryDescriptor = if ($recoveryInventory.DescriptorsByPath.ContainsKey($pathKey)) {
+            $recoveryInventory.DescriptorsByPath[$pathKey]
+        }
+        else {
+            $null
+        }
+        if ($null -ne $recoveryDescriptor) {
+            Assert-GssHistoricalRecoveryFileIntegrity -Descriptor $recoveryDescriptor -Phase 'pre-parse'
+        }
+        $workbook = Read-GssDetailWorkbook -Path $file.FullName -FolderPath $FolderPath
+        if ($null -ne $recoveryDescriptor) {
+            Assert-GssHistoricalRecoveryFileIntegrity -Descriptor $recoveryDescriptor -Phase 'post-parse'
+            if (@($workbook.Responses).Count -ne [int]$recoveryDescriptor.RowCount -or
+                (Get-GssHistoricalRecoveryResponseSetSha256 -Workbook $workbook) -cne [string]$recoveryDescriptor.ResponseSetSha256) {
+                throw "Recovered historical detail workbook row or response-set evidence mismatch: $($recoveryDescriptor.PortablePath)"
+            }
+        }
+        $workbooks += $workbook
     }
 
     $directPrefix = [System.IO.Path]::GetFullPath($detailFolder).TrimEnd('\') + '\'
@@ -693,6 +1086,518 @@ function Get-GssDetailInventory {
         AllResponseInstances = @($workbooks.Responses)
         UniqueResponses = $uniqueResponses
         DuplicateResponseCount = (@($workbooks.Responses).Count - $uniqueResponses.Count)
+    }
+}
+
+function Get-GssCommenterLens {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+        'PSUseSingularNouns',
+        '',
+        Justification = 'Commenter Lens is the established singular domain term and published artifact name.'
+    )]
+    param(
+        [Parameter(Mandatory)][object]$Inventory,
+        [Parameter(Mandatory)][object[]]$MetricDetail,
+        [Parameter(Mandatory)][datetime]$ReportingDate,
+        [switch]$ExactPartitionAlignmentVerified
+    )
+
+    Assert-GssSundayReportingDate -ReportingDate $ReportingDate
+    $lensPolicy = $script:GssAnalysisPolicy.commenter_lens
+    $windowWeeks = [int]$lensPolicy.reporting_window_weeks
+    $windowEnd = $ReportingDate.Date
+    $windowStart = $windowEnd.AddDays(-(($windowWeeks * 7) - 1))
+    $eligibleResponses = @($Inventory.UniqueResponses | Where-Object {
+        $null -ne $_.VisitDate -and
+        $_.VisitDate.Date -ge $windowStart -and
+        $_.VisitDate.Date -le $windowEnd
+    })
+    $restaurantIds = @(
+        @($MetricDetail | ForEach-Object { [string]$_.RestaurantId }) +
+        @($eligibleResponses | ForEach-Object { [string]$_.RestaurantId }) |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            Sort-Object -Unique
+    )
+
+    $hasDataQualityIssue = $false
+    $hasUsableCommenterData = $false
+    $restaurantResults = @()
+    foreach ($restaurantId in $restaurantIds) {
+        $restaurantResponses = @($eligibleResponses | Where-Object { [string]$_.RestaurantId -eq $restaurantId })
+        $commenterCount = $restaurantResponses.Count
+        if ($commenterCount -gt 0) { $hasUsableCommenterData = $true }
+
+        $countCandidates = @(
+            $MetricDetail |
+                Where-Object {
+                    [string]$_.RestaurantId -eq $restaurantId -and
+                    $null -ne $_.CurrentCount
+                } |
+                ForEach-Object {
+                    $candidate = 0.0
+                    if ([double]::TryParse(
+                        [string]$_.CurrentCount,
+                        [System.Globalization.NumberStyles]::Float,
+                        [System.Globalization.CultureInfo]::InvariantCulture,
+                        [ref]$candidate
+                    ) -and
+                        -not [double]::IsNaN($candidate) -and
+                        -not [double]::IsInfinity($candidate) -and
+                        $candidate -ge 0 -and
+                        [math]::Abs($candidate - [math]::Round($candidate)) -le 0.0000001) {
+                        [long][math]::Round($candidate)
+                    }
+                } |
+                Sort-Object -Unique
+        )
+        $populationCount = if ($countCandidates.Count -eq 1) { [long]$countCandidates[0] } else { $null }
+        $restaurantIssues = @()
+        if ($null -eq $populationCount) {
+            $restaurantIssues += 'population_response_count_missing_or_inconsistent'
+        }
+        elseif ($ExactPartitionAlignmentVerified -and $commenterCount -gt $populationCount) {
+            $restaurantIssues += 'commenter_count_exceeds_population_count'
+        }
+
+        $coverageIsStructurallyValid = $null -ne $populationCount -and
+            $populationCount -gt 0 -and
+            $commenterCount -le $populationCount
+        $coverageIsValid = $coverageIsStructurallyValid -and [bool]$ExactPartitionAlignmentVerified
+        $coverage = if ($coverageIsValid) {
+            [math]::Round((100.0 * $commenterCount / $populationCount), 8)
+        }
+        else {
+            $null
+        }
+        $coverageStatus = if (-not $ExactPartitionAlignmentVerified) {
+            'SuppressedUnverifiedPartitionAlignment'
+        }
+        elseif ($coverageIsStructurallyValid) {
+            'Ready'
+        }
+        else {
+            'SuppressedInvalidCoverage'
+        }
+
+        $metricResults = @()
+        foreach ($metricPolicy in @($lensPolicy.metrics)) {
+            $metricId = [string]$metricPolicy.id
+            $responseField = [string]$metricPolicy.response_field
+            $populationMetricName = if ($null -eq $metricPolicy.population_metric) {
+                $null
+            }
+            else {
+                [string]$metricPolicy.population_metric
+            }
+            $eventMinimum = [double]$metricPolicy.event_minimum
+            $eventMaximum = [double]$metricPolicy.event_maximum
+
+            $scoredValues = @()
+            foreach ($response in $restaurantResponses) {
+                $rawScore = Get-GssFeedbackProperty $response.Answers $responseField
+                $score = 0.0
+                if (-not [string]::IsNullOrWhiteSpace($rawScore) -and
+                    [double]::TryParse(
+                        $rawScore,
+                        [System.Globalization.NumberStyles]::Float,
+                        [System.Globalization.CultureInfo]::InvariantCulture,
+                        [ref]$score
+                    ) -and
+                    -not [double]::IsNaN($score) -and
+                    -not [double]::IsInfinity($score)) {
+                    $scoredValues += $score
+                }
+            }
+            $scoredCount = $scoredValues.Count
+            $missingScoreCount = $commenterCount - $scoredCount
+            $eventCount = @($scoredValues | Where-Object { $_ -ge $eventMinimum -and $_ -le $eventMaximum }).Count
+            $commenterEventRate = if ($scoredCount -gt 0) {
+                [math]::Round((100.0 * $eventCount / $scoredCount), 8)
+            }
+            else {
+                $null
+            }
+
+            $hasExactPopulationMetric = -not [string]::IsNullOrWhiteSpace($populationMetricName)
+            $normalizedPopulationMetric = if ($hasExactPopulationMetric) {
+                Normalize-GssFeedbackHeader $populationMetricName
+            }
+            else {
+                ''
+            }
+            $populationMetricRows = @(
+                if ($hasExactPopulationMetric) {
+                    $MetricDetail | Where-Object {
+                        [string]$_.RestaurantId -eq $restaurantId -and
+                        (
+                            (Normalize-GssFeedbackHeader ([string]$_.RawMetric)) -eq $normalizedPopulationMetric -or
+                            (Normalize-GssFeedbackHeader ([string]$_.Metric)) -eq $normalizedPopulationMetric
+                        )
+                    }
+                }
+            )
+            $populationEventRate = $null
+            $populationMetricValid = $false
+            if ($populationMetricRows.Count -eq 1 -and $null -ne $populationMetricRows[0].Current) {
+                $candidateRate = 0.0
+                if ([double]::TryParse(
+                    [string]$populationMetricRows[0].Current,
+                    [System.Globalization.NumberStyles]::Float,
+                    [System.Globalization.CultureInfo]::InvariantCulture,
+                    [ref]$candidateRate
+                ) -and
+                    -not [double]::IsNaN($candidateRate) -and
+                    -not [double]::IsInfinity($candidateRate) -and
+                    $candidateRate -ge 0 -and
+                    $candidateRate -le 100) {
+                    $populationEventRate = $candidateRate
+                    $populationMetricValid = $true
+                }
+            }
+
+            $comparisonStatus = 'Ready'
+            if ($scoredCount -eq 0) {
+                $comparisonStatus = 'SuppressedNoScoredCommenterResponses'
+            }
+            elseif (-not $hasExactPopulationMetric) {
+                $comparisonStatus = 'NotAvailableNoExactPopulationMetric'
+            }
+            elseif (-not $ExactPartitionAlignmentVerified) {
+                $comparisonStatus = 'SuppressedUnverifiedPartitionAlignment'
+            }
+            elseif (-not $coverageIsValid) {
+                $comparisonStatus = 'SuppressedInvalidCoverage'
+            }
+            elseif ($missingScoreCount -gt 0) {
+                $comparisonStatus = 'SuppressedMissingCommenterScores'
+            }
+            elseif ($populationMetricRows.Count -ne 1) {
+                $comparisonStatus = 'SuppressedPopulationMetricDefinitionMismatch'
+                $restaurantIssues += "population_metric_definition_mismatch:$metricId"
+            }
+            elseif (-not $populationMetricValid) {
+                $comparisonStatus = 'SuppressedInvalidPopulationMetric'
+                $restaurantIssues += "invalid_population_metric:$metricId"
+            }
+
+            $populationGap = if ($comparisonStatus -eq 'Ready') {
+                [math]::Round(($commenterEventRate - $populationEventRate), 8)
+            }
+            else {
+                $null
+            }
+            $materialGap = if ($null -ne $populationGap) {
+                [math]::Abs($populationGap) -ge [double]$lensPolicy.material_gap_percentage_points
+            }
+            else {
+                $null
+            }
+            $negativeOverrepresentation = if ($null -ne $populationGap) {
+                $populationGap -ge [double]$lensPolicy.material_gap_percentage_points
+            }
+            else {
+                $null
+            }
+
+            $reconstructedPopulationEventCount = $null
+            $reconstructionError = $null
+            $nonCommentCount = if ($coverageIsValid -and $ExactPartitionAlignmentVerified) {
+                [long]($populationCount - $commenterCount)
+            }
+            else {
+                $null
+            }
+            $derivedNonCommentEventCount = $null
+            $derivedNonCommentEventRate = $null
+            $nonCommentGap = $null
+            $derivedStatus = 'Suppressed'
+            if ($comparisonStatus -eq 'Ready') {
+                $rawPopulationEventCount = $populationEventRate * $populationCount / 100.0
+                $nearestPopulationEventCount = [math]::Round(
+                    $rawPopulationEventCount,
+                    0,
+                    [System.MidpointRounding]::AwayFromZero
+                )
+                $reconstructionError = [math]::Abs($rawPopulationEventCount - $nearestPopulationEventCount)
+                if ($reconstructionError -le [double]$lensPolicy.maximum_reconstructed_event_count_error) {
+                    $reconstructedPopulationEventCount = [long]$nearestPopulationEventCount
+                }
+
+                if (-not $ExactPartitionAlignmentVerified) {
+                    $derivedStatus = 'SuppressedUnverifiedPartitionAlignment'
+                }
+                elseif ($null -eq $reconstructedPopulationEventCount) {
+                    $derivedStatus = 'SuppressedInexactPopulationEventCount'
+                }
+                elseif ($nonCommentCount -le 0) {
+                    $derivedStatus = 'SuppressedNoNonCommentResponses'
+                }
+                else {
+                    $candidateNonCommentEventCount = $reconstructedPopulationEventCount - $eventCount
+                    if ($candidateNonCommentEventCount -lt 0 -or $candidateNonCommentEventCount -gt $nonCommentCount) {
+                        $derivedStatus = 'SuppressedInvalidEventArithmetic'
+                        $restaurantIssues += "invalid_event_arithmetic:$metricId"
+                    }
+                    else {
+                        $derivedNonCommentEventCount = [long]$candidateNonCommentEventCount
+                        $derivedNonCommentEventRate = [math]::Round(
+                            (100.0 * $derivedNonCommentEventCount / $nonCommentCount),
+                            8
+                        )
+                        $nonCommentGap = [math]::Round(
+                            ($commenterEventRate - $derivedNonCommentEventRate),
+                            8
+                        )
+                        $derivedStatus = 'Ready'
+                    }
+                }
+            }
+            elseif ($comparisonStatus -eq 'SuppressedNoScoredCommenterResponses') {
+                $derivedStatus = 'SuppressedNoScoredCommenterResponses'
+            }
+            elseif ($comparisonStatus -eq 'SuppressedUnverifiedPartitionAlignment') {
+                $derivedStatus = 'SuppressedUnverifiedPartitionAlignment'
+            }
+            elseif ($comparisonStatus -eq 'SuppressedInvalidCoverage') {
+                $derivedStatus = 'SuppressedInvalidCoverage'
+            }
+            elseif ($comparisonStatus -eq 'SuppressedPopulationMetricDefinitionMismatch') {
+                $derivedStatus = 'SuppressedPopulationMetricDefinitionMismatch'
+            }
+            elseif ($comparisonStatus -eq 'SuppressedInvalidPopulationMetric') {
+                $derivedStatus = 'SuppressedInvalidPopulationMetric'
+            }
+            elseif ($comparisonStatus -eq 'SuppressedMissingCommenterScores') {
+                $derivedStatus = 'SuppressedMissingCommenterScores'
+            }
+            elseif ($comparisonStatus -eq 'NotAvailableNoExactPopulationMetric') {
+                $derivedStatus = 'NotAvailableNoExactPopulationMetric'
+            }
+
+            $metricResults += [pscustomobject][ordered]@{
+                metric_id = $metricId
+                response_field = $responseField
+                population_metric = $populationMetricName
+                event_minimum = $eventMinimum
+                event_maximum = $eventMaximum
+                commenter_scored_response_count = $scoredCount
+                commenter_missing_score_count = $missingScoreCount
+                commenter_event_count = $eventCount
+                commenter_event_rate_pct = $commenterEventRate
+                commenter_rate_denominator_label = "commenter responses with a nonmissing $responseField score"
+                population_event_rate_pct = $populationEventRate
+                population_rate_denominator_label = 'vendor rolling population aggregate metric denominator'
+                denominator_alignment_status = if ($missingScoreCount -eq 0) { 'CommenterMetricComplete' } else { 'CommenterMetricMissingScores' }
+                commenter_minus_population_percentage_points = $populationGap
+                material_gap = $materialGap
+                negative_experience_overrepresented_among_commenters = $negativeOverrepresentation
+                population_event_count_reconstruction_error = $reconstructionError
+                reconstructed_population_event_count = $reconstructedPopulationEventCount
+                derived_non_comment_response_count = $nonCommentCount
+                derived_non_comment_event_count = $derivedNonCommentEventCount
+                derived_non_comment_event_rate_pct = $derivedNonCommentEventRate
+                commenter_minus_non_comment_percentage_points = $nonCommentGap
+                comparison_status = $comparisonStatus
+                derived_non_comment_status = $derivedStatus
+            }
+        }
+
+        $restaurantIssues = @($restaurantIssues | Sort-Object -Unique)
+        $restaurantStatus = if ($restaurantIssues.Count -gt 0) {
+            $hasDataQualityIssue = $true
+            'DataQualityReview'
+        }
+        elseif ($commenterCount -eq 0) {
+            'InsufficientData'
+        }
+        else {
+            'Ready'
+        }
+        $restaurantResults += [pscustomobject][ordered]@{
+            restaurant_id = $restaurantId
+            status = $restaurantStatus
+            population_response_count = $populationCount
+            commenter_response_count = $commenterCount
+            comment_coverage_pct = $coverage
+            comment_coverage_status = $coverageStatus
+            data_quality_issues = $restaurantIssues
+            metrics = $metricResults
+        }
+    }
+
+    $status = if ($hasDataQualityIssue) {
+        'DataQualityReview'
+    }
+    elseif (-not $hasUsableCommenterData) {
+        'InsufficientData'
+    }
+    else {
+        'Ready'
+    }
+    return [pscustomobject][ordered]@{
+        schema_version = 'gss-commenter-lens/v1'
+        status = $status
+        reason_code = if ($status -eq 'DataQualityReview') { 'commenter_lens_data_quality_review' } elseif ($status -eq 'InsufficientData') { 'no_commenter_rows_in_window' } else { 'commenter_lens_ready' }
+        reason = if ($status -eq 'DataQualityReview') { 'One or more aggregate commenter results require data-quality review.' } elseif ($status -eq 'InsufficientData') { 'No comment-bearing responses were available in the visit-date reporting window.' } elseif ($ExactPartitionAlignmentVerified) { 'Aggregate commenter results and explicitly aligned cross-source comparisons are ready for human review.' } else { 'Aggregate commenter-only counts and rates are ready; cross-source coverage and comparisons are suppressed because exact partition alignment is unverified.' }
+        scope_label = [string]$lensPolicy.scope_label
+        population_modeling_status = [string]$script:GssAnalysisPolicy.modeling.status
+        reporting_window = [pscustomobject][ordered]@{
+            weeks = $windowWeeks
+            start_date = $windowStart.ToString('yyyy-MM-dd')
+            end_date = $windowEnd.ToString('yyyy-MM-dd')
+            inclusive = $true
+            commenter_date_basis = 'guest_detail_visit_date'
+            population_date_basis = 'rolling_workbook_reporting_period'
+            exact_partition_alignment_verified = [bool]$ExactPartitionAlignmentVerified
+            source_alignment = if ($ExactPartitionAlignmentVerified) {
+                'exact commenter/population reporting partition alignment explicitly verified by the caller'
+            }
+            else {
+                'visit-date commenter window compared with the population rolling aggregate through the reporting date; not exact source-report-week row alignment'
+            }
+        }
+        source_design = [pscustomobject][ordered]@{
+            population_scores_source = [string]$script:GssAnalysisPolicy.source_design.population_scores_source
+            population_raw_rows_available = [bool]$script:GssAnalysisPolicy.source_design.population_raw_rows_available
+            row_level_scores_source = [string]$script:GssAnalysisPolicy.source_design.row_level_scores_source
+            non_comment_row_level_scores_available = [bool]$script:GssAnalysisPolicy.source_design.non_comment_row_level_scores_available
+            commenter_rows_population_representative = [bool]$script:GssAnalysisPolicy.source_design.commenter_rows_population_representative
+        }
+        claims = [pscustomobject][ordered]@{
+            population_prevalence_claimed = $false
+            statistical_significance_claimed = $false
+            causal_driver_claimed = $false
+            individual_prediction_produced = $false
+        }
+        row_level_data_persisted = $false
+        restaurants = $restaurantResults
+        limitations = @(
+            'Raw scores are available only for surveys with comments.',
+            'Commenter score distributions are not representative estimates for all guests.',
+            'Population aggregate rates remain separately labeled and are not treated as aligned with commenter rows unless exact partition alignment is explicitly verified.',
+            'Commenter event rates use only comment-providing responses with a nonmissing metric score; population rates retain the vendor aggregate denominator.',
+            'Cross-source coverage and commenter-minus-population gaps are suppressed unless exact commenter/population partition alignment is explicitly verified.',
+            'Derived non-comment counts and rates are suppressed unless exact commenter/population partition alignment is explicitly verified.',
+            'Commenter rows are aligned by guest-detail visit date, not by an asserted exact source-report-week row match.',
+            'Stable vendor response IDs are not consistently available across exports; deterministic content-based deduplication retains a low residual risk of false matches or missed matches.'
+        )
+    }
+}
+
+function Get-GssCommenterLensFallback {
+    param(
+        [Parameter(Mandatory)][datetime]$ReportingDate,
+        [ValidateSet('InsufficientData', 'DataQualityReview')][string]$Status = 'DataQualityReview',
+        [Parameter(Mandatory)][string]$Reason
+    )
+
+    Assert-GssSundayReportingDate -ReportingDate $ReportingDate
+    $windowWeeks = [int]$script:GssAnalysisPolicy.commenter_lens.reporting_window_weeks
+    $windowEnd = $ReportingDate.Date
+    $windowStart = $windowEnd.AddDays(-(($windowWeeks * 7) - 1))
+    return [pscustomobject][ordered]@{
+        schema_version = 'gss-commenter-lens/v1'
+        status = $Status
+        reason_code = 'commenter_detail_inventory_unavailable'
+        reason = $Reason
+        scope_label = [string]$script:GssAnalysisPolicy.commenter_lens.scope_label
+        population_modeling_status = [string]$script:GssAnalysisPolicy.modeling.status
+        reporting_window = [pscustomobject][ordered]@{
+            weeks = $windowWeeks
+            start_date = $windowStart.ToString('yyyy-MM-dd')
+            end_date = $windowEnd.ToString('yyyy-MM-dd')
+            inclusive = $true
+            commenter_date_basis = 'guest_detail_visit_date'
+            population_date_basis = 'rolling_workbook_reporting_period'
+            exact_partition_alignment_verified = $false
+            source_alignment = 'visit-date commenter window compared with the population rolling aggregate through the reporting date; not exact source-report-week row alignment'
+        }
+        source_design = [pscustomobject][ordered]@{
+            population_scores_source = [string]$script:GssAnalysisPolicy.source_design.population_scores_source
+            population_raw_rows_available = [bool]$script:GssAnalysisPolicy.source_design.population_raw_rows_available
+            row_level_scores_source = [string]$script:GssAnalysisPolicy.source_design.row_level_scores_source
+            non_comment_row_level_scores_available = [bool]$script:GssAnalysisPolicy.source_design.non_comment_row_level_scores_available
+            commenter_rows_population_representative = [bool]$script:GssAnalysisPolicy.source_design.commenter_rows_population_representative
+        }
+        claims = [pscustomobject][ordered]@{
+            population_prevalence_claimed = $false
+            statistical_significance_claimed = $false
+            causal_driver_claimed = $false
+            individual_prediction_produced = $false
+        }
+        row_level_data_persisted = $false
+        restaurants = @()
+        limitations = @(
+            $Reason,
+            'Raw scores are available only for surveys with comments.',
+            'Commenter rows are aligned by guest-detail visit date, not by an asserted exact source-report-week row match.',
+            'Stable vendor response IDs are not consistently available across exports; deterministic content-based deduplication retains a low residual risk of false matches or missed matches.'
+        )
+    }
+}
+
+function ConvertTo-GssCommenterLensCsv {
+    param([Parameter(Mandatory)][object]$CommenterLens)
+
+    $rows = @()
+    foreach ($restaurant in @($CommenterLens.restaurants)) {
+        foreach ($metric in @($restaurant.metrics)) {
+            $rows += [pscustomobject][ordered]@{
+                status = [string]$CommenterLens.status
+                scope_label = [string]$CommenterLens.scope_label
+                reporting_window_start = [string]$CommenterLens.reporting_window.start_date
+                reporting_window_end = [string]$CommenterLens.reporting_window.end_date
+                exact_partition_alignment_verified = [bool]$CommenterLens.reporting_window.exact_partition_alignment_verified
+                restaurant_id = [string]$restaurant.restaurant_id
+                restaurant_status = [string]$restaurant.status
+                population_response_count = $restaurant.population_response_count
+                commenter_response_count = $restaurant.commenter_response_count
+                comment_coverage_pct = $restaurant.comment_coverage_pct
+                comment_coverage_status = [string]$restaurant.comment_coverage_status
+                metric_id = [string]$metric.metric_id
+                response_field = [string]$metric.response_field
+                population_metric = [string]$metric.population_metric
+                commenter_scored_response_count = $metric.commenter_scored_response_count
+                commenter_missing_score_count = $metric.commenter_missing_score_count
+                commenter_event_count = $metric.commenter_event_count
+                commenter_event_rate_pct = $metric.commenter_event_rate_pct
+                commenter_rate_denominator_label = [string]$metric.commenter_rate_denominator_label
+                population_event_rate_pct = $metric.population_event_rate_pct
+                population_rate_denominator_label = [string]$metric.population_rate_denominator_label
+                denominator_alignment_status = [string]$metric.denominator_alignment_status
+                commenter_minus_population_percentage_points = $metric.commenter_minus_population_percentage_points
+                material_gap = $metric.material_gap
+                reconstructed_population_event_count = $metric.reconstructed_population_event_count
+                derived_non_comment_response_count = $metric.derived_non_comment_response_count
+                derived_non_comment_event_count = $metric.derived_non_comment_event_count
+                derived_non_comment_event_rate_pct = $metric.derived_non_comment_event_rate_pct
+                commenter_minus_non_comment_percentage_points = $metric.commenter_minus_non_comment_percentage_points
+                comparison_status = [string]$metric.comparison_status
+                derived_non_comment_status = [string]$metric.derived_non_comment_status
+            }
+        }
+    }
+    if ($rows.Count -eq 0) {
+        return ($script:GssCommenterLensCsvColumns -join ',')
+    }
+    return (@($rows | ConvertTo-Csv -NoTypeInformation) -join [Environment]::NewLine)
+}
+
+function Assert-GssCommenterLensCsvContract {
+    param([Parameter(Mandatory)][string]$CsvText)
+
+    $firstLine = @($CsvText -split '\r?\n', 2)[0]
+    $actualColumns = @($firstLine -split ',' | ForEach-Object { ([string]$_).Trim().Trim('"') })
+    if ($actualColumns.Count -ne $script:GssCommenterLensCsvColumns.Count) {
+        throw 'GSS commenter-lens CSV contract violation: header column count is invalid.'
+    }
+    for ($index = 0; $index -lt $script:GssCommenterLensCsvColumns.Count; $index++) {
+        if ([string]$actualColumns[$index] -cne [string]$script:GssCommenterLensCsvColumns[$index]) {
+            throw "GSS commenter-lens CSV contract violation: unsupported column '$($actualColumns[$index])'."
+        }
+    }
+    if ($CsvText -match '(?i)response_hash|guest_first_name|guest_last_name|sanitized_text|source_path|source_row|reservation_time|individual_prediction') {
+        throw 'GSS commenter-lens CSV contract violation: row-level fields are forbidden.'
     }
 }
 
@@ -907,6 +1812,70 @@ function Get-GssSourceDescriptor {
     }
 }
 
+function Get-GssPortableArtifactDescriptor {
+    param(
+        [Parameter(Mandatory)][string]$PackagePath,
+        [Parameter(Mandatory)][string]$Role,
+        [Parameter(Mandatory)][string]$RelativePath
+    )
+
+    $artifactPath = Join-Path $PackagePath $RelativePath
+    if (-not (Test-Path -LiteralPath $artifactPath -PathType Leaf)) {
+        throw "Portable package artifact is missing: $Role"
+    }
+    $item = Get-Item -LiteralPath $artifactPath
+    if ($item.Length -le 0) {
+        throw "Portable package artifact is empty: $Role"
+    }
+    return [pscustomobject][ordered]@{
+        role = $Role
+        path = $RelativePath
+        byte_size = [long]$item.Length
+        sha256 = Get-GssSha256 $artifactPath
+    }
+}
+
+function Assert-GssPortableArtifactInventory {
+    param(
+        [Parameter(Mandatory)][string]$PackagePath,
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Artifacts
+    )
+
+    if (@($Artifacts).Count -ne $script:GssPortableArtifactPaths.Count) {
+        throw "Existing package must contain exactly $($script:GssPortableArtifactPaths.Count) portable artifact records."
+    }
+    foreach ($expected in $script:GssPortableArtifactPaths.GetEnumerator()) {
+        $artifactMatches = @($Artifacts | Where-Object { [string]$_.role -ceq [string]$expected.Key })
+        if ($artifactMatches.Count -ne 1) {
+            throw "Existing package must contain exactly one portable artifact for role '$($expected.Key)'."
+        }
+        $artifact = $artifactMatches[0]
+        Assert-GssExactObjectSchema `
+            -Value $artifact `
+            -AllowedProperties @('role', 'path', 'byte_size', 'sha256') `
+            -Label "Portable artifact '$($expected.Key)'"
+        if ([string]$artifact.path -cne [string]$expected.Value) {
+            throw "Existing package portable artifact path is invalid for role '$($expected.Key)'."
+        }
+        if ($null -eq $artifact.byte_size -or
+            -not (Test-GssNativeFiniteNumber $artifact.byte_size) -or
+            [double]$artifact.byte_size -le 0 -or
+            [double]$artifact.byte_size -ne [math]::Truncate([double]$artifact.byte_size) -or
+            [string]$artifact.sha256 -cnotmatch '^[a-f0-9]{64}$') {
+            throw "Existing package portable artifact evidence is invalid for role '$($expected.Key)'."
+        }
+        $artifactPath = Join-Path $PackagePath ([string]$expected.Value)
+        if (-not (Test-Path -LiteralPath $artifactPath -PathType Leaf)) {
+            throw "Existing package portable artifact is missing: $($expected.Key)"
+        }
+        $item = Get-Item -LiteralPath $artifactPath
+        if ([long]$item.Length -ne [long]$artifact.byte_size -or
+            (Get-GssSha256 $artifactPath) -cne [string]$artifact.sha256) {
+            throw "Existing package portable artifact does not match its manifest: $($expected.Key)"
+        }
+    }
+}
+
 function Assert-GssLoggedFileEvidence {
     param([object]$RunLog, [object[]]$Descriptors)
 
@@ -941,8 +1910,9 @@ function ConvertTo-GssMetricEvidenceCard {
 
     $restaurantDisplayName = Get-GssRestaurantDisplayName $Item.Entity
     $confidenceTier = if ($Item.PSObject.Properties['ConfidenceTier']) { [string]$Item.ConfidenceTier } else { 'Not scored' }
-    $displayText = '{0}: Level: 13-week rolling result {1} ({2} confidence, n={3}); Movement: {4} points versus the previous 13-week rolling window and {5} points versus prior year; Benchmark: {6} points versus all franchisees. Adjacent 13-week windows overlap by 12 weeks.' -f `
-        $Item.Metric, (Format-GssEvidenceNumber $Item.Current), $confidenceTier, (Format-GssEvidenceNumber $Item.CurrentCount), (Format-GssEvidenceNumber $Item.ChangeVsPreviousRollingWindow -Signed), (Format-GssEvidenceNumber $Item.YoYImprovement -Signed), (Format-GssEvidenceNumber $Item.VsAllFranchisees -Signed)
+    $responseVolumeTier = if ($Item.PSObject.Properties['ResponseVolumeTier']) { [string]$Item.ResponseVolumeTier } else { $confidenceTier }
+    $displayText = '{0}: Level: 13-week rolling result {1} ({2} response-volume tier, n={3}); Movement: {4} points versus the previous 13-week rolling window and {5} points versus prior year; Benchmark: {6} points versus all franchisees. Adjacent 13-week windows overlap by 12 weeks.' -f `
+        $Item.Metric, (Format-GssEvidenceNumber $Item.Current), $responseVolumeTier, (Format-GssEvidenceNumber $Item.CurrentCount), (Format-GssEvidenceNumber $Item.ChangeVsPreviousRollingWindow -Signed), (Format-GssEvidenceNumber $Item.YoYImprovement -Signed), (Format-GssEvidenceNumber $Item.VsAllFranchisees -Signed)
     return [pscustomobject][ordered]@{
         evidence_id = $Item.EvidenceId
         restaurant_id = $Item.RestaurantId
@@ -958,6 +1928,7 @@ function ConvertTo-GssMetricEvidenceCard {
         lower_is_better = [bool]$Item.LowerIsBetter
         rolling_value = $Item.Current
         response_count = $Item.CurrentCount
+        response_volume_tier = $responseVolumeTier
         confidence_tier = $confidenceTier
         change_vs_previous_window = $Item.ChangeVsPreviousRollingWindow
         change_vs_prior_year = $Item.YoYImprovement
@@ -966,6 +1937,7 @@ function ConvertTo-GssMetricEvidenceCard {
             rolling_weeks = [int]$script:GssAnalysisPolicy.rolling_windows.weeks
             value = $Item.Current
             response_count = $Item.CurrentCount
+            response_volume_tier = $responseVolumeTier
             confidence_tier = $confidenceTier
         }
         movement = [pscustomobject][ordered]@{
@@ -1024,7 +1996,7 @@ function Assert-GssMetricEvidenceCardContract {
         [Parameter(Mandatory)][string]$CardLabel
     )
 
-    foreach ($propertyName in @('evidence_id', 'restaurant_id', 'metric_key', 'metric', 'confidence_tier')) {
+    foreach ($propertyName in @('evidence_id', 'restaurant_id', 'metric_key', 'metric', 'response_volume_tier', 'confidence_tier')) {
         $value = Get-GssRequiredEvidenceProperty -Card $Card -PropertyName $propertyName -CardLabel $CardLabel
         if ([string]::IsNullOrWhiteSpace([string]$value)) {
             throw "GSS analysis evidence contract violation: $CardLabel has an empty '$propertyName'."
@@ -1051,6 +2023,9 @@ function Assert-GssMetricEvidenceCardContract {
     if ($confidenceTier -notin @('High', 'Developing', 'Low', 'Not scored')) {
         throw "GSS analysis evidence contract violation: $CardLabel has invalid confidence tier '$confidenceTier'."
     }
+    if ([string]$Card.response_volume_tier -ne [string]$confidenceTier) {
+        throw "GSS analysis evidence contract violation: $CardLabel response-volume tier conflicts with its compatibility confidence-tier alias."
+    }
     foreach ($propertyName in @('response_count', 'change_vs_previous_window', 'change_vs_prior_year', 'vs_franchise')) {
         $value = Get-GssRequiredEvidenceProperty -Card $Card -PropertyName $propertyName -CardLabel $CardLabel
         if ($null -ne $value -and -not (Test-GssNativeFiniteNumber $value)) {
@@ -1068,6 +2043,9 @@ function Assert-GssMetricEvidenceCardContract {
     }
     if ([string]$Card.level.confidence_tier -ne [string]$Card.confidence_tier) {
         throw "GSS analysis evidence contract violation: $CardLabel level confidence tier conflicts with the top-level value."
+    }
+    if ([string]$Card.level.response_volume_tier -ne [string]$Card.response_volume_tier) {
+        throw "GSS analysis evidence contract violation: $CardLabel level response-volume tier conflicts with the top-level value."
     }
 }
 
@@ -1101,14 +2079,387 @@ function Assert-GssThemeEvidenceCardContract {
     }
 }
 
+function Assert-GssCommenterLensContract {
+    param([Parameter(Mandatory)][object]$CommenterLens)
+
+    Assert-GssExactObjectSchema `
+        -Value $CommenterLens `
+        -AllowedProperties @(
+            'schema_version',
+            'status',
+            'reason_code',
+            'reason',
+            'scope_label',
+            'population_modeling_status',
+            'reporting_window',
+            'source_design',
+            'claims',
+            'row_level_data_persisted',
+            'restaurants',
+            'limitations'
+        ) `
+        -Label 'GSS commenter lens'
+    Assert-GssExactObjectSchema `
+        -Value $CommenterLens.reporting_window `
+        -AllowedProperties @(
+            'weeks',
+            'start_date',
+            'end_date',
+            'inclusive',
+            'commenter_date_basis',
+            'population_date_basis',
+            'exact_partition_alignment_verified',
+            'source_alignment'
+        ) `
+        -Label 'GSS commenter-lens reporting window'
+    Assert-GssExactObjectSchema `
+        -Value $CommenterLens.source_design `
+        -AllowedProperties @(
+            'population_scores_source',
+            'population_raw_rows_available',
+            'row_level_scores_source',
+            'non_comment_row_level_scores_available',
+            'commenter_rows_population_representative'
+        ) `
+        -Label 'GSS commenter-lens source design'
+    Assert-GssExactObjectSchema `
+        -Value $CommenterLens.claims `
+        -AllowedProperties @(
+            'population_prevalence_claimed',
+            'statistical_significance_claimed',
+            'causal_driver_claimed',
+            'individual_prediction_produced'
+        ) `
+        -Label 'GSS commenter-lens claims'
+    foreach ($propertyName in @('schema_version', 'status', 'reason_code', 'reason', 'scope_label', 'population_modeling_status', 'row_level_data_persisted')) {
+        Assert-GssScalarValue -Value $CommenterLens.$propertyName -Label "GSS commenter-lens property '$propertyName'"
+    }
+    foreach ($propertyName in @('weeks', 'start_date', 'end_date', 'inclusive', 'commenter_date_basis', 'population_date_basis', 'exact_partition_alignment_verified', 'source_alignment')) {
+        Assert-GssScalarValue -Value $CommenterLens.reporting_window.$propertyName -Label "GSS commenter-lens reporting-window property '$propertyName'"
+    }
+    foreach ($propertyName in @('population_scores_source', 'population_raw_rows_available', 'row_level_scores_source', 'non_comment_row_level_scores_available', 'commenter_rows_population_representative')) {
+        Assert-GssScalarValue -Value $CommenterLens.source_design.$propertyName -Label "GSS commenter-lens source-design property '$propertyName'"
+    }
+    foreach ($propertyName in @('population_prevalence_claimed', 'statistical_significance_claimed', 'causal_driver_claimed', 'individual_prediction_produced')) {
+        Assert-GssScalarValue -Value $CommenterLens.claims.$propertyName -Label "GSS commenter-lens claims property '$propertyName'"
+    }
+    foreach ($limitation in @($CommenterLens.limitations)) {
+        if ($limitation -isnot [string]) {
+            throw 'GSS commenter-lens contract violation: every limitation must be a scalar string.'
+        }
+    }
+
+    if ([string]$CommenterLens.schema_version -ne 'gss-commenter-lens/v1' -or
+        [string]$CommenterLens.status -notin @('Ready', 'InsufficientData', 'DataQualityReview') -or
+        [string]::IsNullOrWhiteSpace([string]$CommenterLens.reason_code) -or
+        [string]::IsNullOrWhiteSpace([string]$CommenterLens.reason) -or
+        [string]$CommenterLens.scope_label -ne [string]$script:GssAnalysisPolicy.commenter_lens.scope_label -or
+        [string]$CommenterLens.population_modeling_status -ne 'PopulationRawDataUnavailable') {
+        throw 'GSS commenter-lens contract violation: schema, status, scope, or population-modeling status is invalid.'
+    }
+    $populationRawRowsProperty = $CommenterLens.source_design.PSObject.Properties['population_raw_rows_available']
+    if ($null -eq $populationRawRowsProperty -or
+        $populationRawRowsProperty.Value -isnot [bool] -or
+        [bool]$populationRawRowsProperty.Value -or
+        $CommenterLens.source_design.non_comment_row_level_scores_available -isnot [bool] -or
+        [bool]$CommenterLens.source_design.non_comment_row_level_scores_available -or
+        $CommenterLens.source_design.commenter_rows_population_representative -isnot [bool] -or
+        [bool]$CommenterLens.source_design.commenter_rows_population_representative -or
+        $CommenterLens.row_level_data_persisted -isnot [bool] -or
+        [bool]$CommenterLens.row_level_data_persisted -or
+        @(
+            $CommenterLens.claims.population_prevalence_claimed,
+            $CommenterLens.claims.statistical_significance_claimed,
+            $CommenterLens.claims.causal_driver_claimed,
+            $CommenterLens.claims.individual_prediction_produced
+        ).Where({ $_ -isnot [bool] -or [bool]$_ }).Count -gt 0) {
+        throw 'GSS commenter-lens contract violation: population raw-row availability, prohibited persistence, or analytical claims are enabled.'
+    }
+    $alignmentProperty = $CommenterLens.reporting_window.PSObject.Properties['exact_partition_alignment_verified']
+    if ($null -eq $alignmentProperty -or $alignmentProperty.Value -isnot [bool]) {
+        throw 'GSS commenter-lens contract violation: exact partition-alignment verification must be an explicit Boolean.'
+    }
+    $exactPartitionAlignmentVerified = [bool]$alignmentProperty.Value
+    $restaurantIds = @()
+    foreach ($restaurant in @($CommenterLens.restaurants)) {
+        Assert-GssExactObjectSchema `
+            -Value $restaurant `
+            -AllowedProperties @(
+                'restaurant_id',
+                'status',
+                'population_response_count',
+                'commenter_response_count',
+                'comment_coverage_pct',
+                'comment_coverage_status',
+                'data_quality_issues',
+                'metrics'
+            ) `
+            -Label 'GSS commenter-lens restaurant'
+        foreach ($propertyName in @(
+            'restaurant_id',
+            'status',
+            'population_response_count',
+            'commenter_response_count',
+            'comment_coverage_pct',
+            'comment_coverage_status'
+        )) {
+            Assert-GssScalarValue `
+                -Value $restaurant.$propertyName `
+                -AllowNull:($propertyName -in @('population_response_count', 'comment_coverage_pct')) `
+                -Label "GSS commenter-lens restaurant property '$propertyName'"
+        }
+        foreach ($issue in @($restaurant.data_quality_issues)) {
+            if ($issue -isnot [string]) {
+                throw "GSS commenter-lens contract violation: restaurant '$($restaurant.restaurant_id)' data-quality issues must be scalar strings."
+            }
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$restaurant.restaurant_id) -or
+            [string]$restaurant.status -notin @('Ready', 'InsufficientData', 'DataQualityReview')) {
+            throw 'GSS commenter-lens contract violation: restaurant identity or status is invalid.'
+        }
+        if ([string]$restaurant.restaurant_id -in $restaurantIds) {
+            throw "GSS commenter-lens contract violation: restaurant '$($restaurant.restaurant_id)' is duplicated."
+        }
+        $restaurantIds += [string]$restaurant.restaurant_id
+        foreach ($propertyName in @('commenter_response_count')) {
+            $value = $restaurant.$propertyName
+            if (-not (Test-GssNativeFiniteNumber $value) -or
+                [double]$value -lt 0 -or
+                [double]$value -ne [math]::Truncate([double]$value)) {
+                throw "GSS commenter-lens contract violation: restaurant '$($restaurant.restaurant_id)' property '$propertyName' must be a nonnegative native integer."
+            }
+        }
+        if ([string]$restaurant.comment_coverage_status -notin @(
+            'Ready',
+            'SuppressedUnverifiedPartitionAlignment',
+            'SuppressedInvalidCoverage'
+        )) {
+            throw "GSS commenter-lens contract violation: restaurant '$($restaurant.restaurant_id)' has an invalid comment-coverage status."
+        }
+        if (-not $exactPartitionAlignmentVerified -and
+            (
+                $null -ne $restaurant.comment_coverage_pct -or
+                [string]$restaurant.comment_coverage_status -eq 'Ready'
+            )) {
+            throw "GSS commenter-lens contract violation: restaurant '$($restaurant.restaurant_id)' exposes comment coverage without verified partition alignment."
+        }
+        if ($null -ne $restaurant.population_response_count -and
+            (
+                -not (Test-GssNativeFiniteNumber $restaurant.population_response_count) -or
+                [double]$restaurant.population_response_count -lt 0 -or
+                [double]$restaurant.population_response_count -ne [math]::Truncate([double]$restaurant.population_response_count)
+            )) {
+            throw "GSS commenter-lens contract violation: restaurant '$($restaurant.restaurant_id)' has an invalid population response count."
+        }
+        if ($null -ne $restaurant.comment_coverage_pct -and
+            (
+                -not (Test-GssNativeFiniteNumber $restaurant.comment_coverage_pct) -or
+                [double]$restaurant.comment_coverage_pct -lt 0 -or
+                [double]$restaurant.comment_coverage_pct -gt 100
+            )) {
+            throw "GSS commenter-lens contract violation: restaurant '$($restaurant.restaurant_id)' has an invalid comment-coverage percentage."
+        }
+        $metricIds = @()
+        foreach ($metric in @($restaurant.metrics)) {
+            Assert-GssExactObjectSchema `
+                -Value $metric `
+                -AllowedProperties @(
+                    'metric_id',
+                    'response_field',
+                    'population_metric',
+                    'event_minimum',
+                    'event_maximum',
+                    'commenter_scored_response_count',
+                    'commenter_missing_score_count',
+                    'commenter_event_count',
+                    'commenter_event_rate_pct',
+                    'commenter_rate_denominator_label',
+                    'population_event_rate_pct',
+                    'population_rate_denominator_label',
+                    'denominator_alignment_status',
+                    'commenter_minus_population_percentage_points',
+                    'material_gap',
+                    'negative_experience_overrepresented_among_commenters',
+                    'population_event_count_reconstruction_error',
+                    'reconstructed_population_event_count',
+                    'derived_non_comment_response_count',
+                    'derived_non_comment_event_count',
+                    'derived_non_comment_event_rate_pct',
+                    'commenter_minus_non_comment_percentage_points',
+                    'comparison_status',
+                    'derived_non_comment_status'
+                ) `
+                -Label "GSS commenter-lens metric for restaurant '$($restaurant.restaurant_id)'"
+            foreach ($propertyName in @(
+                'metric_id',
+                'response_field',
+                'population_metric',
+                'event_minimum',
+                'event_maximum',
+                'commenter_scored_response_count',
+                'commenter_missing_score_count',
+                'commenter_event_count',
+                'commenter_event_rate_pct',
+                'commenter_rate_denominator_label',
+                'population_event_rate_pct',
+                'population_rate_denominator_label',
+                'denominator_alignment_status',
+                'commenter_minus_population_percentage_points',
+                'material_gap',
+                'negative_experience_overrepresented_among_commenters',
+                'population_event_count_reconstruction_error',
+                'reconstructed_population_event_count',
+                'derived_non_comment_response_count',
+                'derived_non_comment_event_count',
+                'derived_non_comment_event_rate_pct',
+                'commenter_minus_non_comment_percentage_points',
+                'comparison_status',
+                'derived_non_comment_status'
+            )) {
+                Assert-GssScalarValue `
+                    -Value $metric.$propertyName `
+                    -AllowNull:($propertyName -in @(
+                        'population_metric',
+                        'commenter_event_rate_pct',
+                        'population_event_rate_pct',
+                        'commenter_minus_population_percentage_points',
+                        'material_gap',
+                        'negative_experience_overrepresented_among_commenters',
+                        'population_event_count_reconstruction_error',
+                        'reconstructed_population_event_count',
+                        'derived_non_comment_response_count',
+                        'derived_non_comment_event_count',
+                        'derived_non_comment_event_rate_pct',
+                        'commenter_minus_non_comment_percentage_points'
+                    )) `
+                    -Label "GSS commenter-lens metric '$($metric.metric_id)' property '$propertyName'"
+            }
+            $metricPolicyMatches = @(
+                $script:GssAnalysisPolicy.commenter_lens.metrics |
+                    Where-Object { [string]$_.id -ceq [string]$metric.metric_id }
+            )
+            if ($metricPolicyMatches.Count -ne 1) {
+                throw "GSS commenter-lens contract violation: metric '$($metric.metric_id)' is not defined exactly once by policy."
+            }
+            if ([string]$metric.metric_id -in $metricIds) {
+                throw "GSS commenter-lens contract violation: metric '$($metric.metric_id)' is duplicated for restaurant '$($restaurant.restaurant_id)'."
+            }
+            $metricIds += [string]$metric.metric_id
+            $metricPolicy = $metricPolicyMatches[0]
+            $expectedPopulationMetric = if ($null -eq $metricPolicy.population_metric) { $null } else { [string]$metricPolicy.population_metric }
+            if ([string]$metric.response_field -cne [string]$metricPolicy.response_field -or
+                $metric.population_metric -cne $expectedPopulationMetric -or
+                [double]$metric.event_minimum -ne [double]$metricPolicy.event_minimum -or
+                [double]$metric.event_maximum -ne [double]$metricPolicy.event_maximum) {
+                throw "GSS commenter-lens contract violation: metric '$($metric.metric_id)' does not match its policy definition."
+            }
+            foreach ($countName in @('commenter_scored_response_count', 'commenter_missing_score_count', 'commenter_event_count')) {
+                $value = $metric.$countName
+                if (-not (Test-GssNativeFiniteNumber $value) -or
+                    [double]$value -lt 0 -or
+                    [double]$value -ne [math]::Truncate([double]$value)) {
+                    throw "GSS commenter-lens contract violation: metric '$($metric.metric_id)' property '$countName' must be a nonnegative native integer."
+                }
+            }
+            if ([int]$metric.commenter_event_count -gt [int]$metric.commenter_scored_response_count -or
+                ([int]$metric.commenter_scored_response_count + [int]$metric.commenter_missing_score_count) -ne [int]$restaurant.commenter_response_count) {
+                throw "GSS commenter-lens contract violation: metric '$($metric.metric_id)' denominators are inconsistent."
+            }
+            if ([int]$metric.commenter_missing_score_count -gt 0 -and
+                (
+                    $null -ne $metric.commenter_minus_population_percentage_points -or
+                    [string]$metric.comparison_status -eq 'Ready'
+                )) {
+                throw "GSS commenter-lens contract violation: metric '$($metric.metric_id)' exposes a population gap with missing commenter scores."
+            }
+            if (-not $exactPartitionAlignmentVerified -and
+                (
+                    $null -ne $metric.commenter_minus_population_percentage_points -or
+                    $null -ne $metric.material_gap -or
+                    $null -ne $metric.negative_experience_overrepresented_among_commenters -or
+                    $null -ne $metric.reconstructed_population_event_count -or
+                    $null -ne $metric.population_event_count_reconstruction_error -or
+                    [string]$metric.comparison_status -eq 'Ready'
+                )) {
+                throw "GSS commenter-lens contract violation: metric '$($metric.metric_id)' exposes a cross-source comparison without verified partition alignment."
+            }
+            if (-not $exactPartitionAlignmentVerified -and
+                (
+                    $null -ne $metric.derived_non_comment_response_count -or
+                    $null -ne $metric.derived_non_comment_event_count -or
+                    $null -ne $metric.derived_non_comment_event_rate_pct -or
+                    $null -ne $metric.commenter_minus_non_comment_percentage_points -or
+                    [string]$metric.derived_non_comment_status -eq 'Ready'
+                )) {
+                throw "GSS commenter-lens contract violation: metric '$($metric.metric_id)' exposes derived non-comment results without verified partition alignment."
+            }
+            foreach ($numericName in @(
+                'commenter_event_rate_pct',
+                'population_event_rate_pct',
+                'commenter_minus_population_percentage_points',
+                'population_event_count_reconstruction_error',
+                'derived_non_comment_event_rate_pct',
+                'commenter_minus_non_comment_percentage_points'
+            )) {
+                $value = $metric.$numericName
+                if ($null -ne $value -and -not (Test-GssNativeFiniteNumber $value)) {
+                    throw "GSS commenter-lens contract violation: metric '$($metric.metric_id)' property '$numericName' must be null or a native finite number."
+                }
+            }
+            foreach ($nullableCountName in @(
+                'reconstructed_population_event_count',
+                'derived_non_comment_response_count',
+                'derived_non_comment_event_count'
+            )) {
+                $value = $metric.$nullableCountName
+                if ($null -ne $value -and
+                    (
+                        -not (Test-GssNativeFiniteNumber $value) -or
+                        [double]$value -lt 0 -or
+                        [double]$value -ne [math]::Truncate([double]$value)
+                    )) {
+                    throw "GSS commenter-lens contract violation: metric '$($metric.metric_id)' property '$nullableCountName' must be null or a nonnegative native integer."
+                }
+            }
+            foreach ($nullableBooleanName in @('material_gap', 'negative_experience_overrepresented_among_commenters')) {
+                $value = $metric.$nullableBooleanName
+                if ($null -ne $value -and $value -isnot [bool]) {
+                    throw "GSS commenter-lens contract violation: metric '$($metric.metric_id)' property '$nullableBooleanName' must be null or Boolean."
+                }
+            }
+        }
+        $expectedMetricIds = @($script:GssAnalysisPolicy.commenter_lens.metrics | ForEach-Object { [string]$_.id })
+        if ($metricIds.Count -ne $expectedMetricIds.Count -or
+            @($expectedMetricIds | Where-Object { $_ -notin $metricIds }).Count -gt 0) {
+            throw "GSS commenter-lens contract violation: restaurant '$($restaurant.restaurant_id)' does not contain the exact policy metric set."
+        }
+    }
+    $serialized = $CommenterLens | ConvertTo-Json -Depth 20 -Compress
+    foreach ($forbiddenProperty in @(
+        'response_hash',
+        'guest_first_name',
+        'guest_last_name',
+        'sanitized_text',
+        'source_path',
+        'source_row',
+        'reservation_time',
+        'individual_prediction'
+    )) {
+        if ($serialized -match ('(?i)"' + [regex]::Escape($forbiddenProperty) + '"\s*:')) {
+            throw "GSS commenter-lens contract violation: row-level property '$forbiddenProperty' is forbidden."
+        }
+    }
+}
+
 function Test-GssAnalysisEvidenceContract {
     param([Parameter(Mandatory)][object]$Analysis)
 
-    foreach ($propertyName in @('metric_evidence', 'theme_evidence', 'evidence_cards')) {
+    foreach ($propertyName in @('metric_evidence', 'theme_evidence', 'evidence_cards', 'commenter_lens')) {
         if ($null -eq $Analysis.PSObject.Properties[$propertyName]) {
             throw "GSS analysis evidence contract violation: analysis is missing required property '$propertyName'."
         }
     }
+    Assert-GssCommenterLensContract -CommenterLens $Analysis.commenter_lens
 
     $unifiedCards = @($Analysis.evidence_cards)
     foreach ($card in @($Analysis.metric_evidence)) {
@@ -1153,28 +2504,57 @@ function New-GssEvidencePreviewText {
             $lines += 'No movement met the reporting thresholds.'
         }
         foreach ($item in @($restaurant.Strengths)) {
-            $lines += "Strength: $($item.Metric). Level: $(Format-GssEvidenceNumber $item.Current) ($($item.ConfidenceTier) confidence, n=$(Format-GssEvidenceNumber $item.CurrentCount)). Movement: $(Format-GssEvidenceNumber $item.ChangeVsPreviousRollingWindow -Signed) points versus the previous window and $(Format-GssEvidenceNumber $item.YoYImprovement -Signed) points versus prior year. Benchmark: $(Format-GssEvidenceNumber $item.VsAllFranchisees -Signed) points versus all franchisees."
+            $volumeTier = if ($item.PSObject.Properties['ResponseVolumeTier']) { $item.ResponseVolumeTier } else { $item.ConfidenceTier }
+            $lines += "Strength: $($item.Metric). Level: $(Format-GssEvidenceNumber $item.Current) ($volumeTier response-volume tier, n=$(Format-GssEvidenceNumber $item.CurrentCount)). Movement: $(Format-GssEvidenceNumber $item.ChangeVsPreviousRollingWindow -Signed) points versus the previous window and $(Format-GssEvidenceNumber $item.YoYImprovement -Signed) points versus prior year. Benchmark: $(Format-GssEvidenceNumber $item.VsAllFranchisees -Signed) points versus all franchisees."
         }
         foreach ($item in @($restaurant.Opportunities)) {
-            $lines += "Opportunity: $($item.Metric). Level: $(Format-GssEvidenceNumber $item.Current) ($($item.ConfidenceTier) confidence, n=$(Format-GssEvidenceNumber $item.CurrentCount)). Movement: $(Format-GssEvidenceNumber $item.ChangeVsPreviousRollingWindow -Signed) points versus the previous window and $(Format-GssEvidenceNumber $item.YoYImprovement -Signed) points versus prior year. Benchmark: $(Format-GssEvidenceNumber $item.VsAllFranchisees -Signed) points versus all franchisees."
+            $volumeTier = if ($item.PSObject.Properties['ResponseVolumeTier']) { $item.ResponseVolumeTier } else { $item.ConfidenceTier }
+            $lines += "Opportunity: $($item.Metric). Level: $(Format-GssEvidenceNumber $item.Current) ($volumeTier response-volume tier, n=$(Format-GssEvidenceNumber $item.CurrentCount)). Movement: $(Format-GssEvidenceNumber $item.ChangeVsPreviousRollingWindow -Signed) points versus the previous window and $(Format-GssEvidenceNumber $item.YoYImprovement -Signed) points versus prior year. Benchmark: $(Format-GssEvidenceNumber $item.VsAllFranchisees -Signed) points versus all franchisees."
+        }
+    }
+    $lines += ''
+    $lines += "Population driver modeling: $($Analysis.Modeling.Status). $($Analysis.Modeling.Reason)"
+    if ($null -ne $Analysis.CommenterLens) {
+        $lines += "$($Analysis.CommenterLens.scope_label) - aggregate commenter lens:"
+        foreach ($restaurant in @($Analysis.CommenterLens.restaurants)) {
+            $coverageText = if ($null -eq $restaurant.comment_coverage_pct) {
+                'coverage unavailable'
+            }
+            else {
+                '{0:N1}% comment coverage' -f [double]$restaurant.comment_coverage_pct
+            }
+            $lines += "- $($restaurant.restaurant_id): $($restaurant.commenter_response_count) comment-bearing surveys of $($restaurant.population_response_count) population responses; $coverageText; status $($restaurant.status)."
+            foreach ($metric in @($restaurant.metrics)) {
+                $gapText = if ($null -eq $metric.commenter_minus_population_percentage_points) {
+                    'population gap suppressed'
+                }
+                else {
+                    '{0:+0.0;-0.0;0.0} percentage points versus the population aggregate' -f [double]$metric.commenter_minus_population_percentage_points
+                }
+                $lines += "  - $($metric.metric_id): $(Format-GssEvidenceNumber $metric.commenter_event_rate_pct)% among scored comment-providing guests (n=$($metric.commenter_scored_response_count)); $gapText; $($metric.comparison_status)."
+            }
+        }
+        $lines += 'Commenter scores describe only guests who provided comments. Commenter rates use nonmissing commenter scores, while population rates retain the vendor aggregate denominator. The commenter window is aligned by guest-detail visit date, not by an asserted exact source-report-week row match. These results do not estimate population score prevalence, causal drivers, or individual outcomes.'
+        if (-not [bool]$Analysis.CommenterLens.reporting_window.exact_partition_alignment_verified) {
+            $lines += 'Derived non-comment counts and rates are suppressed because exact commenter/population reporting-partition alignment has not been verified.'
         }
     }
     $lines += ''
     if ($Feedback.ResponseCount -gt 0) {
-        $lines += "New guest feedback: $($Feedback.ResponseCount) unique responses with visit dates from $($Feedback.VisitDateStart) through $($Feedback.VisitDateEnd). Themes are reported only when supported by at least $($script:GssAnalysisPolicy.guest_feedback.minimum_unique_responses_per_theme) unique responses."
+        $lines += "New guest feedback among guests who provided comments: $($Feedback.ResponseCount) unique responses with visit dates from $($Feedback.VisitDateStart) through $($Feedback.VisitDateEnd). Themes are reported only when supported by at least $($script:GssAnalysisPolicy.guest_feedback.minimum_unique_responses_per_theme) unique comment-providing responses."
         foreach ($theme in @($Feedback.Themes)) {
-            $lines += "- $($theme.restaurant_id) $($theme.category): $($theme.unique_response_count) of $($theme.denominator_response_count) unique responses, visit dates $($theme.visit_date_start) through $($theme.visit_date_end). Theme categories are non-exclusive."
+            $lines += "- $($theme.restaurant_id) $($theme.category): $($theme.unique_response_count) of $($theme.denominator_response_count) unique comment-providing responses, visit dates $($theme.visit_date_start) through $($theme.visit_date_end). Theme categories are non-exclusive."
         }
     }
     else {
-        $lines += 'New guest feedback: no previously unseen responses were found in the validated detail exports.'
+        $lines += 'New guest feedback among guests who provided comments: no previously unseen responses were found in the validated detail exports.'
     }
     $lines += ''
     $lines += 'Recommended follow-up: review the evidence-backed opportunities with the appropriate restaurant leaders and confirm local context before choosing an action.'
     $lines += ''
     $lines += 'Bottom line: this risk-reduced analysis requires human review. These directional comparisons identify items for review; they do not establish statistical significance or causation.'
     $lines += ''
-    $lines += "Methodology: score results are 13-week rolling aggregates, and adjacent windows overlap by 12 weeks. Guest feedback is deduplicated across current and archived exports; published analysis text is risk-reduced through name, contact-pattern, unsafe-control, and do-not-contact handling. The raw detail attachment still contains personal data, so the entire package remains $script:GssRestrictedClassification. Feedback is described using its actual visit-date range rather than as an exact seven-day sample."
+    $lines += "Methodology: population score results are 13-week rolling aggregates, and adjacent windows overlap by 12 weeks. Raw row-level scores are supplied only for surveys with comments; commenter score distributions and themes are labeled among guests who provided comments and are not population-representative. Guest feedback is deduplicated across current and archived exports; published analysis text is risk-reduced through name, contact-pattern, unsafe-control, and do-not-contact handling. The raw detail attachment still contains personal data, so the entire package remains $script:GssRestrictedClassification. Feedback is described using its actual visit-date range rather than as an exact seven-day sample."
     return ($lines -join [Environment]::NewLine)
 }
 
@@ -1234,11 +2614,20 @@ function Test-GssExistingEmailPackage {
     if ($recomputedPackageId -ne $PackageId) {
         throw "Existing deterministic package ID does not match its attested source inventory: $PackageId"
     }
-    foreach ($requiredName in @('analysis.json', 'email_preview.txt', 'email_preview.html', 'RESTRICTED.txt', 'READY')) {
+    foreach ($requiredName in @('analysis.json', 'commenter_lens.json', 'commenter_lens.csv', 'email_preview.txt', 'email_preview.html', 'RESTRICTED.txt', 'READY')) {
         $requiredPath = Join-Path $PackagePath $requiredName
         if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf) -or (Get-Item -LiteralPath $requiredPath).Length -le 0) {
             throw "Existing deterministic package is missing required output: $requiredName"
         }
+    }
+    Assert-GssPortableArtifactInventory -PackagePath $PackagePath -Artifacts @($manifest.portable_artifacts)
+    if ([string]$manifest.analysis_path -cne 'analysis.json' -or
+        [string]$manifest.commenter_lens_json_path -cne 'commenter_lens.json' -or
+        [string]$manifest.commenter_lens_csv_path -cne 'commenter_lens.csv' -or
+        [string]$manifest.text_preview_path -cne 'email_preview.txt' -or
+        [string]$manifest.html_preview_path -cne 'email_preview.html' -or
+        [string]$manifest.classification_notice_path -cne 'RESTRICTED.txt') {
+        throw "Existing deterministic package portable output paths are invalid: $PackageId"
     }
     $analysis = Read-GssUtf8NoBomFile (Join-Path $PackagePath 'analysis.json') | ConvertFrom-Json
     if ($analysis.schema_version -ne $script:GssEmailPackageSchemaVersion -or $analysis.package_id -ne $PackageId) {
@@ -1250,6 +2639,15 @@ function Test-GssExistingEmailPackage {
     if ([string]$analysis.feedback_selection_sha256 -ne [string]$manifest.feedback_selection_sha256) {
         throw "Existing deterministic package analysis feedback selection does not match its manifest: $PackageId"
     }
+    $commenterLens = Read-GssUtf8NoBomFile (Join-Path $PackagePath 'commenter_lens.json') | ConvertFrom-Json
+    Assert-GssCommenterLensContract -CommenterLens $commenterLens
+    $embeddedCommenterLens = $analysis.commenter_lens | ConvertTo-Json -Depth 20 -Compress
+    $standaloneCommenterLens = $commenterLens | ConvertTo-Json -Depth 20 -Compress
+    if ($embeddedCommenterLens -cne $standaloneCommenterLens) {
+        throw "Existing deterministic package analysis and commenter-lens output disagree: $PackageId"
+    }
+    $commenterCsv = Read-GssUtf8NoBomFile (Join-Path $PackagePath 'commenter_lens.csv')
+    Assert-GssCommenterLensCsvContract -CsvText $commenterCsv
     $null = Test-GssAnalysisEvidenceContract -Analysis $analysis
     $availableEvidenceIds = @(
         @($analysis.portfolio_evidence) + @($analysis.metric_evidence) + @($analysis.sanitized_feedback) |
@@ -1337,6 +2735,18 @@ function New-GssEmailPackage {
 
     $reportingDate = [datetime]::Parse([string]$RunLog.CurrentWeekEnding).Date
     $inventory = Get-GssDetailInventory -FolderPath $FolderPath -ReportingDate $reportingDate
+    $commenterLens = Get-GssCommenterLens `
+        -Inventory $inventory `
+        -MetricDetail @($AnalysisResult.MetricDetail) `
+        -ReportingDate $reportingDate
+    Assert-GssCommenterLensContract -CommenterLens $commenterLens
+    $AnalysisResult | Add-Member -NotePropertyName CommenterLens -NotePropertyValue $commenterLens -Force
+    if ($null -eq $AnalysisResult.PSObject.Properties['Modeling'] -or $null -eq $AnalysisResult.Modeling) {
+        $AnalysisResult | Add-Member `
+            -NotePropertyName Modeling `
+            -NotePropertyValue (Get-GssPopulationModelingAvailability) `
+            -Force
+    }
     $sourceDescriptors = @(
         (Get-GssSourceDescriptor -Role 'comparison_pdf' -Path ([string]$RunLog.EmailComparisonPdf) -FolderPath $FolderPath),
         (Get-GssSourceDescriptor -Role 'rolling_workbook' -Path ([string]$RunLog.CurrentSourceWorkbook) -FolderPath $FolderPath),
@@ -1392,6 +2802,8 @@ function New-GssEmailPackage {
         workbook_status = [string]$AnalysisResult.WorkbookStatus
         analysis_status = [string]$AnalysisResult.AnalysisStatus
         email_readiness = 'Ready'
+        population_modeling_status = [string]$AnalysisResult.Modeling.Status
+        commenter_lens_status = [string]$commenterLens.status
     }
 
     $metricEvidence = @()
@@ -1406,7 +2818,7 @@ function New-GssEmailPackage {
         $restaurantName = if ($restaurantFinding -and $restaurantFinding.Name) { $restaurantFinding.Name } else { Get-GssRestaurantDisplayName $sourceEntity }
         $findingType = if ([int]$theme.concern_count -gt [int]$theme.positive_count) { 'opportunity' } elseif ([int]$theme.positive_count -gt [int]$theme.concern_count) { 'strength' } else { 'mixed' }
         $dncNote = if ([int]$theme.do_not_contact_count -gt 0) { "; $($theme.do_not_contact_count) do-not-contact response(s) included only in aggregate counts" } else { '' }
-        $displayText = "${restaurantName}: new guest feedback $($theme.category) theme in $($theme.unique_response_count) of $($theme.denominator_response_count) unique responses with visit dates $($theme.visit_date_start) through $($theme.visit_date_end); $($theme.concern_count) concern and $($theme.positive_count) positive$dncNote. Theme categories are non-exclusive."
+        $displayText = "${restaurantName}: among guests who provided comments, new guest feedback $($theme.category) theme in $($theme.unique_response_count) of $($theme.denominator_response_count) unique comment-providing responses with visit dates $($theme.visit_date_start) through $($theme.visit_date_end); $($theme.concern_count) concern and $($theme.positive_count) positive$dncNote. Theme categories are non-exclusive."
         $themeEvidence += [pscustomobject][ordered]@{
             theme_id = $theme.theme_id
             restaurant_id = $theme.restaurant_id
@@ -1435,7 +2847,7 @@ function New-GssEmailPackage {
     else {
         'no previously unseen guest-feedback responses in the validated exports'
     }
-    $portfolioDisplayText = "Portfolio reporting basis: 13-week rolling results through $($reporting.reporting_date); adjacent 13-week windows overlap by 12 weeks; changes compare with the previous rolling window and matching prior-year rolling window; $feedbackBasis. This risk-reduced analysis requires human review. These comparisons are directional and do not establish statistical significance or causation."
+    $portfolioDisplayText = "Portfolio reporting basis: 13-week rolling population aggregates through $($reporting.reporting_date); adjacent 13-week windows overlap by 12 weeks; changes compare with the previous rolling window and matching prior-year rolling window; $feedbackBasis. Raw row-level scores describe only guests who provided comments and are not population-representative. This risk-reduced analysis requires human review. These comparisons are directional and do not establish statistical significance or causation."
     $portfolioEvidence = [pscustomobject][ordered]@{
         evidence_id = 'portfolio-' + (Get-GssStringSha256 ("$packageId|reporting-basis")).Substring(0, 16)
         kind = 'reporting_basis'
@@ -1465,6 +2877,11 @@ function New-GssEmailPackage {
                 themes = $restaurantThemes
                 evidence = @($themeEvidence | Where-Object { $_.restaurant_id -eq $restaurant.RestaurantId })
             }
+            commenter_lens = (
+                $commenterLens.restaurants |
+                    Where-Object { $_.restaurant_id -eq $restaurant.RestaurantId } |
+                    Select-Object -First 1
+            )
         }
     }
 
@@ -1502,13 +2919,21 @@ function New-GssEmailPackage {
             causation_claimed = $false
             human_review_required = $true
             analysis_description = 'risk-reduced'
-            feedback_label = 'new guest feedback'
+            population_modeling_status = [string]$AnalysisResult.Modeling.Status
+            commenter_lens_scope = [string]$commenterLens.scope_label
+            commenter_rows_population_representative = $false
+            commenter_alignment_basis = [string]$commenterLens.reporting_window.source_alignment
+            commenter_exact_partition_alignment_verified = [bool]$commenterLens.reporting_window.exact_partition_alignment_verified
+            commenter_rate_denominator = 'comment-providing responses with a nonmissing metric score'
+            population_rate_denominator = 'vendor rolling population aggregate metric denominator'
+            feedback_label = 'new guest feedback among guests who provided comments'
             feedback_response_count = $feedback.ResponseCount
             feedback_visit_date_start = $feedback.VisitDateStart
             feedback_visit_date_end = $feedback.VisitDateEnd
-            theme_denominator_label = 'N of M unique responses over the stated visit-date range'
+            theme_denominator_label = 'N of M unique comment-providing responses over the stated visit-date range'
             theme_categories_are_non_exclusive = $true
         }
+        commenter_lens = $commenterLens
         portfolio = [pscustomobject][ordered]@{
             evidence = @($portfolioEvidence)
         }
@@ -1541,6 +2966,8 @@ function New-GssEmailPackage {
             PackageId = $packageId
             PackagePath = $packagePath
             ManifestPath = Join-Path $packagePath 'email_manifest.json'
+            CommenterLensJsonPath = Join-Path $packagePath 'commenter_lens.json'
+            CommenterLensCsvPath = Join-Path $packagePath 'commenter_lens.csv'
             ReadyMarkerPath = Join-Path $packagePath 'READY'
             ExistingPackage = $true
         }
@@ -1580,11 +3007,15 @@ function New-GssEmailPackage {
         $previewText = New-GssEvidencePreviewText -Analysis $AnalysisResult -Feedback $feedback -ReportingDate $reportingDate
         $previewHtml = ConvertTo-GssSimpleHtml $previewText
         $analysisPath = Join-Path $stagingPath 'analysis.json'
+        $commenterLensJsonPath = Join-Path $stagingPath 'commenter_lens.json'
+        $commenterLensCsvPath = Join-Path $stagingPath 'commenter_lens.csv'
         $textPath = Join-Path $stagingPath 'email_preview.txt'
         $htmlPath = Join-Path $stagingPath 'email_preview.html'
         $classificationPath = Join-Path $stagingPath 'RESTRICTED.txt'
         $manifestPath = Join-Path $stagingPath 'email_manifest.json'
         Write-GssUtf8NoBomFile -Path $analysisPath -Value ($analysisDocument | ConvertTo-Json -Depth 12)
+        Write-GssUtf8NoBomFile -Path $commenterLensJsonPath -Value ($commenterLens | ConvertTo-Json -Depth 12)
+        Write-GssUtf8NoBomFile -Path $commenterLensCsvPath -Value (ConvertTo-GssCommenterLensCsv -CommenterLens $commenterLens)
         Write-GssUtf8NoBomFile -Path $textPath -Value $previewText
         Write-GssUtf8NoBomFile -Path $htmlPath -Value $previewHtml
         Write-GssUtf8NoBomFile -Path $classificationPath -Value @"
@@ -1596,6 +3027,15 @@ Automatic sending is disabled. Confirm every recipient is authorized before any 
         $sourceLogDescriptor = @($sourceDescriptors | Where-Object role -eq 'run_log')
         if ($sourceLogDescriptor.Count -ne 1) { throw 'Package source inventory must contain exactly one run_log descriptor.' }
         $sourceLogPath = [string]$sourceLogDescriptor[0].source_path
+        $portableArtifacts = @(
+            $script:GssPortableArtifactPaths.GetEnumerator() |
+                ForEach-Object {
+                    Get-GssPortableArtifactDescriptor `
+                        -PackagePath $stagingPath `
+                        -Role ([string]$_.Key) `
+                        -RelativePath ([string]$_.Value)
+                }
+        )
         $manifest = [pscustomobject][ordered]@{
             schema_version = $script:GssEmailPackageSchemaVersion
             policy_version = $script:GssAnalysisPolicyVersion
@@ -1608,6 +3048,8 @@ Automatic sending is disabled. Confirm every recipient is authorized before any 
             distribution_controls = $analysisDocument.distribution_controls
             source_log_path = $sourceLogPath
             analysis_path = 'analysis.json'
+            commenter_lens_json_path = 'commenter_lens.json'
+            commenter_lens_csv_path = 'commenter_lens.csv'
             text_preview_path = 'email_preview.txt'
             html_preview_path = 'email_preview.html'
             classification_notice_path = 'RESTRICTED.txt'
@@ -1621,6 +3063,7 @@ Automatic sending is disabled. Confirm every recipient is authorized before any 
                 }
             })
             attachments = $attachments
+            portable_artifacts = $portableArtifacts
             evidence_ids = @(
                 @($portfolioEvidence) + @($metricEvidence) + @($feedback.Cards) |
                     ForEach-Object { [string]$_.evidence_id } |
@@ -1632,13 +3075,14 @@ Automatic sending is disabled. Confirm every recipient is authorized before any 
         }
         Write-GssUtf8NoBomFile -Path $manifestPath -Value ($manifest | ConvertTo-Json -Depth 12)
 
-        foreach ($requiredName in @('email_manifest.json', 'analysis.json', 'email_preview.txt', 'email_preview.html', 'RESTRICTED.txt')) {
+        foreach ($requiredName in @('email_manifest.json', 'analysis.json', 'commenter_lens.json', 'commenter_lens.csv', 'email_preview.txt', 'email_preview.html', 'RESTRICTED.txt')) {
             $requiredPath = Join-Path $stagingPath $requiredName
             if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf) -or (Get-Item -LiteralPath $requiredPath).Length -le 0) {
                 throw "Package output is empty or missing: $requiredName"
             }
             Assert-GssUtf8NoBomFile -Path $requiredPath -Label $requiredName
         }
+        Assert-GssPortableArtifactInventory -PackagePath $stagingPath -Artifacts $portableArtifacts
         foreach ($attachment in $attachments) {
             $attachmentPath = Join-Path $stagingPath $attachment.path.Replace('/', '\')
             if ((Get-GssSha256 $attachmentPath) -ne $attachment.sha256) { throw "Final attachment validation failed: $($attachment.role)" }
@@ -1650,9 +3094,11 @@ Automatic sending is disabled. Confirm every recipient is authorized before any 
             }
         }
         $analysisText = Read-GssUtf8NoBomFile $analysisPath
+        $commenterLensJsonText = Read-GssUtf8NoBomFile $commenterLensJsonPath
+        $commenterLensCsvText = Read-GssUtf8NoBomFile $commenterLensCsvPath
         $manifestText = Read-GssUtf8NoBomFile $manifestPath
         $classificationText = Read-GssUtf8NoBomFile $classificationPath
-        $aiFacingText = $analysisText + $previewText + $previewHtml + $classificationText
+        $aiFacingText = $analysisText + $commenterLensJsonText + $commenterLensCsvText + $previewText + $previewHtml + $classificationText
         $nonRawText = $aiFacingText + $manifestText
         if ($nonRawText -match '(?i)(?:[A-Z]:[\\/]|\\\\[^\\])') { throw 'A machine-specific path leaked into a portable package file.' }
         # Deterministic methodology and metadata can legitimately contain an
@@ -1693,6 +3139,8 @@ Automatic sending is disabled. Confirm every recipient is authorized before any 
             PackageId = $packageId
             PackagePath = $packagePath
             ManifestPath = Join-Path $packagePath 'email_manifest.json'
+            CommenterLensJsonPath = Join-Path $packagePath 'commenter_lens.json'
+            CommenterLensCsvPath = Join-Path $packagePath 'commenter_lens.csv'
             ReadyMarkerPath = Join-Path $packagePath 'READY'
             ExistingPackage = $false
         }

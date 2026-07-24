@@ -633,6 +633,221 @@ try {
     }
     Assert-GssDriveBackupTest $setMismatchRefused 'Committed RecoveryOnly evidence accepted a widened final file set.'
 
+    $releaseProgramRoot = Join-Path $gssRoot 'GSS Survey Workbook Automation'
+    $releaseManifestDirectory = Join-Path $releaseProgramRoot 'release'
+    $releaseStateDirectory = Join-Path $gssRoot '_automation_runs\state\release'
+    $releaseStagingRoot = Join-Path $resolvedTestRoot 'release-archive-staging'
+    foreach ($folder in @(
+        $releaseManifestDirectory,
+        $releaseStateDirectory,
+        (Join-Path $releaseStagingRoot 'release'),
+        (Join-Path $gssRoot '_automation_runs\test-output\release-copy-test')
+    )) {
+        New-Item -ItemType Directory -Path $folder -Force | Out-Null
+    }
+
+    $releaseReadmeText = "# Release fixture`r`nProgram source only.`r`n"
+    $releaseReadmePath = Join-Path $releaseStagingRoot 'README.md'
+    Write-GssDriveBackupAtomicText -Path $releaseReadmePath -Text $releaseReadmeText
+    $releaseCanonicalBytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes(
+        $releaseReadmeText.Replace("`r`n", "`n").Replace("`r", "`n")
+    )
+    $releaseVersion = '1.1.1'
+    $releaseTag = "v$releaseVersion"
+    $releaseArchiveName = "gss-survey-workbook-automation-$releaseTag.zip"
+    $releaseManifestPath = Join-Path $releaseManifestDirectory 'release-manifest.json'
+    $releaseManifest = [ordered]@{
+        schema_version = 1
+        release_version = $releaseVersion
+        release_tag = $releaseTag
+        commit_binding = 'exact_release_tag'
+        generated_at_utc = '2026-07-24T12:00:00Z'
+        classification = 'PROGRAM SOURCE ONLY - NO GSS WORKBOOKS, REPORTS, OR CUSTOMER DATA'
+        runtime_contract = [ordered]@{
+            require_clean_tree = $true
+            reject_untracked_executables = $true
+            require_exact_tag_at_head = $true
+            automatic_sending = 'permanently_disabled'
+            live_execution = 'manual_apply_only'
+            excel_validation_receipt_required = $true
+            excel_validation_receipt_name = 'local-excel-validation-receipt.json'
+            excel_validation_receipt_relative_path = '_automation_runs/state/release/local-excel-validation-receipt.json'
+        }
+        archive_name = $releaseArchiveName
+        files = @(
+            [ordered]@{
+                path = 'README.md'
+                role = 'documentation'
+                hash_mode = 'utf8_lf'
+                canonical_size_bytes = $releaseCanonicalBytes.Length
+                sha256 = Get-GssDriveBackupByteSha256 -Bytes $releaseCanonicalBytes
+            }
+        )
+    }
+    Write-GssDriveBackupAtomicJson -Path $releaseManifestPath -Value $releaseManifest
+    $manifestUtf8 = New-Object System.Text.UTF8Encoding($false, $true)
+    $releaseManifestText = [System.IO.File]::ReadAllText($releaseManifestPath, $manifestUtf8)
+    $releaseManifestCanonicalText = $releaseManifestText.Replace("`r`n", "`n").Replace("`r", "`n")
+    [System.IO.File]::WriteAllText(
+        $releaseManifestPath,
+        $releaseManifestCanonicalText.Replace("`n", "`r`n"),
+        $manifestUtf8
+    )
+    $archivedReleaseManifestPath = Join-Path $releaseStagingRoot 'release\release-manifest.json'
+    [System.IO.File]::WriteAllText($archivedReleaseManifestPath, $releaseManifestCanonicalText, $manifestUtf8)
+    Assert-GssDriveBackupTest `
+        ((Get-GssDriveBackupSha256 -Path $releaseManifestPath) -cne (Get-GssDriveBackupSha256 -Path $archivedReleaseManifestPath)) `
+        'ReleaseOnly line-ending regression fixture did not produce distinct CRLF and LF manifest bytes.'
+
+    try {
+        Add-Type -AssemblyName System.IO.Compression -ErrorAction Stop
+        Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop
+    }
+    catch {
+        if (-not ('System.IO.Compression.ZipFile' -as [type])) { throw }
+    }
+    $releaseArchivePath = Join-Path $releaseStateDirectory $releaseArchiveName
+    [System.IO.Compression.ZipFile]::CreateFromDirectory($releaseStagingRoot, $releaseArchivePath)
+
+    $releaseWorkbookPath = Join-Path $gssRoot '_automation_runs\test-output\release-copy-test\GSS Score Trends - Main.xlsx'
+    Write-GssDriveBackupAtomicText -Path $releaseWorkbookPath -Text 'copy-only workbook evidence'
+    $releaseWorkbookHash = Get-GssDriveBackupSha256 -Path $releaseWorkbookPath
+    $releaseRunFingerprint = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+    $releaseSourceLogPath = Join-Path $gssRoot '_automation_runs\logs\release-copy-test.json'
+    $releaseWorkbookRelative = '_automation_runs/test-output/release-copy-test/GSS Score Trends - Main.xlsx'
+    Write-GssDriveBackupAtomicJson -Path $releaseSourceLogPath -Value ([ordered]@{
+        Mode = 'CopyTestOnly'
+        TransactionStatus = 'Prepared'
+        ProgramRelease = $releaseTag
+        HostName = [Environment]::MachineName
+        RunFingerprint = $releaseRunFingerprint
+        StagedWorkbookRelativePath = $releaseWorkbookRelative
+        StagedWorkbookSha256 = $releaseWorkbookHash
+    })
+    $releaseReceiptPath = Join-Path $releaseStateDirectory 'local-excel-validation-receipt.json'
+    Write-GssDriveBackupAtomicJson -Path $releaseReceiptPath -Value ([ordered]@{
+        ReceiptSchemaVersion = 1
+        TimestampUtc = '2026-07-24T12:10:00Z'
+        Status = 'Passed'
+        Error = $null
+        GitHead = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+        ReleaseTag = $releaseTag
+        ExcelVersion = '16.0'
+        WorkbookPath = $releaseWorkbookRelative
+        WorkbookSha256 = $releaseWorkbookHash
+        SourceRunFingerprint = $releaseRunFingerprint
+        SourceRunLogPath = '_automation_runs/logs/release-copy-test.json'
+        FormulaErrors = 0
+        ConstantErrors = 0
+    })
+
+    $releaseBackupInventory = @(
+        [pscustomobject][ordered]@{
+            SourcePath = $releaseArchivePath
+            PortablePath = "release/$releaseArchiveName"
+            Role = 'release_archive'
+            Classification = 'restricted_operational'
+        }
+        [pscustomobject][ordered]@{
+            SourcePath = $releaseManifestPath
+            PortablePath = 'release/release-manifest.json'
+            Role = 'release_manifest'
+            Classification = 'restricted_operational'
+        }
+        [pscustomobject][ordered]@{
+            SourcePath = $releaseReceiptPath
+            PortablePath = 'release/local-excel-validation-receipt.json'
+            Role = 'release_excel_receipt'
+            Classification = 'restricted_operational'
+        }
+    )
+    $releaseInventoryEvidence = @(Get-GssDriveBackupInventory -GssRoot $gssRoot -AdditionalItems $releaseBackupInventory -InventoryMode ReleaseOnly)
+    $releaseFingerprintHash = Get-GssReleaseOnlyInventoryFingerprint -Inventory $releaseInventoryEvidence -Release $releaseTag
+    $releaseSummaryPath = Join-Path $releaseStateDirectory 'drive-release-summary-v1.1.1.json'
+    $releaseSummary = [ordered]@{
+        schema_version = 'gss-release-drive-summary/v1'
+        GeneratedAtUtc = '2026-07-24T12:00:00Z'
+        RunId = "gss-release-$releaseTag-$($releaseFingerprintHash.Substring(0, 12))"
+        RunFingerprint = "sha256:$releaseFingerprintHash"
+        Folder = $gssRoot
+        CurrentWeekEnding = '2026-07-24'
+        ProgramRelease = $releaseTag
+        SnapshotPurpose = 'ReleaseOnly'
+        BackupInventory = $releaseBackupInventory
+    }
+    Write-GssDriveBackupAtomicJson -Path $releaseSummaryPath -Value $releaseSummary
+
+    $releaseInventory = & $invokeScript -Operation Inventory -RunSummaryPath $releaseSummaryPath -SettingsPath $settingsPath -OutputObject
+    Assert-GssDriveBackupTest ($releaseInventory.SnapshotPurpose -eq 'ReleaseOnly') 'ReleaseOnly purpose was not propagated.'
+    Assert-GssDriveBackupTest ($releaseInventory.InventoryMode -eq 'ReleaseOnly') 'ReleaseOnly inventory mode was not propagated.'
+    Assert-GssDriveBackupTest ($releaseInventory.FileCount -eq 3 -and -not $releaseInventory.ContainsPersonalData) 'ReleaseOnly inventory was not the exact non-personal-data triad.'
+
+    $releaseExtraPath = Join-Path $releaseStateDirectory 'not-approved.txt'
+    Write-GssDriveBackupAtomicText -Path $releaseExtraPath -Text 'must not enter ReleaseOnly'
+    $releaseWidenedSummaryPath = Join-Path $resolvedTestRoot 'release-widened-summary.json'
+    $releaseWidenedSummary = $releaseSummary | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+    $releaseWidenedSummary.BackupInventory = @($releaseWidenedSummary.BackupInventory) + @(
+        [pscustomobject]@{
+            SourcePath = $releaseExtraPath
+            PortablePath = 'release/not-approved.txt'
+            Role = 'release_manifest'
+            Classification = 'restricted_operational'
+        }
+    )
+    Write-GssDriveBackupAtomicJson -Path $releaseWidenedSummaryPath -Value $releaseWidenedSummary
+    $releaseWidenedRefused = $false
+    try {
+        [void](& $invokeScript -Operation Inventory -RunSummaryPath $releaseWidenedSummaryPath -SettingsPath $settingsPath -OutputObject)
+    }
+    catch {
+        $releaseWidenedRefused = $_.Exception.Message -match 'exactly three'
+    }
+    Assert-GssDriveBackupTest $releaseWidenedRefused 'ReleaseOnly accepted a fourth artifact.'
+
+    $releaseJunctionTarget = Join-Path $resolvedTestRoot 'release-junction-target'
+    New-Item -ItemType Directory -Path $releaseJunctionTarget -Force | Out-Null
+    Copy-Item -LiteralPath $releaseArchivePath -Destination (Join-Path $releaseJunctionTarget $releaseArchiveName)
+    $releaseJunctionPath = Join-Path $releaseStateDirectory 'linked'
+    New-Item -ItemType Junction -Path $releaseJunctionPath -Target $releaseJunctionTarget | Out-Null
+    $releaseJunctionSummaryPath = Join-Path $resolvedTestRoot 'release-junction-summary.json'
+    $releaseJunctionSummary = $releaseSummary | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+    @($releaseJunctionSummary.BackupInventory | Where-Object Role -eq 'release_archive')[0].SourcePath =
+        Join-Path $releaseJunctionPath $releaseArchiveName
+    Write-GssDriveBackupAtomicJson -Path $releaseJunctionSummaryPath -Value $releaseJunctionSummary
+    $releaseJunctionRefused = $false
+    try {
+        [void](& $invokeScript -Operation Inventory -RunSummaryPath $releaseJunctionSummaryPath -SettingsPath $settingsPath -OutputObject)
+    }
+    catch {
+        $releaseJunctionRefused = $_.Exception.Message -match 'symbolic link or junction'
+    }
+    Assert-GssDriveBackupTest $releaseJunctionRefused 'ReleaseOnly traversed a junction to release bytes outside the GSS root.'
+
+    $releasePrepared = & $invokeScript -Operation Prepare -RunSummaryPath $releaseSummaryPath -SettingsPath $settingsPath -OutputObject
+    Assert-GssDriveBackupTest ($releasePrepared.Status -eq 'Prepared') 'ReleaseOnly preparation failed.'
+    $releasePreparedManifest = Read-GssDriveBackupJson -Path $releasePrepared.PreparedManifestPath
+    Assert-GssDriveBackupTest ($releasePreparedManifest.snapshot_purpose -eq 'ReleaseOnly') 'ReleaseOnly prepared manifest omitted its purpose.'
+    Assert-GssDriveBackupTest ($releasePreparedManifest.scope.inventory_mode -eq 'ReleaseOnly') 'ReleaseOnly prepared manifest omitted its inventory mode.'
+    Assert-GssDriveBackupTest (-not [bool]$releasePreparedManifest.data_classification.contains_personal_data) 'ReleaseOnly prepared manifest incorrectly claimed personal data.'
+    $releasePreparedRetry = & $invokeScript -Operation Prepare -RunSummaryPath $releaseSummaryPath -SettingsPath $settingsPath -OutputObject
+    Assert-GssDriveBackupTest ($releasePreparedRetry.Status -eq 'Prepared' -and $releasePreparedRetry.Idempotent) 'ReleaseOnly preparation was not idempotent.'
+
+    $releaseArchiveOriginal = Join-Path $resolvedTestRoot 'release-archive-original.zip'
+    Copy-Item -LiteralPath $releaseArchivePath -Destination $releaseArchiveOriginal
+    Write-GssDriveBackupAtomicText -Path $releaseArchivePath -Text 'changed after preparation'
+    $changedReleaseFinalize = & $invokeScript -Operation Finalize -RunSummaryPath $releaseSummaryPath -SettingsPath $settingsPath -OutputObject
+    Assert-GssDriveBackupTest ($changedReleaseFinalize.Status -eq 'PendingFinalize') 'ReleaseOnly finalization accepted changed archive bytes.'
+    Copy-Item -LiteralPath $releaseArchiveOriginal -Destination $releaseArchivePath -Force
+
+    $releaseCommitted = & $invokeScript -Operation Finalize -RunSummaryPath $releaseSummaryPath -SettingsPath $settingsPath -OutputObject
+    Assert-GssDriveBackupTest ($releaseCommitted.Status -eq 'Committed' -and $releaseCommitted.FileCount -eq 3) "ReleaseOnly finalize did not commit the exact triad: $($releaseCommitted.Error)"
+    $releaseValidation = Test-GssCommittedBackupSnapshot -SnapshotPath $releaseCommitted.SnapshotPath
+    Assert-GssDriveBackupTest ($releaseValidation.Manifest.snapshot_purpose -eq 'ReleaseOnly') 'Committed ReleaseOnly snapshot omitted its purpose.'
+    Assert-GssDriveBackupTest ($releaseValidation.Manifest.scope.inventory_mode -eq 'ReleaseOnly') 'Committed ReleaseOnly snapshot omitted its narrow inventory mode.'
+    Assert-GssDriveBackupTest (@($releaseValidation.Manifest.files).Count -eq 3) 'Committed ReleaseOnly snapshot was widened.'
+    $releaseRestore = Restore-GssDriveBackupForVerification -RunId $releaseSummary.RunId -SettingsPath $settingsPath -LocalAppDataPath $localAppData -Phase Final
+    Assert-GssDriveBackupTest ($releaseRestore.Status -eq 'Verified' -and $releaseRestore.FileCount -eq 3 -and -not $releaseRestore.LiveWorkbookOverwritten) 'ReleaseOnly verify-only restore failed.'
+
     Move-Item -LiteralPath $recoveredPathOne -Destination $recoveredHoldingRoot
     Move-Item -LiteralPath $recoveredPathTwo -Destination $recoveredHoldingRoot
     $staleSummaryPath = Join-Path $resolvedTestRoot 'stale-run-summary.json'
@@ -696,7 +911,7 @@ try {
     Assert-GssDriveBackupTest ((Get-Content -LiteralPath $restoredPreparedWorkbook -Raw).Trim() -eq 'pre-apply-workbook') 'Prepared verify-only restore did not recover the pre-apply workbook.'
     $hashOnlyDrillStatus = Get-GssDriveBackupRestoreDrillStatus -LocalAppDataPath $localAppData -AsOfDate ([datetime]'2026-07-23')
     Assert-GssDriveBackupTest ($hashOnlyDrillStatus.Status -eq 'Due') 'A hash-only VerifyRestore incorrectly satisfied the quarterly desktop Excel drill.'
-    Assert-GssDriveBackupTest ($hashOnlyDrillStatus.HashOnlyVerificationCount -eq 2 -and -not $hashOnlyDrillStatus.HashOnlyVerificationSatisfiesQuarterlyDrill) 'Hash-only restore evidence was not exposed separately.'
+    Assert-GssDriveBackupTest ($hashOnlyDrillStatus.HashOnlyVerificationCount -eq 3 -and -not $hashOnlyDrillStatus.HashOnlyVerificationSatisfiesQuarterlyDrill) 'Hash-only restore evidence was not exposed separately.'
 
     $excelReceiptPath = Join-Path $restored.Destination 'local-excel-validation-receipt.json'
     Write-GssDriveBackupAtomicJson -Path $excelReceiptPath -Value ([ordered]@{

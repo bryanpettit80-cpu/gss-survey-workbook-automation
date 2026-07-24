@@ -38,7 +38,19 @@ function Write-GssAnalysisAtomicText {
     try {
         [System.IO.File]::WriteAllText($temporaryPath, $Content, (New-Object System.Text.UTF8Encoding($false)))
         if (Test-Path -LiteralPath $Path -PathType Leaf) {
-            [System.IO.File]::Replace($temporaryPath, $Path, $replacementBackupPath, $true)
+            for ($attempt = 1; $attempt -le 20; $attempt++) {
+                try {
+                    [System.IO.File]::Replace($temporaryPath, $Path, $replacementBackupPath, $true)
+                    break
+                }
+                catch [System.IO.IOException] {
+                    if ($attempt -eq 20) { throw }
+                    if (Test-Path -LiteralPath $replacementBackupPath -PathType Leaf) {
+                        Remove-Item -LiteralPath $replacementBackupPath -Force
+                    }
+                    Start-Sleep -Milliseconds 250
+                }
+            }
         }
         else {
             [System.IO.File]::Move($temporaryPath, $Path)

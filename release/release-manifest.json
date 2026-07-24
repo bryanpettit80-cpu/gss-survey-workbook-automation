@@ -3,7 +3,7 @@
   "release_version": "1.1.0",
   "release_tag": "v1.1.0",
   "commit_binding": "exact_release_tag",
-  "generated_at_utc": "2026-07-24T03:25:40.7071785Z",
+  "generated_at_utc": "2026-07-24T03:40:18.4546732Z",
   "classification": "PROGRAM SOURCE ONLY - NO GSS WORKBOOKS, REPORTS, OR CUSTOMER DATA",
   "runtime_contract": {
     "require_clean_tree": true,
@@ -70,8 +70,8 @@
       "path": "scripts/Analyze-GSS-Run.ps1",
       "role": "runtime",
       "hash_mode": "utf8_lf",
-      "canonical_size_bytes": 52284,
-      "sha256": "9b06ac3c3e3e513f058ef0fff749feb16a2e8000313eaec5d2e81390681d6933"
+      "canonical_size_bytes": 52568,
+      "sha256": "6b32f57354081ba3b09e92e276b8923835dee2b0e0f6cc80cce45b299364e8d4"
     },
     {
       "path": "scripts/Get-GSS-SetupStatus.ps1",
@@ -147,8 +147,8 @@
       "path": "scripts/Invoke-GSS-SafeWorkbookUpdate.ps1",
       "role": "runtime",
       "hash_mode": "utf8_lf",
-      "canonical_size_bytes": 24221,
-      "sha256": "731790fe251cd73d60dd32b505c7c3d663f0d7a3f524385ea46d83e39a9e788c"
+      "canonical_size_bytes": 24505,
+      "sha256": "4cd219ab651a1e33320e6b73d3ea29d945c28c5a1f498a36d27f7976d5a155af"
     },
     {
       "path": "scripts/Invoke-GSS-ShadowModel.ps1",
@@ -168,8 +168,8 @@
       "path": "scripts/Resume-GSS-PendingFinalize.ps1",
       "role": "runtime",
       "hash_mode": "utf8_lf",
-      "canonical_size_bytes": 12773,
-      "sha256": "b010c4ca2cbca3a5bedafb0c524bf9d69b1f33c6a4242200d8fd444750dd03d9"
+      "canonical_size_bytes": 13057,
+      "sha256": "22378c588308be55799bfe8d6f49fac4731c542c93d51dca3da9d2a87077d4af"
     },
     {
       "path": "scripts/Run-GSS-Workbook-Update-Scheduled.cmd",
@@ -210,8 +210,8 @@
       "path": "scripts/Test-GSS-Logic.ps1",
       "role": "validation",
       "hash_mode": "utf8_lf",
-      "canonical_size_bytes": 17051,
-      "sha256": "3ca91acbb3ba8bbece5053e11e9a229738313b8229fc5bf378b1aa21d11509ed"
+      "canonical_size_bytes": 17975,
+      "sha256": "b11dfe191b1c85ec3b6c0269beb552a5f2845ea67574c3e3dfa950b9651ca4c5"
     },
     {
       "path": "scripts/Test-GSS-Pester.ps1",
@@ -252,8 +252,8 @@
       "path": "scripts/Update-GSS-MainWorkbook.ps1",
       "role": "runtime",
       "hash_mode": "utf8_lf",
-      "canonical_size_bytes": 113649,
-      "sha256": "d514d2328b086a44cf4e079313353fd550124b8a4daabf513bba9907d77765ca"
+      "canonical_size_bytes": 113933,
+      "sha256": "0b555f1ed050103f24c32b4961041e77def0f5c37e4a7152254d07e3c4e4d306"
     },
     {
       "path": "templates/00 ABOUT THIS FOLDER.txt",

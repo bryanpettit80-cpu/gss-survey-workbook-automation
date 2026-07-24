@@ -56,6 +56,24 @@ function New-TestSource {
     }
 }
 
+$atomicTestRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('gss-atomic-replace-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $atomicTestRoot -Force | Out-Null
+try {
+    $atomicTestPath = Join-Path $atomicTestRoot 'receipt.json'
+    Write-GssAtomicText -Path $atomicTestPath -Content '{"status":"first"}'
+    Write-GssAtomicText -Path $atomicTestPath -Content '{"status":"replaced"}'
+    Assert-Equal (Get-Content -LiteralPath $atomicTestPath -Raw) '{"status":"replaced"}' 'Atomic text replaces an existing receipt'
+    Assert-Equal @(
+        Get-ChildItem -LiteralPath $atomicTestRoot -File |
+            Where-Object { $_.Name -like '.t-*' -or $_.Name -like '.b-*' }
+    ).Count 0 'Atomic replacement cleans temporary and backup files'
+}
+finally {
+    if (Test-Path -LiteralPath $atomicTestRoot -PathType Container) {
+        Remove-Item -LiteralPath $atomicTestRoot -Recurse -Force
+    }
+}
+
 Assert-Equal (Normalize-Header 'Pace Of Meal Dissat (lower is better)') 'paceofmealdissatlowerisbetter' 'Normalize-Header punctuation removal'
 Assert-Equal (Normalize-Header ' Restaurant ') 'restaurant' 'Normalize-Header whitespace'
 

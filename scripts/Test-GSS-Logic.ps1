@@ -57,6 +57,7 @@ function New-TestSource {
 }
 
 $atomicTestRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('gss-atomic-replace-' + [guid]::NewGuid().ToString('N'))
+$lockProcess = $null
 New-Item -ItemType Directory -Path $atomicTestRoot -Force | Out-Null
 try {
     $atomicTestPath = Join-Path $atomicTestRoot 'receipt.json'
@@ -67,8 +68,51 @@ try {
         Get-ChildItem -LiteralPath $atomicTestRoot -File |
             Where-Object { $_.Name -like '.t-*' -or $_.Name -like '.b-*' }
     ).Count 0 'Atomic replacement cleans temporary and backup files'
+
+    $lockedPath = Join-Path $atomicTestRoot 'locked-receipt.json'
+    $lockMarkerPath = Join-Path $atomicTestRoot 'lock-acquired.txt'
+    Write-GssAtomicText -Path $lockedPath -Content '{"status":"before-lock"}'
+    $escapedLockedPath = $lockedPath.Replace("'", "''")
+    $escapedMarkerPath = $lockMarkerPath.Replace("'", "''")
+    $lockCommand = @"
+`$stream = [System.IO.File]::Open(
+    '$escapedLockedPath',
+    [System.IO.FileMode]::Open,
+    [System.IO.FileAccess]::Read,
+    [System.IO.FileShare]::None
+)
+try {
+    [System.IO.File]::WriteAllText('$escapedMarkerPath', 'locked')
+    Start-Sleep -Milliseconds 1000
 }
 finally {
+    `$stream.Dispose()
+}
+"@
+    $encodedLockCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($lockCommand))
+    $lockProcess = Start-Process -FilePath 'powershell.exe' -ArgumentList @(
+        '-NoLogo',
+        '-NoProfile',
+        '-NonInteractive',
+        '-EncodedCommand',
+        $encodedLockCommand
+    ) -WindowStyle Hidden -PassThru
+    for ($waitAttempt = 1; $waitAttempt -le 200 -and -not (Test-Path -LiteralPath $lockMarkerPath -PathType Leaf); $waitAttempt++) {
+        Start-Sleep -Milliseconds 10
+    }
+    Assert-True (Test-Path -LiteralPath $lockMarkerPath -PathType Leaf) 'Atomic replacement lock test acquired the destination'
+    Write-GssAtomicText -Path $lockedPath -Content '{"status":"after-lock"}'
+    $lockProcess.WaitForExit()
+    Assert-Equal (Get-Content -LiteralPath $lockedPath -Raw) '{"status":"after-lock"}' 'Atomic text retries a transient sharing violation'
+}
+finally {
+    if ($null -ne $lockProcess -and -not $lockProcess.HasExited) {
+        $lockProcess.Kill()
+        $lockProcess.WaitForExit()
+    }
+    if ($null -ne $lockProcess) {
+        $lockProcess.Dispose()
+    }
     if (Test-Path -LiteralPath $atomicTestRoot -PathType Container) {
         Remove-Item -LiteralPath $atomicTestRoot -Recurse -Force
     }

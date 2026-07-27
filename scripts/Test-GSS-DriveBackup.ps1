@@ -498,6 +498,25 @@ try {
     }
     Assert-GssDriveBackupTest $junctionRefused 'RecoveryOnly inventory traversed a junction to a file outside the GSS root.'
 
+    $longPathSnapshotRoot = Join-Path $driveRoot ('.partial-' + [guid]::NewGuid().ToString())
+    $longPathPortable = 'gss/03 Uploaded Survey Workbooks/Archive - Previous Uploads/Recovered Historical Detail/FY26/' + [System.IO.Path]::GetFileName($recoveredPathOne)
+    $uncompactedDestination = Join-Path $longPathSnapshotRoot ('prepared-payload/' + $longPathPortable).Replace('/', '\')
+    Assert-GssDriveBackupTest ($uncompactedDestination.Length -ge 260) 'Long-path regression fixture did not cross the Windows MAX_PATH boundary.'
+    $longPathCopy = @(Copy-GssDriveBackupInventory -Inventory @(
+        [pscustomobject]@{
+            SourcePath = $recoveredPathOne
+            PortablePath = $longPathPortable
+            Role = 'recovered_historical_detail'
+            Classification = 'restricted_personal_data'
+        }
+    ) -SnapshotDirectory $longPathSnapshotRoot -PayloadPrefix 'prepared-payload')
+    Assert-GssDriveBackupTest ($longPathCopy.Count -eq 1) 'Long-path backup did not return exactly one manifest entry.'
+    Assert-GssDriveBackupTest ($longPathCopy[0].snapshot_path -match '^prepared-payload/long-path/[0-9a-f]{64}\.xlsx$') 'Long-path backup did not use a deterministic compact snapshot path.'
+    $longPathCopiedFile = Join-Path $longPathSnapshotRoot $longPathCopy[0].snapshot_path.Replace('/', '\')
+    Assert-GssDriveBackupTest ($longPathCopiedFile.Length -lt 248) 'Compacted snapshot path still approaches the Windows MAX_PATH boundary.'
+    Assert-GssDriveBackupTest (Test-Path -LiteralPath $longPathCopiedFile -PathType Leaf) 'Long-path backup did not promote the copied file.'
+    Assert-GssDriveBackupTest ((Get-GssDriveBackupSha256 -Path $longPathCopiedFile) -eq (Get-GssDriveBackupSha256 -Path $recoveredPathOne)) 'Long-path backup changed the copied file bytes.'
+
     # Keep the unrelated full-snapshot/restore fixture below the legacy
     # Windows MAX_PATH boundary. RecoveryOnly itself still exercises the
     # production collision-proof archive names.

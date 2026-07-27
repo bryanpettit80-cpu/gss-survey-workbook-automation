@@ -923,6 +923,15 @@ function Copy-GssDriveBackupInventory {
     foreach ($item in @($Inventory | Sort-Object PortablePath)) {
         $portable = Assert-GssDriveBackupSafeRelativePath -Path ([string]$item.PortablePath)
         $snapshotRelative = Assert-GssDriveBackupSafeRelativePath -Path "$safePayloadPrefix/$portable"
+        $plannedDestination = Join-Path $SnapshotDirectory $snapshotRelative.Replace('/', '\')
+        if ($plannedDestination.Length -ge 248) {
+            $portableBytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes($portable)
+            $portableDigest = Get-GssDriveBackupByteSha256 -Bytes $portableBytes
+            $extension = [System.IO.Path]::GetExtension($portable)
+            $snapshotRelative = Assert-GssDriveBackupSafeRelativePath -Path (
+                "$safePayloadPrefix/long-path/$portableDigest$extension"
+            )
+        }
         $key = $snapshotRelative.ToLowerInvariant()
         if ($seen.ContainsKey($key)) {
             throw "Duplicate snapshot path in backup inventory: $snapshotRelative"

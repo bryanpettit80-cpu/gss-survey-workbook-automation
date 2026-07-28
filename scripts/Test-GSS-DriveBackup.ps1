@@ -517,6 +517,55 @@ try {
     Assert-GssDriveBackupTest (Test-Path -LiteralPath $longPathCopiedFile -PathType Leaf) 'Long-path backup did not promote the copied file.'
     Assert-GssDriveBackupTest ((Get-GssDriveBackupSha256 -Path $longPathCopiedFile) -eq (Get-GssDriveBackupSha256 -Path $recoveredPathOne)) 'Long-path backup changed the copied file bytes.'
 
+    # A path can fit in .partial-<run-id> yet fail after the directory is moved
+    # beneath snapshots\YYYY\YYYY-MM. Budgeting must include that promotion.
+    $promotionStageRoot = Join-Path $driveRoot '.partial-edge'
+    New-Item -ItemType Directory -Path $promotionStageRoot -Force | Out-Null
+    $promotionPrefix = 'prepared-payload/'
+    $promotionLeafLength = 246 - (Join-Path $promotionStageRoot $promotionPrefix.Replace('/', '\')).Length
+    $promotionPortable = ('p' * ($promotionLeafLength - 4)) + '.txt'
+    $promotionStagedPath = Join-Path $promotionStageRoot ($promotionPrefix + $promotionPortable).Replace('/', '\')
+    $promotionFinalRoot = Join-Path $driveRoot 'snapshots\2026\2026-07\edge'
+    $promotionFinalPath = Join-Path $promotionFinalRoot ($promotionPrefix + $promotionPortable).Replace('/', '\')
+    Assert-GssDriveBackupTest ($promotionStagedPath.Length -in @(246, 247)) 'Promotion regression fixture did not reach the 246-247 character staging edge.'
+    Assert-GssDriveBackupTest ($promotionFinalPath.Length -ge 248) 'Promotion regression fixture did not exceed the safe path budget after promotion.'
+    $promotionCopy = @(Copy-GssDriveBackupInventory -Inventory @(
+        [pscustomobject]@{ SourcePath = $recoveredPathOne; PortablePath = $promotionPortable; Role = 'test'; Classification = 'restricted_operational' }
+    ) -SnapshotDirectory $promotionStageRoot -PayloadPrefix 'prepared-payload' -PathBudgetDirectories @($promotionFinalRoot))
+    Assert-GssDriveBackupTest ($promotionCopy[0].snapshot_path -match '^prepared-payload/long-path/[0-9a-f]{64}\.txt$') 'A staging-safe path was not compacted for its longer promoted destination.'
+    $promotionParent = Split-Path -Parent $promotionFinalRoot
+    New-Item -ItemType Directory -Path $promotionParent -Force | Out-Null
+    Move-Item -LiteralPath $promotionStageRoot -Destination $promotionFinalRoot
+    $promotedEdgeFile = Join-Path $promotionFinalRoot $promotionCopy[0].snapshot_path.Replace('/', '\')
+    Assert-GssDriveBackupTest (Test-Path -LiteralPath $promotedEdgeFile -PathType Leaf) 'The compacted 246-247 character staging fixture did not survive promotion.'
+    Assert-GssDriveBackupTest ((Get-GssDriveBackupSha256 -Path $promotedEdgeFile) -eq (Get-GssDriveBackupSha256 -Path $recoveredPathOne)) 'Promotion changed the compacted edge fixture bytes.'
+
+    $longExtension = '.' + ('extension' * 24)
+    $longExtensionSource = Join-Path $resolvedTestRoot ('source' + $longExtension)
+    Set-Content -LiteralPath $longExtensionSource -Value 'long extension bytes' -Encoding UTF8
+    $longExtensionCopy = @(Copy-GssDriveBackupInventory -Inventory @(
+        [pscustomobject]@{ SourcePath = $longExtensionSource; PortablePath = ('deep/' + ('q' * 20) + $longExtension); Role = 'test'; Classification = 'restricted_operational' }
+    ) -SnapshotDirectory $longPathSnapshotRoot -PayloadPrefix 'extension-payload')
+    $longExtensionName = [System.IO.Path]::GetFileName([string]$longExtensionCopy[0].snapshot_path)
+    Assert-GssDriveBackupTest ($longExtensionCopy[0].snapshot_path -match '^extension-payload/long-path/[0-9a-f]{64}\.') 'Long-extension backup did not use deterministic digest compaction.'
+    Assert-GssDriveBackupTest ($longExtensionName.Length -le (64 + $script:GssDriveBackupMaxRetainedExtensionLength)) 'Compacted filename retained an unbounded extension.'
+    Assert-GssDriveBackupTest ($longExtensionName.Length -le 255) 'Compacted filename component exceeded the Windows limit.'
+    $longExtensionVariant = Get-GssDriveBackupCompactRelativePath -PortablePath ('deep/' + ('q' * 20) + $longExtension + 'x') -Prefix 'extension-payload'
+    Assert-GssDriveBackupTest ($longExtensionCopy[0].snapshot_path -ne $longExtensionVariant) 'Extension truncation discarded the full portable-path digest collision protection.'
+
+    $maxRunId = 'r' + ('x' * 127)
+    $overBudgetRoot = Join-Path $driveRoot (('deep-' + ('d' * 90)) + "\snapshots\2026\2026-07\$maxRunId")
+    $compactBudgetRefused = $false
+    try {
+        [void](Copy-GssDriveBackupInventory -Inventory @(
+            [pscustomobject]@{ SourcePath = $recoveredPathOne; PortablePath = $longPathPortable; Role = 'test'; Classification = 'restricted_operational' }
+        ) -SnapshotDirectory $longPathSnapshotRoot -PayloadPrefix 'prepared-payload' -PathBudgetDirectories @($overBudgetRoot))
+    }
+    catch {
+        $compactBudgetRefused = $_.Exception.Message -match 'Compacted snapshot destination still exceeds the safe Windows path budget before copy'
+    }
+    Assert-GssDriveBackupTest $compactBudgetRefused 'An over-budget compact destination with a valid 128-character RunId was not rejected before copy.'
+
     # Keep the unrelated full-snapshot/restore fixture below the legacy
     # Windows MAX_PATH boundary. RecoveryOnly itself still exercises the
     # production collision-proof archive names.
@@ -610,6 +659,18 @@ try {
     $recoveryValidation = Test-GssCommittedBackupSnapshot -SnapshotPath $recoveryCommitted.SnapshotPath
     Assert-GssDriveBackupTest ($recoveryValidation.Manifest.snapshot_purpose -eq 'RecoveryOnly') 'Committed recovery snapshot omitted its purpose.'
     Assert-GssDriveBackupTest (@($recoveryValidation.Manifest.files).Count -eq 7) 'Committed recovery snapshot was not the exact closed recovery transaction.'
+    $longRestoreLocalAppData = Join-Path $resolvedTestRoot ('restore-root-' + ('r' * 30))
+    $recoveryRestore = Restore-GssDriveBackupForVerification -RunId $recoverySummary.RunId -SettingsPath $settingsPath -LocalAppDataPath $longRestoreLocalAppData -Phase Final
+    $recoveryRestoreReceipt = Read-GssDriveBackupJson -Path $recoveryRestore.ReceiptPath
+    $compactRestoreFiles = @($recoveryRestoreReceipt.files | Where-Object { $_.restored_path -match '^r/long-path/[0-9a-f]{64}\.' })
+    Assert-GssDriveBackupTest ($recoveryRestore.Status -eq 'Verified' -and $recoveryRestore.FileCount -eq 7) 'Long-path RecoveryOnly verify-only restore did not verify every file.'
+    Assert-GssDriveBackupTest ($compactRestoreFiles.Count -gt 0) 'Verify-only restore reconstructed every original portable path instead of compacting an over-budget destination.'
+    foreach ($restoredFile in $compactRestoreFiles) {
+        Assert-GssDriveBackupTest (-not [string]::IsNullOrWhiteSpace([string]$restoredFile.portable_path)) 'Compact restore receipt lost the original portable_path metadata.'
+        $restoredCompactPath = Join-Path $recoveryRestore.Destination ([string]$restoredFile.restored_path).Replace('/', '\')
+        Assert-GssDriveBackupTest ($restoredCompactPath.Length -lt 248 -and (Test-Path -LiteralPath $restoredCompactPath -PathType Leaf)) 'Compact verify-only restore destination is missing or exceeds the safe path budget.'
+        Assert-GssDriveBackupTest ((Get-GssDriveBackupSha256 -Path $restoredCompactPath) -eq [string]$restoredFile.sha256) 'Compact verify-only restore did not preserve byte-integrity verification.'
+    }
 
     $tamperedPurposePath = Join-Path $resolvedTestRoot 'tampered-recovery-purpose'
     Copy-Item -LiteralPath $recoveryCommitted.SnapshotPath -Destination $tamperedPurposePath -Recurse
@@ -966,6 +1027,40 @@ try {
     $capacity = Get-GssDriveBackupCapacityProjection -ProjectedWeeklyBytes 1024 -FreeBytes ([long](208 * 1024)) -SettingsPath $settingsPath
     Assert-GssDriveBackupTest ($capacity.WorstCaseWeeklyLoadsAvailable -eq 104) 'Capacity projection load calculation is incorrect.'
     Assert-GssDriveBackupTest ($capacity.StructuralRedesignStatus -eq 'Deferred') 'Capacity threshold should be deferred at 104 loads.'
+
+    # Exercise the long portable path through the complete Full lifecycle, not
+    # only through the copy helper or the narrower RecoveryOnly workflow.
+    $longLifecycleRunId = 'gss-long-full-20260719-abcdef'
+    $longLifecycleFingerprint = 'sha256:long-full-0123456789abcdef0123456789abcdef0123456789abcdef'
+    $longLifecycleSource = Join-Path $recoveredHoldingRoot ([System.IO.Path]::GetFileName($recoveredPathOne))
+    $longLifecycleInventory = @(
+        [pscustomobject]@{
+            SourcePath = $longLifecycleSource
+            PortablePath = $longPathPortable
+            Role = 'recovered_historical_detail'
+            Classification = 'restricted_personal_data'
+        }
+    )
+    $longLifecyclePrepared = New-GssDriveBackupPreparedSnapshot -RunId $longLifecycleRunId -Fingerprint $longLifecycleFingerprint -ReportWeek ([datetime]'2026-07-19') -Inventory $longLifecycleInventory -SnapshotPurpose WorkbookTransaction -SettingsPath $settingsPath
+    $longPreparedManifest = Read-GssDriveBackupJson -Path $longLifecyclePrepared.PreparedManifestPath
+    $longPreparedEntry = @($longPreparedManifest.files)[0]
+    Assert-GssDriveBackupTest ($longPreparedEntry.portable_path -eq $longPathPortable) 'Full Prepare did not retain the original long portable_path metadata.'
+    Assert-GssDriveBackupTest ($longPreparedEntry.snapshot_path -match '^prepared-payload/long-path/[0-9a-f]{64}\.xlsx$') 'Full Prepare did not persist the compact prepared snapshot_path.'
+    $longLifecycleCommitted = Complete-GssDriveBackupSnapshot -RunId $longLifecycleRunId -Fingerprint $longLifecycleFingerprint -FinalInventory $longLifecycleInventory -SnapshotPurpose WorkbookTransaction -SettingsPath $settingsPath
+    Assert-GssDriveBackupTest ($longLifecycleCommitted.Status -eq 'Committed') 'Full long-path lifecycle did not promote and commit.'
+    $longCommittedValidation = Test-GssCommittedBackupSnapshot -SnapshotPath $longLifecycleCommitted.SnapshotPath
+    $longFinalEntry = @($longCommittedValidation.Manifest.files)[0]
+    $longPersistedPreparedEntry = @($longCommittedValidation.Manifest.prepared_files)[0]
+    Assert-GssDriveBackupTest ($longFinalEntry.portable_path -eq $longPathPortable -and $longPersistedPreparedEntry.portable_path -eq $longPathPortable) 'Full Finalize did not retain original portable_path metadata in both inventories.'
+    Assert-GssDriveBackupTest ($longFinalEntry.snapshot_path -match '^payload/long-path/[0-9a-f]{64}\.xlsx$' -and $longPersistedPreparedEntry.snapshot_path -eq $longPreparedEntry.snapshot_path) 'Full Finalize did not persist compact final and prepared snapshot paths.'
+    $longLifecycleRestoreRoot = Join-Path $resolvedTestRoot ('full-restore-' + ('z' * 30))
+    $longLifecycleRestore = Restore-GssDriveBackupForVerification -RunId $longLifecycleRunId -SettingsPath $settingsPath -LocalAppDataPath $longLifecycleRestoreRoot -Phase Final
+    $longLifecycleRestoreReceipt = Read-GssDriveBackupJson -Path $longLifecycleRestore.ReceiptPath
+    $longRestoredEntry = @($longLifecycleRestoreReceipt.files)[0]
+    $longRestoredPath = Join-Path $longLifecycleRestore.Destination ([string]$longRestoredEntry.restored_path).Replace('/', '\')
+    Assert-GssDriveBackupTest ($longRestoredEntry.portable_path -eq $longPathPortable -and $longRestoredEntry.restored_path -match '^r/long-path/[0-9a-f]{64}\.xlsx$') 'Full VerifyRestore did not retain portable metadata and map to a compact destination.'
+    Assert-GssDriveBackupTest ($longRestoredPath.Length -lt 248 -and (Test-Path -LiteralPath $longRestoredPath -PathType Leaf)) 'Full VerifyRestore compact destination is absent or over budget.'
+    Assert-GssDriveBackupTest ((Get-GssDriveBackupSha256 -Path $longRestoredPath) -eq (Get-GssDriveBackupSha256 -Path $longLifecycleSource) -and [string]$longRestoredEntry.sha256 -eq (Get-GssDriveBackupSha256 -Path $longLifecycleSource)) 'Full VerifyRestore did not preserve matching file bytes and hash evidence.'
 
     $missingSettingsPath = Join-Path $resolvedTestRoot 'missing-drive-settings.json'
     $missingSettings = [ordered]@{

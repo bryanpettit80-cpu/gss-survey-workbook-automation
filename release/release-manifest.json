@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "release_version": "1.1.6",
-  "release_tag": "v1.1.6",
+  "release_version": "1.1.7",
+  "release_tag": "v1.1.7",
   "commit_binding": "exact_release_tag",
-  "generated_at_utc": "2026-07-28T02:25:18.8406247Z",
+  "generated_at_utc": "2026-07-28T02:56:56.3805093Z",
   "classification": "PROGRAM SOURCE ONLY - NO GSS WORKBOOKS, REPORTS, OR CUSTOMER DATA",
   "runtime_contract": {
     "require_clean_tree": true,
@@ -15,7 +15,7 @@
     "excel_validation_receipt_name": "local-excel-validation-receipt.json",
     "excel_validation_receipt_relative_path": "_automation_runs/state/release/local-excel-validation-receipt.json"
   },
-  "archive_name": "gss-survey-workbook-automation-v1.1.6.zip",
+  "archive_name": "gss-survey-workbook-automation-v1.1.7.zip",
   "files": [
     {
       "path": ".github/dependabot.yml",
@@ -126,8 +126,8 @@
       "path": "scripts/Invoke-GSS-QuarterlyRestoreDrill.ps1",
       "role": "runtime",
       "hash_mode": "utf8_lf",
-      "canonical_size_bytes": 3968,
-      "sha256": "c2fe9f2e1f74b7bf395d69e41166bfaabc9e2fa69d81a19aefe52f93b77a3d9d"
+      "canonical_size_bytes": 4253,
+      "sha256": "7665d22c6377aa94f93d4d4b5d03e2d755922ffdcc92f859ed21fef55aeda28e"
     },
     {
       "path": "scripts/Invoke-GSS-ReleaseBackup.ps1",
@@ -196,8 +196,8 @@
       "path": "scripts/Test-GSS-Logic.ps1",
       "role": "validation",
       "hash_mode": "utf8_lf",
-      "canonical_size_bytes": 19751,
-      "sha256": "e29458b6372b24cc71e5f7d9269ee022f1dd6efde7d7b038e082b3a46761de9d"
+      "canonical_size_bytes": 20930,
+      "sha256": "be461ff12f50db919f553d3e1eb77f2569ee0b51639f8c98f5f402cff2c962b1"
     },
     {
       "path": "scripts/Test-GSS-Pester.ps1",
@@ -268,6 +268,13 @@
       "hash_mode": "utf8_lf",
       "canonical_size_bytes": 888,
       "sha256": "83f24522739843b183380a0b75bf38f682b23459d42a989020ab1c4521bb9825"
+    },
+    {
+      "path": "tests/Gss.QuarterlyRestoreDrill.Tests.ps1",
+      "role": "validation",
+      "hash_mode": "utf8_lf",
+      "canonical_size_bytes": 3953,
+      "sha256": "42de71a2ed7269742bd98f7803f7a03c568e06acc1af804b9f36b4a654aa1eb6"
     },
     {
       "path": "tests/Gss.ReleaseIntegrity.Tests.ps1",

@@ -30,8 +30,18 @@ if (-not $restore -or [string]$restore.Status -ne 'Verified' -or [bool]$restore.
     throw "Verify-only Drive restore did not complete safely for run '$RunId'."
 }
 
-$restoredGssRoot = Join-Path ([string]$restore.Destination) 'gss'
-$restoredWorkbook = Join-Path $restoredGssRoot '01 Main Workbook\GSS Score Trends - Main.xlsx'
+$mainWorkbookPortablePath = 'gss/01 Main Workbook/GSS Score Trends - Main.xlsx'
+$restoredWorkbookMapping = Resolve-GssDriveBackupRestoredFile `
+    -ReceiptPath ([string]$restore.ReceiptPath) `
+    -PortablePath $mainWorkbookPortablePath `
+    -ExpectedDestination ([string]$restore.Destination)
+$restoredWorkbook = [string]$restoredWorkbookMapping.Path
+$restoredGssRoot = if ([string]$restoredWorkbookMapping.RestoredPath -ilike 'gss/*') {
+    Join-Path ([string]$restore.Destination) 'gss'
+}
+else {
+    [string]$restore.Destination
+}
 $integrationReceipt = Join-Path ([string]$restore.Destination) 'local-excel-validation-receipt.json'
 $drillReceipt = Join-Path ([string]$restore.Destination) 'quarterly-restore-drill.json'
 $status = 'Failed'
@@ -68,6 +78,8 @@ finally {
         drive_restore_receipt = [string]$restore.ReceiptPath
         drive_verification_level = [string]$restore.VerificationLevel
         restored_destination = [string]$restore.Destination
+        restored_workbook_portable_path = $mainWorkbookPortablePath
+        restored_workbook_path = [string]$restoredWorkbookMapping.RestoredPath
         restored_workbook_sha256 = if (Test-Path -LiteralPath $restoredWorkbook -PathType Leaf) {
             Get-GssDriveBackupSha256 -Path $restoredWorkbook
         }
@@ -86,6 +98,7 @@ Write-Output ([pscustomobject]@{
     Status = $status
     RunId = $RunId
     RestoreDestination = [string]$restore.Destination
+    RestoredWorkbook = $restoredWorkbook
     DriveRestoreReceipt = [string]$restore.ReceiptPath
     ExcelValidationReceipt = $integrationReceipt
     DrillReceipt = $drillReceipt

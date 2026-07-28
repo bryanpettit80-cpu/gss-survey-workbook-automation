@@ -1,4 +1,33 @@
 $script:GssDriveBackupClassificationLabel = 'CONTAINS PERSONAL DATA ' + [char]0x2014 + ' RESTRICTED'
+$script:GssDriveBackupLegacySafePathLength = 248
+$script:GssDriveBackupMaxRetainedExtensionLength = 32
+
+function Get-GssDriveBackupCompactRelativePath {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$PortablePath,
+        [Parameter(Mandatory)]
+        [string]$Prefix,
+        [switch]$OmitExtension
+    )
+
+    $portable = Assert-GssDriveBackupSafeRelativePath -Path $PortablePath
+    $safePrefix = Assert-GssDriveBackupSafeRelativePath -Path $Prefix
+    $portableBytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes($portable)
+    $portableDigest = Get-GssDriveBackupByteSha256 -Bytes $portableBytes
+    $extension = [System.IO.Path]::GetExtension($portable)
+    if ($OmitExtension) {
+        $extension = ''
+    }
+    elseif ($extension.Length -gt $script:GssDriveBackupMaxRetainedExtensionLength) {
+        $extension = $extension.Substring(0, $script:GssDriveBackupMaxRetainedExtensionLength)
+    }
+    if ($extension -eq '.') {
+        $extension = ''
+    }
+    return (Assert-GssDriveBackupSafeRelativePath -Path "$safePrefix/long-path/$portableDigest$extension")
+}
 
 function Get-GssDriveBackupDefaultSettingsPath {
     [CmdletBinding()]
@@ -914,7 +943,8 @@ function Copy-GssDriveBackupInventory {
         [Parameter(Mandatory)]
         [string]$SnapshotDirectory,
         [Parameter(Mandatory)]
-        [string]$PayloadPrefix
+        [string]$PayloadPrefix,
+        [string[]]$PathBudgetDirectories = @()
     )
 
     $safePayloadPrefix = Assert-GssDriveBackupSafeRelativePath -Path $PayloadPrefix
@@ -923,14 +953,31 @@ function Copy-GssDriveBackupInventory {
     foreach ($item in @($Inventory | Sort-Object PortablePath)) {
         $portable = Assert-GssDriveBackupSafeRelativePath -Path ([string]$item.PortablePath)
         $snapshotRelative = Assert-GssDriveBackupSafeRelativePath -Path "$safePayloadPrefix/$portable"
-        $plannedDestination = Join-Path $SnapshotDirectory $snapshotRelative.Replace('/', '\')
-        if ($plannedDestination.Length -ge 248) {
-            $portableBytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes($portable)
-            $portableDigest = Get-GssDriveBackupByteSha256 -Bytes $portableBytes
-            $extension = [System.IO.Path]::GetExtension($portable)
-            $snapshotRelative = Assert-GssDriveBackupSafeRelativePath -Path (
-                "$safePayloadPrefix/long-path/$portableDigest$extension"
-            )
+        $budgetDirectories = @($SnapshotDirectory) + @($PathBudgetDirectories)
+        $usesReservedCompactNamespace = $portable.Equals('r', [System.StringComparison]::OrdinalIgnoreCase) -or
+            $portable.Equals('long-path', [System.StringComparison]::OrdinalIgnoreCase) -or
+            $portable.StartsWith('long-path/', [System.StringComparison]::OrdinalIgnoreCase)
+        $requiresCompaction = $usesReservedCompactNamespace -or @($budgetDirectories | Where-Object {
+            (Join-Path $_ $snapshotRelative.Replace('/', '\')).Length -ge $script:GssDriveBackupLegacySafePathLength
+        }).Count -gt 0
+        if ($requiresCompaction) {
+            $snapshotRelative = Get-GssDriveBackupCompactRelativePath -PortablePath $portable -Prefix $safePayloadPrefix
+            $overBudgetCompactDestination = @($budgetDirectories | ForEach-Object {
+                Join-Path $_ $snapshotRelative.Replace('/', '\')
+            } | Where-Object {
+                $_.Length -ge $script:GssDriveBackupLegacySafePathLength
+            } | Select-Object -First 1)
+            if ($overBudgetCompactDestination.Count -gt 0) {
+                $snapshotRelative = Get-GssDriveBackupCompactRelativePath -PortablePath $portable -Prefix $safePayloadPrefix -OmitExtension
+                $overBudgetCompactDestination = @($budgetDirectories | ForEach-Object {
+                    Join-Path $_ $snapshotRelative.Replace('/', '\')
+                } | Where-Object {
+                    $_.Length -ge $script:GssDriveBackupLegacySafePathLength
+                } | Select-Object -First 1)
+            }
+            if ($overBudgetCompactDestination.Count -gt 0) {
+                throw "Compacted snapshot destination still exceeds the safe Windows path budget before copy. Shorten the Drive root or RunId: $($overBudgetCompactDestination[0])"
+            }
         }
         $key = $snapshotRelative.ToLowerInvariant()
         if ($seen.ContainsKey($key)) {
@@ -1773,6 +1820,33 @@ function Test-GssDriveBackupPayload {
     return $validated
 }
 
+function Assert-GssDriveBackupSnapshotPathBudget {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$DestinationDirectory,
+        [Parameter(Mandatory)]
+        [object[]]$Files,
+        [Parameter(Mandatory)]
+        [string]$Label
+    )
+
+    $destinationRoot = [System.IO.Path]::GetFullPath($DestinationDirectory).TrimEnd('\', '/')
+    $validated = 0
+    foreach ($file in @($Files)) {
+        $relative = Assert-GssDriveBackupSafeRelativePath -Path ([string](Get-GssDriveBackupProperty $file @('snapshot_path')))
+        $plannedDestination = [System.IO.Path]::GetFullPath((Join-Path $destinationRoot $relative.Replace('/', '\')))
+        if (-not $plannedDestination.StartsWith("$destinationRoot\", [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "$Label path escaped its promoted snapshot root: $relative"
+        }
+        if ($plannedDestination.Length -ge $script:GssDriveBackupLegacySafePathLength) {
+            throw "$Label path exceeds the safe Windows path budget at the promoted destination: $plannedDestination"
+        }
+        $validated++
+    }
+    return $validated
+}
+
 function Get-GssDriveBackupChainHead {
     [CmdletBinding()]
     param(
@@ -1920,7 +1994,10 @@ function New-GssDriveBackupPreparedSnapshot {
         }
         New-Item -ItemType Directory -Path $partialPath | Out-Null
         try {
-            $files = @(Copy-GssDriveBackupInventory -Inventory $Inventory -SnapshotDirectory $partialPath -PayloadPrefix 'prepared-payload')
+            # Budget against both staging and the eventual promoted location. The
+            # latter is longer and is the path that must remain usable after commit.
+            $promotedPath = Join-Path $context.RootPath ("snapshots\{0}\{1}\{2}" -f $ReportWeek.ToString('yyyy'), $ReportWeek.ToString('yyyy-MM'), $RunId)
+            $files = @(Copy-GssDriveBackupInventory -Inventory $Inventory -SnapshotDirectory $partialPath -PayloadPrefix 'prepared-payload' -PathBudgetDirectories @($promotedPath))
             [void](Test-GssDriveBackupPayload -SnapshotDirectory $partialPath -Files $files)
             if ($SnapshotPurpose -eq 'ReleaseOnly') {
                 [void](Assert-GssReleaseOnlySnapshotContract -SnapshotDirectory $partialPath -Files $files)
@@ -2321,7 +2398,9 @@ function Complete-GssDriveBackupSnapshot {
                 }
             }
 
-            $finalFiles = @(Copy-GssDriveBackupInventory -Inventory $FinalInventory -SnapshotDirectory $activePath -PayloadPrefix 'payload')
+            $reportWeekForBudget = [datetime]::ParseExact([string](Get-GssDriveBackupProperty $prepared @('report_week')), 'yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture)
+            $promotedPathForBudget = Join-Path $context.RootPath ("snapshots\{0}\{1}\{2}" -f $reportWeekForBudget.ToString('yyyy'), $reportWeekForBudget.ToString('yyyy-MM'), $RunId)
+            $finalFiles = @(Copy-GssDriveBackupInventory -Inventory $FinalInventory -SnapshotDirectory $activePath -PayloadPrefix 'payload' -PathBudgetDirectories @($promotedPathForBudget))
             [void](Test-GssDriveBackupPayload -SnapshotDirectory $activePath -Files $finalFiles)
             if ($SnapshotPurpose -in @('RecoveryOnly', 'ReleaseOnly')) {
                 [void](Test-GssDriveBackupExactFileSet -ExpectedFiles $preparedFiles -ActualFiles $finalFiles -Label "Copied $SnapshotPurpose final inventory")
@@ -2368,14 +2447,24 @@ function Complete-GssDriveBackupSnapshot {
             throw 'Backup chain head changed after preparation; refusing to finalize an ambiguous manifest chain.'
         }
 
+        $manifestPreparedFiles = @(Get-GssDriveBackupProperty $backupManifest @('prepared_files') @())
+        $reportWeekText = [string](Get-GssDriveBackupProperty $prepared @('report_week'))
+        $reportWeek = [datetime]::ParseExact($reportWeekText, 'yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture)
+        $snapshotParent = Join-Path $context.RootPath ("snapshots\{0}\{1}" -f $reportWeek.ToString('yyyy'), $reportWeek.ToString('yyyy-MM'))
+        $finalPath = if ($location.IsPartial) {
+            Join-Path $snapshotParent $RunId
+        }
+        else {
+            $activePath
+        }
+        [void](Assert-GssDriveBackupSnapshotPathBudget -DestinationDirectory $finalPath -Files $preparedFiles -Label 'Prepared manifest snapshot')
+        [void](Assert-GssDriveBackupSnapshotPathBudget -DestinationDirectory $finalPath -Files $manifestPreparedFiles -Label 'Final manifest prepared snapshot')
+        [void](Assert-GssDriveBackupSnapshotPathBudget -DestinationDirectory $finalPath -Files $finalFiles -Label 'Final manifest snapshot')
+
         if ($location.IsPartial) {
-            $reportWeekText = [string](Get-GssDriveBackupProperty $prepared @('report_week'))
-            $reportWeek = [datetime]::ParseExact($reportWeekText, 'yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture)
-            $snapshotParent = Join-Path $context.RootPath ("snapshots\{0}\{1}" -f $reportWeek.ToString('yyyy'), $reportWeek.ToString('yyyy-MM'))
             if (-not (Test-Path -LiteralPath $snapshotParent -PathType Container)) {
                 New-Item -ItemType Directory -Path $snapshotParent -Force | Out-Null
             }
-            $finalPath = Join-Path $snapshotParent $RunId
             if (Test-Path -LiteralPath $finalPath) {
                 throw "Final snapshot path already exists and will not be overwritten: $finalPath"
             }
@@ -2644,7 +2733,35 @@ function Restore-GssDriveBackupForVerification {
         $snapshotRelative = Assert-GssDriveBackupSafeRelativePath -Path ([string](Get-GssDriveBackupProperty $file @('snapshot_path')))
         $source = Join-Path $location.Path $snapshotRelative.Replace('/', '\')
         $portable = Assert-GssDriveBackupSafeRelativePath -Path ([string](Get-GssDriveBackupProperty $file @('portable_path')))
-        $target = Join-Path $destination $portable.Replace('/', '\')
+        $restoreRelative = $portable
+        $target = Join-Path $destination $restoreRelative.Replace('/', '\')
+        $usesReservedCompactNamespace = $portable.Equals('r', [System.StringComparison]::OrdinalIgnoreCase) -or
+            $portable.Equals('r/long-path', [System.StringComparison]::OrdinalIgnoreCase) -or
+            $portable.StartsWith('r/long-path/', [System.StringComparison]::OrdinalIgnoreCase)
+        foreach ($reservedRootPath in @(
+            'restore-verification.json',
+            'local-excel-validation-receipt.json',
+            'quarterly-restore-drill.json'
+        )) {
+            if ($portable.Equals($reservedRootPath, [System.StringComparison]::OrdinalIgnoreCase) -or
+                $portable.StartsWith("$reservedRootPath/", [System.StringComparison]::OrdinalIgnoreCase)) {
+                $usesReservedCompactNamespace = $true
+                break
+            }
+        }
+        if ($target.Length -ge $script:GssDriveBackupLegacySafePathLength -or $usesReservedCompactNamespace) {
+            # The restore prefix is deliberately minimal: LOCALAPPDATA and the
+            # isolated receipt directory already consume substantial MAX_PATH.
+            $restoreRelative = Get-GssDriveBackupCompactRelativePath -PortablePath $portable -Prefix 'r'
+            $target = Join-Path $destination $restoreRelative.Replace('/', '\')
+            if ($target.Length -ge $script:GssDriveBackupLegacySafePathLength) {
+                $restoreRelative = Get-GssDriveBackupCompactRelativePath -PortablePath $portable -Prefix 'r' -OmitExtension
+                $target = Join-Path $destination $restoreRelative.Replace('/', '\')
+            }
+            if ($target.Length -ge $script:GssDriveBackupLegacySafePathLength) {
+                throw "Compacted verify-only restore destination still exceeds the safe Windows path budget before copy. Shorten LOCALAPPDATA: $target"
+            }
+        }
         $targetParent = Split-Path -Parent $target
         if (-not (Test-Path -LiteralPath $targetParent -PathType Container)) {
             [void][System.IO.Directory]::CreateDirectory($targetParent)
@@ -2659,6 +2776,7 @@ function Restore-GssDriveBackupForVerification {
         }
         $restored.Add([pscustomobject][ordered]@{
             portable_path = $portable
+            restored_path = $restoreRelative
             byte_size = [long](Get-GssDriveBackupProperty $file @('byte_size'))
             sha256 = $hash
         })
@@ -2690,6 +2808,70 @@ function Restore-GssDriveBackupForVerification {
         FileCount = $restored.Count
         LiveWorkbookOverwritten = $false
         VerificationLevel = $context.Settings.VerificationLevel
+    }
+}
+
+function Resolve-GssDriveBackupRestoredFile {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$ReceiptPath,
+        [Parameter(Mandatory)]
+        [string]$PortablePath,
+        [string]$ExpectedDestination
+    )
+
+    $portable = Assert-GssDriveBackupSafeRelativePath -Path $PortablePath
+    $receipt = Read-GssDriveBackupJson -Path $ReceiptPath
+    if ([int](Get-GssDriveBackupProperty $receipt @('schema_version')) -ne 1 -or
+        [string](Get-GssDriveBackupProperty $receipt @('operation')) -cne 'verify_only_restore' -or
+        [string](Get-GssDriveBackupProperty $receipt @('status')) -cne 'Verified' -or
+        [bool](Get-GssDriveBackupProperty $receipt @('live_workbook_overwritten') $true)) {
+        throw "Restore receipt is not verified, isolated restore evidence: $ReceiptPath"
+    }
+
+    $destination = [System.IO.Path]::GetFullPath([string](Get-GssDriveBackupProperty $receipt @('destination'))).TrimEnd('\', '/')
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedDestination)) {
+        $expected = [System.IO.Path]::GetFullPath($ExpectedDestination).TrimEnd('\', '/')
+        if (-not $destination.Equals($expected, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Restore receipt destination does not match the completed restore: $destination"
+        }
+    }
+
+    $matchingRecords = @(
+        Get-GssDriveBackupProperty $receipt @('files') @() |
+            Where-Object {
+                [string](Get-GssDriveBackupProperty $_ @('portable_path')) -ieq $portable
+            }
+    )
+    if ($matchingRecords.Count -ne 1) {
+        throw "Restore receipt must contain exactly one mapping for portable path '$portable'; found $($matchingRecords.Count)."
+    }
+
+    $record = $matchingRecords[0]
+    $restoredRelative = [string](Get-GssDriveBackupProperty $record @('restored_path') $portable)
+    if ([string]::IsNullOrWhiteSpace($restoredRelative)) {
+        $restoredRelative = $portable
+    }
+    $restoredRelative = Assert-GssDriveBackupSafeRelativePath -Path $restoredRelative
+    $path = [System.IO.Path]::GetFullPath((Join-Path $destination $restoredRelative.Replace('/', '\')))
+    if (-not $path.StartsWith("$destination\", [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Restore receipt mapping escaped its isolated destination: $restoredRelative"
+    }
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        throw "Restore receipt mapping points to a missing file: $path"
+    }
+    $expectedHash = [string](Get-GssDriveBackupProperty $record @('sha256'))
+    if ((Get-GssDriveBackupSha256 -Path $path) -ne $expectedHash) {
+        throw "Restore receipt mapping hash does not match the restored file: $path"
+    }
+
+    return [pscustomobject]@{
+        PortablePath = $portable
+        RestoredPath = $restoredRelative
+        Path = $path
+        Destination = $destination
+        Sha256 = $expectedHash
     }
 }
 

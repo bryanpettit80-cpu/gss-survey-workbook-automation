@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "release_version": "1.1.5",
-  "release_tag": "v1.1.5",
+  "release_version": "1.1.6",
+  "release_tag": "v1.1.6",
   "commit_binding": "exact_release_tag",
-  "generated_at_utc": "2026-07-27T21:59:07.3511850Z",
+  "generated_at_utc": "2026-07-28T02:25:18.8406247Z",
   "classification": "PROGRAM SOURCE ONLY - NO GSS WORKBOOKS, REPORTS, OR CUSTOMER DATA",
   "runtime_contract": {
     "require_clean_tree": true,
@@ -15,7 +15,7 @@
     "excel_validation_receipt_name": "local-excel-validation-receipt.json",
     "excel_validation_receipt_relative_path": "_automation_runs/state/release/local-excel-validation-receipt.json"
   },
-  "archive_name": "gss-survey-workbook-automation-v1.1.5.zip",
+  "archive_name": "gss-survey-workbook-automation-v1.1.6.zip",
   "files": [
     {
       "path": ".github/dependabot.yml",
@@ -84,8 +84,8 @@
       "path": "scripts/Gss-DriveBackup.ps1",
       "role": "runtime",
       "hash_mode": "utf8_lf",
-      "canonical_size_bytes": 139361,
-      "sha256": "596c0b2599d568c900fd05d51f9aa479e8eb03e08acaff4a391bbb18bf4992e2"
+      "canonical_size_bytes": 149209,
+      "sha256": "233af3a7002666133bf43cd5e4c5a4246396a1838ac72374f1d7739fdafa3846"
     },
     {
       "path": "scripts/Gss-EmailPackage.ps1",
@@ -126,8 +126,8 @@
       "path": "scripts/Invoke-GSS-QuarterlyRestoreDrill.ps1",
       "role": "runtime",
       "hash_mode": "utf8_lf",
-      "canonical_size_bytes": 3405,
-      "sha256": "2808c5af9de6eb79507a2256e9bfc6aa7dba84ae2121e401f58e00ba15058c5a"
+      "canonical_size_bytes": 3968,
+      "sha256": "c2fe9f2e1f74b7bf395d69e41166bfaabc9e2fa69d81a19aefe52f93b77a3d9d"
     },
     {
       "path": "scripts/Invoke-GSS-ReleaseBackup.ps1",
@@ -175,8 +175,8 @@
       "path": "scripts/Test-GSS-DriveBackup.ps1",
       "role": "validation",
       "hash_mode": "utf8_lf",
-      "canonical_size_bytes": 64107,
-      "sha256": "6d9882f703308cda084c48e1ef637c0ce9ed38082469200bb936d99ba4f321cf"
+      "canonical_size_bytes": 83854,
+      "sha256": "8bb07f688fce59baa6097984531071d759463c2c3793fc6397173361976fb152"
     },
     {
       "path": "scripts/Test-GSS-EmailPackage.ps1",

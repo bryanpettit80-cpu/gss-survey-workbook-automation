@@ -308,6 +308,25 @@ Assert-True ($safeLauncherSource.Contains("if (`$finalizeStatus -eq 'Blocked')")
 Assert-True ($safeLauncherSource.Contains("'BackupBlocked'")) 'Safe launcher records non-retryable Drive conflict for manual review'
 Assert-True ($safeLauncherSource.Contains('-Operation Abort')) 'Prepared Drive snapshot is explicitly aborted after safe rollback or pre-commit failure'
 
+$quarterlyDrillSource = Get-Content -LiteralPath (Join-Path $scriptRoot 'Invoke-GSS-QuarterlyRestoreDrill.ps1') -Raw
+$quarterlyTryIndex = $quarterlyDrillSource.IndexOf('try {')
+$quarterlyResolverIndex = $quarterlyDrillSource.IndexOf('$restoredWorkbookMapping = Resolve-GssDriveBackupRestoredFile')
+$quarterlyFinallyIndex = $quarterlyDrillSource.IndexOf('finally {')
+$quarterlyReceiptIndex = $quarterlyDrillSource.IndexOf('Write-GssDriveBackupAtomicJson -Path $drillReceipt')
+Assert-True (
+    $quarterlyTryIndex -ge 0 -and
+    $quarterlyResolverIndex -gt $quarterlyTryIndex -and
+    $quarterlyResolverIndex -lt $quarterlyFinallyIndex
+) 'Quarterly drill resolves restored workbook mapping inside the receipt-producing guard'
+Assert-True (
+    $quarterlyFinallyIndex -gt $quarterlyResolverIndex -and
+    $quarterlyReceiptIndex -gt $quarterlyFinallyIndex
+) 'Quarterly drill writes combined failure evidence from its finally block'
+Assert-True (
+    $quarterlyDrillSource.Contains('$restoredWorkbookMapping = $null') -and
+    $quarterlyDrillSource.Contains('-not [string]::IsNullOrWhiteSpace($restoredWorkbook)')
+) 'Quarterly drill safely records missing-workbook mapping failures'
+
 $portableRoot = 'C:\Users\bryan\Dropbox\Marketing\GSS Surveys'
 $otherProfilePath = "C:\Users\Other User\Dropbox\Marketing\GSS Surveys\04 Email Comparison PDFs\report.pdf"
 Assert-Equal (ConvertTo-GssDropboxRelativePath -Path $otherProfilePath -FolderPath $portableRoot) '04 Email Comparison PDFs/report.pdf' 'Cross-profile portable path recovery'

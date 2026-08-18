@@ -327,8 +327,8 @@ Assert-True (
     $quarterlyDrillSource.Contains('-not [string]::IsNullOrWhiteSpace($restoredWorkbook)')
 ) 'Quarterly drill safely records missing-workbook mapping failures'
 
-$portableRoot = 'C:\Users\bryan\Dropbox\Marketing\GSS Surveys'
-$otherProfilePath = "C:\Users\Other User\Dropbox\Marketing\GSS Surveys\04 Email Comparison PDFs\report.pdf"
+$portableRoot = 'C:\Users\bryan\Dropbox\Automations\GSS Surveys'
+$otherProfilePath = "C:\Users\Other User\Dropbox\Automations\GSS Surveys\04 Email Comparison PDFs\report.pdf"
 Assert-Equal (ConvertTo-GssDropboxRelativePath -Path $otherProfilePath -FolderPath $portableRoot) '04 Email Comparison PDFs/report.pdf' 'Cross-profile portable path recovery'
 Assert-ThrowsLike { ConvertTo-GssDropboxRelativePath -Path '..\escape.txt' -FolderPath $portableRoot } '*traversal segment*' 'Portable path traversal rejection'
 

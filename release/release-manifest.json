@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "release_version": "1.1.7",
-  "release_tag": "v1.1.7",
+  "release_version": "1.1.8",
+  "release_tag": "v1.1.8",
   "commit_binding": "exact_release_tag",
-  "generated_at_utc": "2026-07-28T02:56:56.3805093Z",
+  "generated_at_utc": "2026-08-19T00:02:13.6003970Z",
   "classification": "PROGRAM SOURCE ONLY - NO GSS WORKBOOKS, REPORTS, OR CUSTOMER DATA",
   "runtime_contract": {
     "require_clean_tree": true,
@@ -15,7 +15,7 @@
     "excel_validation_receipt_name": "local-excel-validation-receipt.json",
     "excel_validation_receipt_relative_path": "_automation_runs/state/release/local-excel-validation-receipt.json"
   },
-  "archive_name": "gss-survey-workbook-automation-v1.1.7.zip",
+  "archive_name": "gss-survey-workbook-automation-v1.1.8.zip",
   "files": [
     {
       "path": ".github/dependabot.yml",
@@ -35,8 +35,8 @@
       "path": "AGENTS.md",
       "role": "documentation",
       "hash_mode": "utf8_lf",
-      "canonical_size_bytes": 1039,
-      "sha256": "a5526c7113f1d44e9ed59897dc63ae382e5feba6a02d5af7a682358831964a14"
+      "canonical_size_bytes": 1041,
+      "sha256": "775b04e7e0dd5213b49ccdd1f063f33b3f8a70d50ecc9fdd3c524e132f8b720d"
     },
     {
       "path": "config/analysis-policy.json",
@@ -196,8 +196,8 @@
       "path": "scripts/Test-GSS-Logic.ps1",
       "role": "validation",
       "hash_mode": "utf8_lf",
-      "canonical_size_bytes": 20930,
-      "sha256": "be461ff12f50db919f553d3e1eb77f2569ee0b51639f8c98f5f402cff2c962b1"
+      "canonical_size_bytes": 20934,
+      "sha256": "8fbd83cc7cfb3eedac2e1933574914eb590e6818e18561830005be8fa77a98d9"
     },
     {
       "path": "scripts/Test-GSS-Pester.ps1",

@@ -4,7 +4,7 @@ This repository contains only the GSS workbook automation program. Do not commit
 
 The live Dropbox data folder is the parent of this repository:
 
-`C:\Users\bryan\Dropbox\Marketing\GSS Surveys`
+`C:\Users\bryan\Dropbox\Automations\GSS Surveys`
 
 The operator entry point is outside the repo:
 

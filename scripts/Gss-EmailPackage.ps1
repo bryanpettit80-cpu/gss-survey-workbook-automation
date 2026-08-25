@@ -11,6 +11,7 @@ $script:GssHistoricalRecoveryManifestVersion = 'gss-historical-recovery/v1'
 $script:GssHistoricalRecoveryReceiptVersion = 'gss-historical-recovery-receipt/v1'
 $script:GssHistoricalResponseSetVersion = 'gss-historical-response-set/v1'
 $script:GssHistoricalRecoveryArchivePrefix = '03 Uploaded Survey Workbooks/Archive - Previous Uploads/Recovered Historical Detail'
+$script:GssTransactionMutexName = 'Global\GSSSurveyWorkbookAutomationTransaction'
 $script:GssThemeNames = @('service', 'culinary', 'pace', 'value', 'hospitality/recovery', 'recognition')
 $script:GssRestrictedClassification = 'CONTAINS PERSONAL DATA ' + [char]0x2014 + ' RESTRICTED'
 $script:GssPortableArtifactPaths = [ordered]@{
@@ -567,6 +568,100 @@ function Get-GssRemainingPiiTypes {
     return @($remainingPii | Select-Object -Unique)
 }
 
+function Test-GssTextContainsMachineSpecificPath {
+    param([AllowNull()][AllowEmptyString()][string]$Text)
+
+    if ([string]::IsNullOrEmpty($Text)) { return $false }
+
+    $trimmedText = $Text.Trim()
+    $looksLikeJsonContainer = $trimmedText.Length -ge 2 -and (
+        ($trimmedText[0] -eq '{' -and $trimmedText[$trimmedText.Length - 1] -eq '}') -or
+        ($trimmedText[0] -eq '[' -and $trimmedText[$trimmedText.Length - 1] -eq ']')
+    )
+    if ($looksLikeJsonContainer) {
+        $decodedValue = $null
+        try {
+            # Inspect decoded values, not JSON escape syntax. In particular,
+            # A:\" inside serialized JSON is the text A:" and is not a drive root.
+            $decodedValue = $trimmedText | ConvertFrom-Json -ErrorAction Stop
+        }
+        catch {
+            # Malformed JSON is ordinary text and must still be scanned below.
+            $decodedValue = $null
+        }
+        if ($null -ne $decodedValue) {
+            return Test-GssStructuredValueContainsMachineSpecificPath -Value $decodedValue
+        }
+    }
+
+    # Scheme-qualified HTTP URLs are portable even when their URL path or query
+    # contains path-shaped text. Remove them before checking local/network forms.
+    $scanText = [regex]::Replace($Text, '(?i)\bhttps?://[^\s<>"'']+', '')
+
+    # Rooted and drive-relative paths must begin at a token boundary. A
+    # drive-relative form must contain a later separator so labels such as
+    # "A: acceptable" are not treated as paths. Separators that only escape a
+    # JSON quote are excluded. UNC/network forms require server and share names.
+    $rootedDrivePathPattern = '(?i)(?<![A-Za-z0-9])[A-Z]:[\\/](?!["''])'
+    $relativeDrivePathPattern = '(?i)(?<![A-Za-z0-9])[A-Z]:(?![\\/\s"''])(?=[^\\/\s"''<>|]+[\\/](?!["'']))'
+    $backslashUncPathPattern = '(?<![\\])\\\\(?![\\/"''])[^\\/\s"''<>|]+[\\/](?![\\/"''])[^\\/\s"''<>|]+'
+    $forwardSlashNetworkPathPattern = '(?<![:/A-Za-z0-9._~-])//(?![/"''])[^/\s"''<>]+/(?![/"''])[^/\s"''<>]+'
+    return (
+        [regex]::IsMatch($scanText, $rootedDrivePathPattern) -or
+        [regex]::IsMatch($scanText, $relativeDrivePathPattern) -or
+        [regex]::IsMatch($scanText, $backslashUncPathPattern) -or
+        [regex]::IsMatch($scanText, $forwardSlashNetworkPathPattern)
+    )
+}
+
+function Test-GssStructuredValueContainsMachineSpecificPath {
+    param([AllowNull()][object]$Value)
+
+    if ($null -eq $Value) { return $false }
+    if ($Value -is [string]) {
+        return Test-GssTextContainsMachineSpecificPath -Text ([string]$Value)
+    }
+    if ($Value -is [System.Collections.IDictionary]) {
+        foreach ($key in $Value.Keys) {
+            if (Test-GssTextContainsMachineSpecificPath -Text ([string]$key)) { return $true }
+            if (Test-GssStructuredValueContainsMachineSpecificPath -Value $Value[$key]) { return $true }
+        }
+        return $false
+    }
+    if ($Value -is [System.Collections.IEnumerable]) {
+        foreach ($item in $Value) {
+            if (Test-GssStructuredValueContainsMachineSpecificPath -Value $item) { return $true }
+        }
+        return $false
+    }
+    if ($Value -isnot [System.Management.Automation.PSCustomObject]) { return $false }
+
+    foreach ($property in $Value.PSObject.Properties) {
+        if ($property.MemberType -notin @('NoteProperty', 'Property')) { continue }
+        if (Test-GssTextContainsMachineSpecificPath -Text ([string]$property.Name)) { return $true }
+        if (Test-GssStructuredValueContainsMachineSpecificPath -Value $property.Value) { return $true }
+    }
+    return $false
+}
+
+function Assert-GssPortableContentHasNoMachineSpecificPath {
+    param(
+        [AllowEmptyCollection()][object[]]$StructuredValues = @(),
+        [AllowEmptyCollection()][string[]]$TextValues = @()
+    )
+
+    foreach ($value in @($StructuredValues)) {
+        if (Test-GssStructuredValueContainsMachineSpecificPath -Value $value) {
+            throw 'A machine-specific path leaked into a portable package file.'
+        }
+    }
+    foreach ($text in @($TextValues)) {
+        if (Test-GssTextContainsMachineSpecificPath -Text $text) {
+            throw 'A machine-specific path leaked into a portable package file.'
+        }
+    }
+}
+
 function Protect-GssFeedbackText {
     param([string]$Text, [string[]]$KnownNames)
 
@@ -752,6 +847,304 @@ function Write-GssFeedbackLedger {
     finally {
         if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force }
     }
+}
+
+function Get-GssByteArraySha256 {
+    param([Parameter(Mandatory)][AllowEmptyCollection()][byte[]]$Bytes)
+
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return (($sha.ComputeHash($Bytes) | ForEach-Object { $_.ToString('x2') }) -join '')
+    }
+    finally {
+        $sha.Dispose()
+    }
+}
+
+function Get-GssFeedbackLedgerRollbackState {
+    param([Parameter(Mandatory)][string]$Path)
+
+    if (Test-Path -LiteralPath $Path) {
+        if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+            throw 'The feedback ledger path exists but is not a file.'
+        }
+        $bytes = [System.IO.File]::ReadAllBytes($Path)
+        return [pscustomobject]@{
+            Existed = $true
+            Bytes = [byte[]]$bytes
+            ByteSize = [long]$bytes.Length
+            Sha256 = Get-GssByteArraySha256 -Bytes $bytes
+        }
+    }
+
+    return [pscustomobject]@{
+        Existed = $false
+        Bytes = [byte[]]@()
+        ByteSize = [long]0
+        Sha256 = $null
+    }
+}
+
+function Restore-GssFeedbackLedgerState {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][object]$State
+    )
+
+    if (-not [bool]$State.Existed) {
+        if (Test-Path -LiteralPath $Path) {
+            if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+                throw 'The feedback ledger rollback target is not a file.'
+            }
+            Invoke-GssFileSystemRetry -Operation {
+                Remove-Item -LiteralPath $Path -Force
+            }
+        }
+        if (Test-Path -LiteralPath $Path) {
+            throw 'The newly created feedback ledger could not be removed during rollback.'
+        }
+        return
+    }
+
+    $directory = Split-Path -Parent $Path
+    New-Item -ItemType Directory -Path $directory -Force | Out-Null
+    if (Test-Path -LiteralPath $Path -PathType Container) {
+        throw 'The feedback ledger rollback target is not a file.'
+    }
+
+    $temporary = Join-Path $directory ('.gss-ledger-rollback-{0}.tmp' -f [guid]::NewGuid().ToString('N'))
+    $replacementBackup = Join-Path $directory ('.gss-ledger-rollback-{0}.bak' -f [guid]::NewGuid().ToString('N'))
+    try {
+        [System.IO.File]::WriteAllBytes($temporary, [byte[]]$State.Bytes)
+        Invoke-GssFileSystemRetry -Operation {
+            if (Test-Path -LiteralPath $Path -PathType Leaf) {
+                [System.IO.File]::Replace($temporary, $Path, $replacementBackup, $true)
+            }
+            else {
+                [System.IO.File]::Move($temporary, $Path)
+            }
+        }
+
+        $restoredBytes = [System.IO.File]::ReadAllBytes($Path)
+        if ([long]$restoredBytes.Length -ne [long]$State.ByteSize -or
+            (Get-GssByteArraySha256 -Bytes $restoredBytes) -cne [string]$State.Sha256) {
+            throw 'Feedback ledger rollback did not restore the exact prior bytes.'
+        }
+    }
+    finally {
+        if (Test-Path -LiteralPath $temporary -PathType Leaf) {
+            Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+        }
+        if (Test-Path -LiteralPath $replacementBackup -PathType Leaf) {
+            Remove-Item -LiteralPath $replacementBackup -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+function Write-GssFeedbackLedgerWithRollbackOnFailure {
+    param(
+        [Parameter(Mandatory)][object]$Ledger,
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][object]$RollbackState
+    )
+
+    try {
+        Write-GssFeedbackLedger -Ledger $Ledger -Path $Path
+    }
+    catch {
+        $ledgerWriteError = $_
+        try {
+            Restore-GssFeedbackLedgerState -Path $Path -State $RollbackState
+        }
+        catch {
+            $ledgerWriteError.Exception.Data['GssFeedbackLedgerRollbackError'] = $_.Exception.Message
+        }
+        throw
+    }
+}
+
+function ConvertTo-GssPackageInputPortablePath {
+    param([Parameter(Mandatory)][string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or $Path -cne $Path.Trim() -or $Path.Contains('\')) {
+        throw 'Package-input evidence contains a noncanonical portable path.'
+    }
+    if (-not $Path.StartsWith('gss/', [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Package-input evidence portable paths must start with gss/.'
+    }
+    $segments = @($Path.Split('/'))
+    if ($segments.Count -lt 2 -or
+        @($segments | Where-Object { [string]::IsNullOrWhiteSpace($_) -or $_ -eq '.' -or $_ -eq '..' }).Count -gt 0) {
+        throw 'Package-input evidence contains a noncanonical portable path.'
+    }
+    return ($segments -join '/')
+}
+
+function ConvertTo-GssPackageInputRecord {
+    param(
+        [Parameter(Mandatory)][object]$InputRecord,
+        [Parameter(Mandatory)][string]$Label
+    )
+
+    Assert-GssExactObjectSchema `
+        -Value $InputRecord `
+        -AllowedProperties @('PortablePath', 'ByteSize', 'Sha256') `
+        -Label $Label
+    $portablePath = ConvertTo-GssPackageInputPortablePath -Path ([string]$InputRecord.PortablePath)
+    $byteSizeText = [string]$InputRecord.ByteSize
+    $byteSize = [long]0
+    if ($byteSizeText -notmatch '^(?:0|[1-9][0-9]*)$' -or
+        -not [long]::TryParse($byteSizeText, [ref]$byteSize)) {
+        throw "$Label has an invalid byte size."
+    }
+    $sha256 = [string]$InputRecord.Sha256
+    if ($sha256 -cnotmatch '^[a-f0-9]{64}$') {
+        throw "$Label has an invalid SHA-256 hash."
+    }
+    return [pscustomobject][ordered]@{
+        PortablePath = $portablePath
+        ByteSize = $byteSize
+        Sha256 = $sha256
+    }
+}
+
+function Get-GssPackageInputEvidenceSha256 {
+    param([Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Inputs)
+
+    $canonicalEvidence = @($Inputs |
+        Sort-Object @{ Expression = { ([string]$_.PortablePath).ToLowerInvariant() } } |
+        ForEach-Object {
+            "$(([string]$_.PortablePath).ToLowerInvariant()):$([long]$_.ByteSize):$(([string]$_.Sha256).ToLowerInvariant())"
+        }) -join "`n"
+    return Get-GssStringSha256 -Value $canonicalEvidence
+}
+
+function Get-GssCurrentPackageInputEvidence {
+    param(
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$SourceDescriptors,
+        [Parameter(Mandatory)][string]$LedgerPath,
+        [object]$LedgerState
+    )
+
+    $records = @()
+    foreach ($source in $SourceDescriptors) {
+        $sourcePath = [string]$source.source_path
+        if ([string]::IsNullOrWhiteSpace($sourcePath)) {
+            throw 'A captured package source descriptor is missing its portable path.'
+        }
+        $portablePath = ConvertTo-GssPackageInputPortablePath -Path ('gss/' + $sourcePath.Replace('\', '/'))
+        $sourceFullPath = [string]$source.source_full_path
+        if (-not (Test-Path -LiteralPath $sourceFullPath -PathType Leaf)) {
+            throw "A captured package source is missing: $portablePath"
+        }
+        $sourceItem = Get-Item -LiteralPath $sourceFullPath
+        $records += [pscustomobject][ordered]@{
+            PortablePath = $portablePath
+            ByteSize = [long]$sourceItem.Length
+            Sha256 = Get-GssSha256 -Path $sourceFullPath
+        }
+    }
+
+    $ledgerEvidenceState = if ($null -ne $LedgerState) {
+        $LedgerState
+    }
+    else {
+        Get-GssFeedbackLedgerRollbackState -Path $LedgerPath
+    }
+    if ([bool]$ledgerEvidenceState.Existed) {
+        $records += [pscustomobject][ordered]@{
+            PortablePath = 'gss/_automation_runs/state/gss_feedback_first_seen.json'
+            ByteSize = [long]$ledgerEvidenceState.ByteSize
+            Sha256 = [string]$ledgerEvidenceState.Sha256
+        }
+    }
+
+    $byPath = @{}
+    foreach ($record in $records) {
+        $key = ([string]$record.PortablePath).ToLowerInvariant()
+        if ($byPath.ContainsKey($key)) {
+            throw "A package input was captured more than once: $($record.PortablePath)"
+        }
+        $byPath[$key] = $record
+    }
+    $sortedRecords = @($byPath.Keys | Sort-Object | ForEach-Object { $byPath[$_] })
+    return [pscustomobject]@{
+        Inputs = $sortedRecords
+        SourceSetSha256 = Get-GssPackageInputEvidenceSha256 -Inputs $sortedRecords
+    }
+}
+
+function Assert-GssExpectedPackageInputEvidence {
+    param(
+        [AllowNull()][object]$ExpectedEvidence,
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$SourceDescriptors,
+        [Parameter(Mandatory)][string]$LedgerPath,
+        [object]$LedgerState
+    )
+
+    if ($null -eq $ExpectedEvidence) { return $null }
+    if ($null -eq $ExpectedEvidence.PSObject.Properties['Inputs'] -or
+        $null -eq $ExpectedEvidence.PSObject.Properties['SourceSetSha256']) {
+        throw 'Expected package-input evidence must contain Inputs and SourceSetSha256.'
+    }
+
+    $expectedRecords = @()
+    $expectedByPath = @{}
+    $recordIndex = 0
+    foreach ($record in @($ExpectedEvidence.Inputs)) {
+        $recordIndex++
+        $normalized = ConvertTo-GssPackageInputRecord `
+            -InputRecord $record `
+            -Label "Expected package-input record $recordIndex"
+        $key = ([string]$normalized.PortablePath).ToLowerInvariant()
+        if ($expectedByPath.ContainsKey($key)) {
+            throw "Expected package-input evidence contains a duplicate path: $($normalized.PortablePath)"
+        }
+        $expectedByPath[$key] = $normalized
+        $expectedRecords += $normalized
+    }
+    if ($expectedRecords.Count -eq 0) {
+        throw 'Expected package-input evidence must contain at least one input.'
+    }
+
+    $expectedSourceSetSha256 = [string]$ExpectedEvidence.SourceSetSha256
+    if ($expectedSourceSetSha256 -cnotmatch '^[a-f0-9]{64}$') {
+        throw 'Expected package-input evidence has an invalid SourceSetSha256.'
+    }
+    $computedExpectedSha256 = Get-GssPackageInputEvidenceSha256 -Inputs $expectedRecords
+    if ($computedExpectedSha256 -cne $expectedSourceSetSha256) {
+        throw 'Expected package-input evidence SourceSetSha256 does not match its Inputs.'
+    }
+
+    $actualEvidence = Get-GssCurrentPackageInputEvidence `
+        -SourceDescriptors $SourceDescriptors `
+        -LedgerPath $LedgerPath `
+        -LedgerState $LedgerState
+    $actualByPath = @{}
+    foreach ($record in @($actualEvidence.Inputs)) {
+        $actualByPath[([string]$record.PortablePath).ToLowerInvariant()] = $record
+    }
+    foreach ($key in @($actualByPath.Keys | Sort-Object)) {
+        if (-not $expectedByPath.ContainsKey($key)) {
+            throw "Current package inputs contain an unexpected source: $($actualByPath[$key].PortablePath)"
+        }
+    }
+    foreach ($key in @($expectedByPath.Keys | Sort-Object)) {
+        if (-not $actualByPath.ContainsKey($key)) {
+            throw "Expected package input is missing from the current source set: $($expectedByPath[$key].PortablePath)"
+        }
+        $expected = $expectedByPath[$key]
+        $actual = $actualByPath[$key]
+        if ([long]$actual.ByteSize -ne [long]$expected.ByteSize -or
+            [string]$actual.Sha256 -cne [string]$expected.Sha256) {
+            throw "Current package input changed after the committed snapshot: $($actual.PortablePath)"
+        }
+    }
+    if ($actualByPath.Count -ne $expectedByPath.Count -or
+        [string]$actualEvidence.SourceSetSha256 -cne $expectedSourceSetSha256) {
+        throw 'Current package inputs do not match the expected exact source set.'
+    }
+    return $actualEvidence
 }
 
 function Assert-GssSundayReportingDate {
@@ -2720,8 +3113,22 @@ function New-GssEmailPackage {
         [Parameter(Mandatory)][string]$FolderPath,
         [Parameter(Mandatory)][object]$RunLog,
         [Parameter(Mandatory)][object]$AnalysisResult,
-        [string]$LedgerPath
+        [string]$LedgerPath,
+        [AllowNull()][object]$ExpectedPackageInputEvidence
     )
+
+    $packageMutex = New-Object System.Threading.Mutex($false, $script:GssTransactionMutexName)
+    $ownsPackageMutex = $false
+    try {
+        try {
+            $ownsPackageMutex = $packageMutex.WaitOne(0)
+        }
+        catch [System.Threading.AbandonedMutexException] {
+            $ownsPackageMutex = $true
+        }
+        if (-not $ownsPackageMutex) {
+            throw 'Another GSS workbook transaction is already active on this workstation.'
+        }
 
     if ($RunLog.Mode -ne 'ApplyToMainWorkbook') {
         throw 'Email packages may be published only from a successful live apply log.'
@@ -2763,6 +3170,22 @@ function New-GssEmailPackage {
     if ([string]::IsNullOrWhiteSpace($LedgerPath)) {
         $LedgerPath = Join-Path (Join-Path (Join-Path $FolderPath '_automation_runs') 'state') 'gss_feedback_first_seen.json'
     }
+    if ($null -ne $ExpectedPackageInputEvidence) {
+        $canonicalLedgerPath = Join-Path (Join-Path (Join-Path $FolderPath '_automation_runs') 'state') 'gss_feedback_first_seen.json'
+        if (-not [string]::Equals(
+            [System.IO.Path]::GetFullPath($LedgerPath),
+            [System.IO.Path]::GetFullPath($canonicalLedgerPath),
+            [System.StringComparison]::OrdinalIgnoreCase
+        )) {
+            throw 'Expected package-input evidence requires the canonical feedback ledger path.'
+        }
+    }
+    $ledgerRollbackState = Get-GssFeedbackLedgerRollbackState -Path $LedgerPath
+    $null = Assert-GssExpectedPackageInputEvidence `
+        -ExpectedEvidence $ExpectedPackageInputEvidence `
+        -SourceDescriptors $sourceDescriptors `
+        -LedgerPath $LedgerPath `
+        -LedgerState $ledgerRollbackState
     $ledger = Read-GssFeedbackLedger $LedgerPath
     $feedbackSelection = Get-GssFeedbackSelection -Inventory $inventory -Ledger $ledger -ReportingDate $reportingDate
     $packageId = Get-GssDeterministicPackageId `
@@ -2957,7 +3380,14 @@ function New-GssEmailPackage {
             -PackageId $packageId `
             -ExpectedSourceDescriptors $sourceDescriptors `
             -ExpectedFeedbackSelectionFingerprint $feedback.SelectionFingerprint
-        Write-GssFeedbackLedger -Ledger $feedback.NextLedger -Path $LedgerPath
+        $null = Assert-GssExpectedPackageInputEvidence `
+            -ExpectedEvidence $ExpectedPackageInputEvidence `
+            -SourceDescriptors $sourceDescriptors `
+            -LedgerPath $LedgerPath
+        Write-GssFeedbackLedgerWithRollbackOnFailure `
+            -Ledger $feedback.NextLedger `
+            -Path $LedgerPath `
+            -RollbackState $ledgerRollbackState
         return [pscustomobject]@{
             EmailReadiness = 'Ready'
             DataClassification = $script:GssRestrictedClassification
@@ -2976,6 +3406,7 @@ function New-GssEmailPackage {
     $stagingPath = Join-Path $outbox ('.staging-' + $packageId + '-' + [guid]::NewGuid().ToString('N'))
     $attachmentDirectory = Join-Path $stagingPath 'attachments'
     New-Item -ItemType Directory -Path $attachmentDirectory -Force | Out-Null
+    $ledgerMutationAttempted = $false
     try {
         $dateToken = $reportingDate.ToString('MMddyy')
         $attachmentNames = @{
@@ -3100,7 +3531,12 @@ Automatic sending is disabled. Confirm every recipient is authorized before any 
         $classificationText = Read-GssUtf8NoBomFile $classificationPath
         $aiFacingText = $analysisText + $commenterLensJsonText + $commenterLensCsvText + $previewText + $previewHtml + $classificationText
         $nonRawText = $aiFacingText + $manifestText
-        if ($nonRawText -match '(?i)(?:[A-Z]:[\\/]|\\\\[^\\])') { throw 'A machine-specific path leaked into a portable package file.' }
+        # Inspect decoded JSON values rather than serialized JSON syntax. A
+        # quoted phrase ending in a letter and colon is serialized with \" and
+        # must not be mistaken for a drive root solely because of that escape.
+        Assert-GssPortableContentHasNoMachineSpecificPath `
+            -StructuredValues @($analysisDocument, $commenterLens, $manifest) `
+            -TextValues @($commenterLensCsvText, $previewText, $previewHtml, $classificationText)
         # Deterministic methodology and metadata can legitimately contain an
         # ordinary word that is also present in a guest-name field (for example,
         # "sample"). Scan all portable text for generic PII, but scope the
@@ -3116,8 +3552,13 @@ Automatic sending is disabled. Confirm every recipient is authorized before any 
         )
         if ($remainingPii.Count -gt 0) { throw "PII remained in portable package output: $($remainingPii -join ', ')" }
 
-        # Persist first-seen state before making the ready package visible. If the
-        # final promotion fails, the next identical run reselects this package ID.
+        $null = Assert-GssExpectedPackageInputEvidence `
+            -ExpectedEvidence $ExpectedPackageInputEvidence `
+            -SourceDescriptors $sourceDescriptors `
+            -LedgerPath $LedgerPath
+        # Persist first-seen state before making the ready package visible. The
+        # exact prior ledger bytes are restored if any later publication step fails.
+        $ledgerMutationAttempted = $true
         Write-GssFeedbackLedger -Ledger $feedback.NextLedger -Path $LedgerPath
         # This marker is the final package-file write; the directory is then promoted atomically.
         "$($script:GssEmailPackageSchemaVersion)`n$packageId" | Set-Content -LiteralPath (Join-Path $stagingPath 'READY') -Encoding ASCII
@@ -3147,6 +3588,14 @@ Automatic sending is disabled. Confirm every recipient is authorized before any 
     }
     catch {
         $packageError = $_
+        if ($ledgerMutationAttempted) {
+            try {
+                Restore-GssFeedbackLedgerState -Path $LedgerPath -State $ledgerRollbackState
+            }
+            catch {
+                $packageError.Exception.Data['GssFeedbackLedgerRollbackError'] = $_.Exception.Message
+            }
+        }
         if (Test-Path -LiteralPath $stagingPath -PathType Container) {
             $resolvedOutbox = [System.IO.Path]::GetFullPath($outbox).TrimEnd('\') + '\'
             $resolvedStaging = [System.IO.Path]::GetFullPath($stagingPath)
@@ -3162,5 +3611,16 @@ Automatic sending is disabled. Confirm every recipient is authorized before any 
             }
         }
         throw
+    }
+    }
+    finally {
+        try {
+            if ($ownsPackageMutex) {
+                [void]$packageMutex.ReleaseMutex()
+            }
+        }
+        finally {
+            $packageMutex.Dispose()
+        }
     }
 }

@@ -69,6 +69,24 @@ $packageTerminalThrowCatches = @($packageFunctionAst.Body.FindAll({
 Assert-Equal $packageTerminalThrowCatches.Count 1 'Package creation has one terminal rethrow catch'
 $packageRethrow = $packageTerminalThrowCatches[0].Body.Statements[-1]
 Assert-True ($null -eq $packageRethrow.Pipeline) 'Package creation uses bare throw after cleanup'
+$packageSource = $packageFunctionAst.Extent.Text
+$mutexWaitIndex = $packageSource.IndexOf('$ownsPackageMutex = $packageMutex.WaitOne(0)', [System.StringComparison]::Ordinal)
+$runValidationIndex = $packageSource.IndexOf("if (`$RunLog.Mode -ne 'ApplyToMainWorkbook')", [System.StringComparison]::Ordinal)
+$mutexReleaseIndex = $packageSource.LastIndexOf('[void]$packageMutex.ReleaseMutex()', [System.StringComparison]::Ordinal)
+Assert-True ($sourceAst.Extent.Text.Contains("`$script:GssTransactionMutexName = 'Global\GSSSurveyWorkbookAutomationTransaction'")) 'Email publisher uses the shared workstation transaction mutex name'
+Assert-True ($mutexWaitIndex -ge 0 -and $mutexWaitIndex -lt $runValidationIndex) 'Email publisher acquires the transaction mutex before inspecting or mutating package state'
+Assert-True ($mutexReleaseIndex -gt $runValidationIndex) 'Email publisher releases its mutex acquisition in the outer finally path'
+Assert-Equal ([regex]::Matches($packageSource, [regex]::Escape('$packageMutex.WaitOne(0)')).Count) 1 'Email publisher acquires the mutex exactly once'
+Assert-Equal ([regex]::Matches($packageSource, [regex]::Escape('$packageMutex.ReleaseMutex()')).Count) 1 'Email publisher releases the mutex exactly once'
+Assert-True ($packageSource.Contains('catch [System.Threading.AbandonedMutexException]')) 'Email publisher treats an abandoned mutex as acquired ownership'
+$firstEvidenceValidationIndex = $packageSource.IndexOf('$ledgerRollbackState = Get-GssFeedbackLedgerRollbackState', [System.StringComparison]::Ordinal)
+$ledgerReadIndex = $packageSource.IndexOf('$ledger = Read-GssFeedbackLedger', [System.StringComparison]::Ordinal)
+$finalSourceRehashIndex = $packageSource.LastIndexOf('foreach ($source in $sourceDescriptors)', [System.StringComparison]::Ordinal)
+$finalEvidenceValidationIndex = $packageSource.LastIndexOf('$null = Assert-GssExpectedPackageInputEvidence', [System.StringComparison]::Ordinal)
+$ledgerWriteIndex = $packageSource.LastIndexOf('Write-GssFeedbackLedger -Ledger $feedback.NextLedger', [System.StringComparison]::Ordinal)
+Assert-True ($firstEvidenceValidationIndex -ge 0 -and $firstEvidenceValidationIndex -lt $ledgerReadIndex) 'Expected package inputs are validated before ledger parsing or analysis'
+Assert-True ($finalEvidenceValidationIndex -gt $finalSourceRehashIndex -and $finalEvidenceValidationIndex -lt $ledgerWriteIndex) 'Expected package inputs are revalidated after source rehash and immediately before ledger publication'
+Assert-Equal ([regex]::Matches($packageSource, 'Assert-GssExpectedPackageInputEvidence').Count) 3 'Publisher has initial, existing-package, and pre-promotion evidence checks'
 
 $inventoryFunctionAst = $sourceAst.Find({
     param($node)
@@ -81,6 +99,76 @@ $workbookParseIndex = $inventorySource.IndexOf('Read-GssDetailWorkbook -Path $fi
 $postParseVerificationIndex = $inventorySource.IndexOf("Assert-GssHistoricalRecoveryFileIntegrity -Descriptor `$recoveryDescriptor -Phase 'post-parse'", [System.StringComparison]::Ordinal)
 Assert-True ($preParseVerificationIndex -ge 0 -and $preParseVerificationIndex -lt $workbookParseIndex) 'Recovered workbook bytes are verified before parsing'
 Assert-True ($postParseVerificationIndex -gt $workbookParseIndex) 'Recovered workbook bytes are verified after parsing'
+
+$colonQuoteFixture = [pscustomobject]@{
+    sanitized_text = 'Synthetic summary:"placeholder".'
+}
+
+function Get-TestDirectoryInventory {
+    param([Parameter(Mandatory)][string]$RootPath)
+
+    $resolvedRoot = (Resolve-Path -LiteralPath $RootPath).Path.TrimEnd('\')
+    return (@(
+        Get-ChildItem -LiteralPath $resolvedRoot -Force -Recurse |
+            Sort-Object FullName |
+            ForEach-Object {
+                $relativePath = $_.FullName.Substring($resolvedRoot.Length) -replace '^[\\/]+', ''
+                if ($_.PSIsContainer) {
+                    "directory|$relativePath"
+                }
+                else {
+                    "file|$relativePath|$($_.Length)|$(Get-GssSha256 $_.FullName)"
+                }
+            }
+    ) -join "`n")
+}
+$serializedColonQuoteFixture = $colonQuoteFixture | ConvertTo-Json -Compress
+$oneLetterColonQuoteFixture = [pscustomobject][ordered]@{
+    value = 'A:"quoted"'
+}
+$serializedOneLetterColonQuoteFixture = $oneLetterColonQuoteFixture | ConvertTo-Json -Compress
+Assert-True ($serializedColonQuoteFixture -match '(?i)(?:[A-Z]:[\\/]|\\\\[^\\])') 'Regression fixture reproduces the legacy serialized-JSON false positive'
+Assert-Equal $serializedOneLetterColonQuoteFixture '{"value":"A:\"quoted\""}' 'One-letter colon-quote fixture has the exact serialized JSON shape'
+Assert-True ($serializedOneLetterColonQuoteFixture -match '(?i)(?:[A-Z]:[\\/]|\\\\[^\\])') 'One-letter fixture reproduces the legacy serialized-JSON false positive'
+Assert-GssPortableContentHasNoMachineSpecificPath -StructuredValues @($colonQuoteFixture, $oneLetterColonQuoteFixture)
+Assert-GssPortableContentHasNoMachineSpecificPath -TextValues @(
+    $serializedColonQuoteFixture,
+    $serializedOneLetterColonQuoteFixture,
+    'https://example.invalid/synthetic',
+    'https://example.invalid/C:/url-segment?next=//server/share/file'
+)
+Assert-ThrowsLike {
+    Assert-GssPortableContentHasNoMachineSpecificPath -StructuredValues @(
+        [pscustomobject]@{ source = 'C:\Private\report.xlsx' }
+    )
+} '*machine-specific path*' 'Structured portable content rejects an actual drive path'
+Assert-ThrowsLike {
+    Assert-GssPortableContentHasNoMachineSpecificPath -StructuredValues @(
+        [pscustomobject]@{ source = '\\fileserver\restricted\report.xlsx' }
+    )
+} '*machine-specific path*' 'Structured portable content rejects an actual UNC path'
+Assert-ThrowsLike {
+    Assert-GssPortableContentHasNoMachineSpecificPath -TextValues @('Local source: D:/Private/report.xlsx')
+} '*machine-specific path*' 'Plain portable text rejects an actual drive path'
+Assert-ThrowsLike {
+    Assert-GssPortableContentHasNoMachineSpecificPath -TextValues @('Local source: C:folder\report.xlsx')
+} '*machine-specific path*' 'Plain portable text rejects a drive-relative path'
+Assert-ThrowsLike {
+    Assert-GssPortableContentHasNoMachineSpecificPath -TextValues @('Local source: C:folder/report.xlsx')
+} '*machine-specific path*' 'Plain portable text rejects a slash-style drive-relative path'
+Assert-ThrowsLike {
+    Assert-GssPortableContentHasNoMachineSpecificPath -TextValues @('Network source: //fileserver/restricted/report.xlsx')
+} '*machine-specific path*' 'Plain portable text rejects a forward-slash network path'
+Assert-ThrowsLike {
+    Assert-GssPortableContentHasNoMachineSpecificPath -TextValues @(
+        ([pscustomobject]@{ source = 'C:folder\report.xlsx' } | ConvertTo-Json -Compress)
+    )
+} '*machine-specific path*' 'Serialized JSON is decoded and rejects an actual drive-relative value'
+Assert-ThrowsLike {
+    Assert-GssPortableContentHasNoMachineSpecificPath -TextValues @(
+        ([pscustomobject]@{ source = '//fileserver/restricted/report.xlsx' } | ConvertTo-Json -Compress)
+    )
+} '*machine-specific path*' 'Serialized JSON is decoded and rejects an actual forward-slash network value'
 
 function Copy-TestJsonObject {
     param([Parameter(Mandatory)][object]$Value)
@@ -384,7 +472,7 @@ try {
     $headers19 = @('Text', 'Restaurant Name', 'Reservation Time', 'Reservation Date', 'Service', 'Overall', 'Culinary', 'Value', 'Pace of Meal', 'Recommend', 'Manager Visit', 'Steak Cooked Correctly', 'Alert Guests DO NOT CONTACT', 'Event Booking Process', 'First Visit', 'Guest Last Name', 'Guest First Name', 'Sorensen Weekly Comments', 'Sorensen')
     $unsafeBidi = [char]0x202E
     $unsafeC0 = [char]0x0001
-    $contactableText = "Casey Testperson praised the service. Contact casey@example.invalid or 212-555-0199 and 555-1212; https://example.invalid and bare.example.invalid/path, Reservation ABC123, Resy ZX9876. Unsafe ${unsafeBidi}bidi control."
+    $contactableText = 'Synthetic summary:"All set." A:"Quoted." Casey Testperson praised the service. Contact casey@example.invalid or 212-555-0199 and 555-1212; https://example.invalid and bare.example.invalid/path, Reservation ABC123, Resy ZX9876. Unsafe ' + $unsafeBidi + 'bidi control.'
     $contactable = New-TestResponse '9354 Richmond' '07/10/2026' '6:00 PM' $contactableText 'Casey' 'Testperson'
     $dnc = New-TestResponse '9354 Richmond' '07/11/2026' '7:00 PM' 'Robin Sample said the service was excellent and attentive.' 'Robin' 'Sample' 'NC'
     $old = New-TestResponse '9355 Virginia Beach' '07/01/2026' '5:00 PM' 'The food was great.' 'Taylor' 'Archive'
@@ -909,7 +997,135 @@ try {
         MetricDetail = @($finding) + $populationMetricDetail
         RestaurantFindings = @(Select-GssRestaurantFindings @($finding))
     }
-    $ledgerPath = Join-Path $folder '_automation_runs\state\fixture_ledger.json'
+    $ledgerPath = Join-Path $folder '_automation_runs\state\gss_feedback_first_seen.json'
+    $packageInputDescriptors = @(
+        (Get-GssSourceDescriptor -Role 'comparison_pdf' -Path $pdf -FolderPath $folder),
+        (Get-GssSourceDescriptor -Role 'rolling_workbook' -Path $rolling -FolderPath $folder),
+        (Get-GssSourceDescriptor -Role 'prior_year_rolling_workbook' -Path $priorRolling -FolderPath $folder),
+        (Get-GssSourceDescriptor -Role 'live_workbook' -Path $liveWorkbook -FolderPath $folder),
+        (Get-GssSourceDescriptor -Role 'detail_workbook' -Path $inventory.CurrentWorkbook.Path -FolderPath $folder),
+        (Get-GssSourceDescriptor -Role 'run_log' -Path $logPath -FolderPath $folder)
+    )
+    $packageInputDescriptors += @($inventory.Workbooks |
+        Where-Object { $_.PortablePath -ne $inventory.CurrentWorkbook.PortablePath } |
+        Sort-Object PortablePath |
+        ForEach-Object {
+            Get-GssSourceDescriptor -Role 'detail_archive_workbook' -Path $_.Path -FolderPath $folder
+        })
+    $expectedPackageInputEvidence = Get-GssCurrentPackageInputEvidence `
+        -SourceDescriptors $packageInputDescriptors `
+        -LedgerPath $ledgerPath
+    Assert-Equal @($expectedPackageInputEvidence.Inputs).Count 7 'Expected package-input evidence captures every package source while the ledger is absent'
+    Assert-Equal (
+        Get-GssPackageInputEvidenceSha256 -Inputs $expectedPackageInputEvidence.Inputs
+    ) $expectedPackageInputEvidence.SourceSetSha256 'Expected package-input evidence carries its exact canonical source-set hash'
+    $validatedPackageInputEvidence = Assert-GssExpectedPackageInputEvidence `
+        -ExpectedEvidence $expectedPackageInputEvidence `
+        -SourceDescriptors $packageInputDescriptors `
+        -LedgerPath $ledgerPath
+    Assert-Equal $validatedPackageInputEvidence.SourceSetSha256 $expectedPackageInputEvidence.SourceSetSha256 'Exact package-input evidence validates'
+
+    $invalidSourceSetEvidence = Copy-TestJsonObject $expectedPackageInputEvidence
+    $invalidSourceSetEvidence.SourceSetSha256 = ('0' * 64)
+    Assert-ThrowsLike {
+        Assert-GssExpectedPackageInputEvidence `
+            -ExpectedEvidence $invalidSourceSetEvidence `
+            -SourceDescriptors $packageInputDescriptors `
+            -LedgerPath $ledgerPath
+    } '*SourceSetSha256 does not match its Inputs*' 'Expected package-input evidence rejects a forged aggregate hash'
+
+    $missingInputEvidence = [pscustomobject]@{
+        Inputs = @($expectedPackageInputEvidence.Inputs | Select-Object -Skip 1)
+        SourceSetSha256 = Get-GssPackageInputEvidenceSha256 -Inputs @($expectedPackageInputEvidence.Inputs | Select-Object -Skip 1)
+    }
+    Assert-ThrowsLike {
+        Assert-GssExpectedPackageInputEvidence `
+            -ExpectedEvidence $missingInputEvidence `
+            -SourceDescriptors $packageInputDescriptors `
+            -LedgerPath $ledgerPath
+    } '*unexpected source*' 'Expected package-input evidence rejects an extra live input'
+
+    $extraInputRecords = @($expectedPackageInputEvidence.Inputs) + [pscustomobject][ordered]@{
+        PortablePath = 'gss/synthetic/extra-input.bin'
+        ByteSize = [long]1
+        Sha256 = ('1' * 64)
+    }
+    $extraInputEvidence = [pscustomobject]@{
+        Inputs = $extraInputRecords
+        SourceSetSha256 = Get-GssPackageInputEvidenceSha256 -Inputs $extraInputRecords
+    }
+    Assert-ThrowsLike {
+        Assert-GssExpectedPackageInputEvidence `
+            -ExpectedEvidence $extraInputEvidence `
+            -SourceDescriptors $packageInputDescriptors `
+            -LedgerPath $ledgerPath
+    } '*missing from the current source set*' 'Expected package-input evidence rejects a missing live input'
+
+    $driftedInputEvidence = Copy-TestJsonObject $expectedPackageInputEvidence
+    $driftedInputEvidence.Inputs[0].Sha256 = ('2' * 64)
+    $driftedInputEvidence.SourceSetSha256 = Get-GssPackageInputEvidenceSha256 -Inputs @($driftedInputEvidence.Inputs)
+    Assert-ThrowsLike {
+        Assert-GssExpectedPackageInputEvidence `
+            -ExpectedEvidence $driftedInputEvidence `
+            -SourceDescriptors $packageInputDescriptors `
+            -LedgerPath $ledgerPath
+    } '*changed after the committed snapshot*' 'Expected package-input evidence rejects hash drift'
+
+    $priorRollingBytes = [System.IO.File]::ReadAllBytes($priorRolling)
+    [System.IO.File]::AppendAllText($priorRolling, 'mutation after evidence capture')
+    Assert-ThrowsLike {
+        Assert-GssExpectedPackageInputEvidence `
+            -ExpectedEvidence $expectedPackageInputEvidence `
+            -SourceDescriptors $packageInputDescriptors `
+            -LedgerPath $ledgerPath
+    } '*changed after the committed snapshot*' 'Expected package-input evidence detects mutation after capture'
+    [System.IO.File]::WriteAllBytes($priorRolling, $priorRollingBytes)
+
+    $rollbackProbePath = Join-Path $temporaryRoot 'ledger-rollback-probe.json'
+    $priorLedgerBytes = [System.Text.Encoding]::UTF8.GetBytes("{`"prior`":true}`r`n")
+    [System.IO.File]::WriteAllBytes($rollbackProbePath, $priorLedgerBytes)
+    $priorLedgerState = Get-GssFeedbackLedgerRollbackState -Path $rollbackProbePath
+    [System.IO.File]::WriteAllText($rollbackProbePath, '{"prior":false}')
+    Restore-GssFeedbackLedgerState -Path $rollbackProbePath -State $priorLedgerState
+    Assert-Equal ([Convert]::ToBase64String([System.IO.File]::ReadAllBytes($rollbackProbePath))) ([Convert]::ToBase64String($priorLedgerBytes)) 'Ledger rollback restores exact prior bytes'
+    Remove-Item -LiteralPath $rollbackProbePath -Force
+    $absentLedgerState = Get-GssFeedbackLedgerRollbackState -Path $rollbackProbePath
+    [System.IO.File]::WriteAllText($rollbackProbePath, '{"created":true}')
+    Restore-GssFeedbackLedgerState -Path $rollbackProbePath -State $absentLedgerState
+    Assert-True (-not (Test-Path -LiteralPath $rollbackProbePath)) 'Ledger rollback removes a ledger that was originally absent'
+
+    Write-GssFeedbackLedger `
+        -Ledger ([pscustomobject]@{ schema_version = $script:GssFeedbackLedgerVersion; entries = @() }) `
+        -Path $ledgerPath
+    Assert-ThrowsLike {
+        Assert-GssExpectedPackageInputEvidence `
+            -ExpectedEvidence $expectedPackageInputEvidence `
+            -SourceDescriptors $packageInputDescriptors `
+            -LedgerPath $ledgerPath
+    } '*unexpected source*gss/_automation_runs/state/gss_feedback_first_seen.json*' 'Expected package-input evidence treats a newly appeared ledger as an extra input'
+    $ledgerBoundEvidence = Get-GssCurrentPackageInputEvidence `
+        -SourceDescriptors $packageInputDescriptors `
+        -LedgerPath $ledgerPath
+    Assert-Equal @($ledgerBoundEvidence.Inputs).Count 8 'Current package-input evidence includes the present feedback ledger bytes'
+    $null = Assert-GssExpectedPackageInputEvidence `
+        -ExpectedEvidence $ledgerBoundEvidence `
+        -SourceDescriptors $packageInputDescriptors `
+        -LedgerPath $ledgerPath
+    Remove-Item -LiteralPath $ledgerPath -Force
+
+    $originalModelingReason = [string](Get-GssPopulationModelingAvailability).Reason
+    $analysis | Add-Member -NotePropertyName Modeling -NotePropertyValue (Get-GssPopulationModelingAvailability) -Force
+    $analysis.Modeling.Reason = 'Synthetic network source //fileserver/restricted/report.xlsx must not publish.'
+    Assert-ThrowsLike {
+        New-GssEmailPackage `
+            -FolderPath $folder `
+            -RunLog $runLog `
+            -AnalysisResult $analysis `
+            -LedgerPath $ledgerPath `
+            -ExpectedPackageInputEvidence $expectedPackageInputEvidence
+    } '*machine-specific path*' 'End-to-end package publication rejects a forward-slash network path'
+    $analysis.Modeling.Reason = $originalModelingReason
+
     $originalPublisher = (Get-Command Publish-GssStagedEmailPackage).ScriptBlock
     $publicationContextProbe = [pscustomobject]@{ InnerError = $null; Lock = $null; StagingPath = $null }
     $publicationContextError = $null
@@ -938,7 +1154,12 @@ try {
             }
         }
         try {
-            $null = New-GssEmailPackage -FolderPath $folder -RunLog $runLog -AnalysisResult $analysis -LedgerPath $ledgerPath
+            $null = New-GssEmailPackage `
+                -FolderPath $folder `
+                -RunLog $runLog `
+                -AnalysisResult $analysis `
+                -LedgerPath $ledgerPath `
+                -ExpectedPackageInputEvidence $expectedPackageInputEvidence
         }
         catch {
             $publicationContextError = $_
@@ -955,11 +1176,122 @@ try {
     Assert-Equal $publicationContextError.ScriptStackTrace $publicationContextProbe.InnerError.ScriptStackTrace 'Publication catch preserves the original script stack'
     Assert-True $publicationContextError.Exception.Data.Contains('GssStagingCleanupError') 'Publication error retains staging cleanup failure detail'
     Assert-True (Test-Path -LiteralPath $publicationContextProbe.StagingPath -PathType Container) 'Locked staging directory remains available for recovery'
+    Assert-True (-not (Test-Path -LiteralPath $ledgerPath)) 'Failed publication removes the ledger that was absent before the attempt'
+    $retryableEvidence = Assert-GssExpectedPackageInputEvidence `
+        -ExpectedEvidence $expectedPackageInputEvidence `
+        -SourceDescriptors $packageInputDescriptors `
+        -LedgerPath $ledgerPath
+    Assert-Equal $retryableEvidence.SourceSetSha256 $expectedPackageInputEvidence.SourceSetSha256 'Failed publication leaves the exact source evidence retryable'
     Remove-Item -LiteralPath $publicationContextProbe.StagingPath -Recurse -Force
 
-    $package = New-GssEmailPackage -FolderPath $folder -RunLog $runLog -AnalysisResult $analysis -LedgerPath $ledgerPath
+    $package = New-GssEmailPackage `
+        -FolderPath $folder `
+        -RunLog $runLog `
+        -AnalysisResult $analysis `
+        -LedgerPath $ledgerPath `
+        -ExpectedPackageInputEvidence $expectedPackageInputEvidence
     Assert-Equal $package.EmailReadiness 'Ready' 'Package email readiness'
+    Assert-True (-not [bool]$package.ExistingPackage) 'Retry after failed publication builds and promotes a new package'
     Assert-True (Test-Path -LiteralPath $package.ReadyMarkerPath -PathType Leaf) 'Ready marker exists'
+    $initialLedgerWriteTimeUtc = (Get-Item -LiteralPath $ledgerPath).LastWriteTimeUtc
+    $initialReadyWriteTimeUtc = (Get-Item -LiteralPath $package.ReadyMarkerPath).LastWriteTimeUtc
+
+    $outerPackageMutex = New-Object System.Threading.Mutex($false, $script:GssTransactionMutexName)
+    $ownsOuterPackageMutex = $false
+    try {
+        $ownsOuterPackageMutex = $outerPackageMutex.WaitOne(0)
+        Assert-True $ownsOuterPackageMutex 'Reentrant publisher test acquires the outer transaction mutex'
+        $invalidMutexRunLog = Copy-TestJsonObject $runLog
+        $invalidMutexRunLog.Mode = 'CopyTest'
+        Assert-ThrowsLike {
+            New-GssEmailPackage `
+                -FolderPath $folder `
+                -RunLog $invalidMutexRunLog `
+                -AnalysisResult $analysis `
+                -LedgerPath $ledgerPath
+        } '*successful live apply log*' 'Nested publisher mutex acquisition releases its own count after an exception'
+        $reentrantPackage = New-GssEmailPackage `
+            -FolderPath $folder `
+            -RunLog $runLog `
+            -AnalysisResult $analysis `
+            -LedgerPath $ledgerPath
+        Assert-True ([bool]$reentrantPackage.ExistingPackage) 'Publisher reenters the mutex already held by the safe coordinator thread'
+    }
+    finally {
+        if ($ownsOuterPackageMutex) { [void]$outerPackageMutex.ReleaseMutex() }
+        $outerPackageMutex.Dispose()
+    }
+
+    $ledgerBeforeConcurrentLoser = [System.IO.File]::ReadAllBytes($ledgerPath)
+    $readyBeforeConcurrentLoser = [System.IO.File]::ReadAllBytes($package.ReadyMarkerPath)
+    $outboxRoot = Split-Path -Parent $package.PackagePath
+    $outboxInventoryBeforeConcurrentLoser = Get-TestDirectoryInventory -RootPath $outboxRoot
+    $outboxBeforeConcurrentLoser = @(
+        Get-ChildItem -LiteralPath $outboxRoot -Directory |
+            Where-Object { $_.Name -notlike '.staging-*' }
+    ).Count
+    $mutexMarkerPath = Join-Path $temporaryRoot 'package-mutex-held.marker'
+    $mutexReleasePath = Join-Path $temporaryRoot 'package-mutex-release.marker'
+    $escapedMutexMarkerPath = $mutexMarkerPath.Replace("'", "''")
+    $escapedMutexReleasePath = $mutexReleasePath.Replace("'", "''")
+    $escapedMutexName = $script:GssTransactionMutexName.Replace("'", "''")
+    $mutexHolderCommand = @"
+`$mutex = New-Object System.Threading.Mutex(`$false, '$escapedMutexName')
+`$ownsMutex = `$false
+try {
+    `$ownsMutex = `$mutex.WaitOne(0)
+    if (-not `$ownsMutex) { exit 2 }
+    [System.IO.File]::WriteAllText('$escapedMutexMarkerPath', 'held')
+    for (`$attempt = 1; `$attempt -le 1000 -and -not (Test-Path -LiteralPath '$escapedMutexReleasePath' -PathType Leaf); `$attempt++) {
+        Start-Sleep -Milliseconds 10
+    }
+}
+finally {
+    if (`$ownsMutex) { [void]`$mutex.ReleaseMutex() }
+    `$mutex.Dispose()
+}
+"@
+    $encodedMutexHolderCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($mutexHolderCommand))
+    $mutexHolderProcess = $null
+    try {
+        $mutexHolderProcess = Start-Process -FilePath 'powershell.exe' -ArgumentList @(
+            '-NoLogo',
+            '-NoProfile',
+            '-NonInteractive',
+            '-EncodedCommand',
+            $encodedMutexHolderCommand
+        ) -WindowStyle Hidden -PassThru
+        for ($waitAttempt = 1; $waitAttempt -le 500 -and -not (Test-Path -LiteralPath $mutexMarkerPath -PathType Leaf); $waitAttempt++) {
+            Start-Sleep -Milliseconds 10
+        }
+        Assert-True (Test-Path -LiteralPath $mutexMarkerPath -PathType Leaf) 'Competing publisher process acquires the shared transaction mutex'
+        Assert-ThrowsLike {
+            New-GssEmailPackage `
+                -FolderPath $folder `
+                -RunLog $runLog `
+                -AnalysisResult $analysis `
+                -LedgerPath $ledgerPath
+        } '*Another GSS workbook transaction is already active*' 'Competing publisher is rejected before it can capture or roll back ledger state'
+        Assert-Equal ([Convert]::ToBase64String([System.IO.File]::ReadAllBytes($ledgerPath))) ([Convert]::ToBase64String($ledgerBeforeConcurrentLoser)) 'Rejected competing publisher cannot undo the successful ledger'
+        Assert-Equal ([Convert]::ToBase64String([System.IO.File]::ReadAllBytes($package.ReadyMarkerPath))) ([Convert]::ToBase64String($readyBeforeConcurrentLoser)) 'Rejected competing publisher cannot alter the successful READY package'
+        Assert-Equal (Get-TestDirectoryInventory -RootPath $outboxRoot) $outboxInventoryBeforeConcurrentLoser 'Rejected competing publisher cannot alter any package file or leave a staging directory'
+        Assert-Equal @(
+            Get-ChildItem -LiteralPath $outboxRoot -Directory |
+                Where-Object { $_.Name -notlike '.staging-*' }
+        ).Count $outboxBeforeConcurrentLoser 'Rejected competing publisher creates no additional visible package'
+    }
+    finally {
+        [System.IO.File]::WriteAllText($mutexReleasePath, 'release')
+        if ($null -ne $mutexHolderProcess -and -not $mutexHolderProcess.WaitForExit(5000)) {
+            $mutexHolderProcess.Kill()
+            $mutexHolderProcess.WaitForExit()
+        }
+        if ($null -ne $mutexHolderProcess) { $mutexHolderProcess.Dispose() }
+        foreach ($markerPath in @($mutexMarkerPath, $mutexReleasePath)) {
+            if (Test-Path -LiteralPath $markerPath -PathType Leaf) { Remove-Item -LiteralPath $markerPath -Force }
+        }
+    }
+
     $strictUtf8 = New-Object System.Text.UTF8Encoding($false, $true)
     foreach ($portableName in @('email_manifest.json', 'analysis.json', 'commenter_lens.json', 'commenter_lens.csv', 'email_preview.txt', 'email_preview.html', 'RESTRICTED.txt')) {
         $portablePath = Join-Path $package.PackagePath $portableName
@@ -1059,6 +1391,8 @@ try {
     Assert-True ($commenterLensCsv -match 'SuppressedUnverifiedPartitionAlignment') 'Commenter-lens CSV exposes non-comment suppression'
     Assert-True ($commenterLensCsv -notmatch '(?i)response_hash|guest_first_name|guest_last_name|source_path|source_row|sanitized_text') 'Commenter-lens CSV contains no row-level fields'
     Assert-Equal @($analysisJson.sanitized_feedback).Count 1 'DNC response excluded from individual evidence'
+    Assert-True ([string]$analysisJson.sanitized_feedback[0].sanitized_text -match 'Synthetic summary:"All set\."') 'Structured colon-quote text remains publishable'
+    Assert-True ([string]$analysisJson.sanitized_feedback[0].sanitized_text -match 'A:"Quoted\."') 'One-letter colon-quote text remains publishable end to end'
     Assert-True ([string]$analysisJson.sanitized_feedback[0].sanitized_text -match '\[REDACTED URL\],') 'Bare URL is redacted without swallowing sentence punctuation'
     Assert-True ([string]$analysisJson.sanitized_feedback[0].sanitized_text -match '\[REDACTED PHONE\]') 'Short local phone number is redacted'
     Assert-True ([string]$analysisJson.sanitized_feedback[0].sanitized_text -match '\[REDACTED BOOKING ID\]') 'Reservation and Resy identifiers are redacted'
@@ -1258,7 +1592,7 @@ try {
     Assert-True ($ledgerText -notmatch '(?i)Casey|Testperson|Robin|Sample|example\.invalid|212-555-0199|555-1212') 'Ledger remains hash-only'
     $ledger = $ledgerText | ConvertFrom-Json
     Assert-Equal @($ledger.entries).Count 3 'Ledger includes deduplicated current and baseline hashes'
-    Assert-True ((Get-Item -LiteralPath $ledgerPath).LastWriteTimeUtc -le (Get-Item -LiteralPath $package.ReadyMarkerPath).LastWriteTimeUtc) 'Ledger is persisted before the READY marker'
+    Assert-True ($initialLedgerWriteTimeUtc -le $initialReadyWriteTimeUtc) 'Ledger is persisted before the READY marker'
 
     $sameWeekSelection = Get-GssFeedbackSelection -Inventory $inventory -Ledger $ledger -ReportingDate ([datetime]'2026-07-12')
     Assert-Equal $sameWeekSelection.Fingerprint $manifest.feedback_selection_sha256 'Same-week rerun retains the selected-feedback fingerprint after ledger persistence'

@@ -112,7 +112,7 @@ Useful commands:
 .\scripts\Invoke-GSS-ReleaseBackup.ps1 -Operation VerifyRestore -OutputObject
 ```
 
-The resume command never reapplies the workbook. It revalidates the exact run and live hashes, retries the Drive commit idempotently, and publishes the READY package only after the backup is committed. The quarterly drill adds desktop Excel validation to the hash-verified restore and writes a combined receipt inside the isolated restore folder.
+The resume command never reapplies the workbook. For a run created by the current release, it revalidates the exact run and live hashes, retries the Drive commit idempotently, and publishes the READY package only after the backup is committed. Cross-release recovery is allowed only for a code-reviewed release pair (currently `v1.1.8` to `v1.1.9`), not merely because two versions are adjacent. That package-only path requires an unpublished package-blocked receipt, the annotated historical tag, a hash-verified committed workbook snapshot, an exact match for the run log, every detail workbook, and the feedback ledger, plus separately committed `RecoveryOnly` evidence for historical-detail metadata. Undeclared release pairs or changed inputs are rejected. Every publisher enters the shared workstation transaction mutex, rechecks the exact source evidence during capture and immediately before promotion, and restores the feedback ledger to its exact prior bytes if a late publication step fails. The quarterly drill adds desktop Excel validation to the hash-verified restore and writes a combined receipt inside the isolated restore folder.
 
 ### Historical Guest-Detail Recovery
 

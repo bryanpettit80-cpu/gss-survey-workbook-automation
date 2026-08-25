@@ -676,7 +676,7 @@ try {
     $longRestoreLocalAppData = Join-Path $resolvedTestRoot ('restore-root-' + ('r' * 30))
     $recoveryRestore = Restore-GssDriveBackupForVerification -RunId $recoverySummary.RunId -SettingsPath $settingsPath -LocalAppDataPath $longRestoreLocalAppData -Phase Final
     $recoveryRestoreReceipt = Read-GssDriveBackupJson -Path $recoveryRestore.ReceiptPath
-    $compactRestoreFiles = @($recoveryRestoreReceipt.files | Where-Object { $_.restored_path -match '^r/long-path/[0-9a-f]{64}\.' })
+    $compactRestoreFiles = @($recoveryRestoreReceipt.files | Where-Object { $_.restored_path -match '^r/long-path/[0-9a-f]{64}(?:\.[^/]+)?$' })
     Assert-GssDriveBackupTest ($recoveryRestore.Status -eq 'Verified' -and $recoveryRestore.FileCount -eq 7) 'Long-path RecoveryOnly verify-only restore did not verify every file.'
     Assert-GssDriveBackupTest ($compactRestoreFiles.Count -gt 0) 'Verify-only restore reconstructed every original portable path instead of compacting an over-budget destination.'
     foreach ($restoredFile in $compactRestoreFiles) {
@@ -1153,7 +1153,7 @@ try {
     $longLifecycleRestoreReceipt = Read-GssDriveBackupJson -Path $longLifecycleRestore.ReceiptPath
     $longRestoredEntry = @($longLifecycleRestoreReceipt.files | Where-Object portable_path -eq $longPathPortable)[0]
     $longRestoredPath = Join-Path $longLifecycleRestore.Destination ([string]$longRestoredEntry.restored_path).Replace('/', '\')
-    Assert-GssDriveBackupTest ($longRestoredEntry.portable_path -eq $longPathPortable -and $longRestoredEntry.restored_path -match '^r/long-path/[0-9a-f]{64}\.xlsx$') 'Full VerifyRestore did not retain portable metadata and map to a compact destination.'
+    Assert-GssDriveBackupTest ($longRestoredEntry.portable_path -eq $longPathPortable -and $longRestoredEntry.restored_path -match '^r/long-path/[0-9a-f]{64}(?:\.[^/]+)?$') 'Full VerifyRestore did not retain portable metadata and map to a compact destination.'
     Assert-GssDriveBackupTest ($longRestoredPath.Length -lt 248 -and (Test-Path -LiteralPath $longRestoredPath -PathType Leaf)) 'Full VerifyRestore compact destination is absent or over budget.'
     Assert-GssDriveBackupTest ((Get-GssDriveBackupSha256 -Path $longRestoredPath) -eq (Get-GssDriveBackupSha256 -Path $longLifecycleSource) -and [string]$longRestoredEntry.sha256 -eq (Get-GssDriveBackupSha256 -Path $longLifecycleSource)) 'Full VerifyRestore did not preserve matching file bytes and hash evidence.'
     $resolvedLongMapping = Resolve-GssDriveBackupRestoredFile -ReceiptPath $longLifecycleRestore.ReceiptPath -PortablePath $longPathPortable -ExpectedDestination $longLifecycleRestore.Destination

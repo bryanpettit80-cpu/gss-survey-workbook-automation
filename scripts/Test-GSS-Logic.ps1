@@ -296,6 +296,8 @@ Assert-True (-not $updaterSource.Contains('$LatestSource.File.LastWriteTime.ToSt
 $resumeSource = Get-Content -LiteralPath (Join-Path $scriptRoot 'Resume-GSS-PendingFinalize.ps1') -Raw
 $retryIndex = $resumeSource.IndexOf('-Operation RetryFinalize')
 $resumePublishIndex = $resumeSource.IndexOf('-PublishEmailPackage')
+$resumeCurrentReleasePublishIndex = $resumeSource.LastIndexOf('-PublishEmailPackage')
+$resumeExpectedEvidenceIndex = $resumeSource.IndexOf('-ExpectedPackageInputEvidence $priorReleasePackageInputEvidence')
 Assert-True ($retryIndex -ge 0 -and $retryIndex -lt $resumePublishIndex) 'Resume commits Drive before package publication'
 Assert-True (-not $resumeSource.Contains(' -Apply ')) 'Resume path never applies a workbook'
 Assert-True (-not $resumeSource.Contains('SkipReleaseIntegrityCheck')) 'Resume exposes no release-integrity bypass'
@@ -304,6 +306,557 @@ Assert-True ($resumeSource.Contains('active-transaction.json')) 'Resume preserve
 Assert-True ($resumeSource.Contains("'BackupCommitted'")) 'Resume records Drive commit before package work'
 Assert-True ($resumeSource.Contains("'PackageBlocked'")) 'Resume distinguishes package failure from Drive finalization'
 Assert-True ($resumeSource.Contains("'BackupBlocked'")) 'Resume preserves non-retryable Drive blocked status'
+Assert-True ($resumeSource.Contains('Test-GssCommittedBackupSnapshot')) 'Prior-release resume cryptographically validates the committed Drive snapshot'
+Assert-True ($resumeSource.Contains("RunRelease = 'v1.1.8'") -and $resumeSource.Contains("CurrentRelease = 'v1.1.9'")) 'Prior-release resume declares only the reviewed v1.1.8 to v1.1.9 compatibility bridge'
+Assert-True (-not $resumeSource.Contains('$runVersion.Patch + 1')) 'Adjacent patch releases do not gain package recovery automatically'
+Assert-True ($resumeSource.Contains("[string]`$Receipt.TransactionStatus -cne 'PackageBlocked'")) 'Prior-release resume requires the exact package-blocked transaction state'
+Assert-True ($resumeSource.Contains("[string]`$Receipt.BackupStatus -cne 'Committed'")) 'Prior-release resume requires a committed local backup state'
+Assert-True ($resumeSource.Contains("[string]`$document.snapshot_purpose -cne 'WorkbookTransaction'")) 'Prior-release resume rejects non-workbook Drive snapshots'
+Assert-True ($resumeSource.Contains("[string]`$manifest.host -cne [Environment]::MachineName")) 'Prior-release Drive evidence is bound to this workstation'
+Assert-True ($resumeSource.Contains('cat-file -t $tagReference')) 'Prior-release recovery requires an annotated historical release tag object'
+Assert-True ($resumeSource.Contains("[string]`$Receipt.ReleaseCommit -cne `$ExpectedReleaseCommit")) 'Prior-release receipt commit is bound to the peeled annotated tag commit'
+Assert-True ($resumeSource.Contains("Add-GssResumeReceiptValue `$receipt 'PackageRecoveryBackupEvidence' `$finalize")) 'Prior-release package recovery records its verified snapshot evidence separately'
+Assert-True ($resumeSource.Contains('PackageOnlyRecovery = $true')) 'Prior-release recovery is explicitly identified as package-only'
+Assert-True ($resumeSource.Contains('Assert-GssResumePackageInputSet')) 'Prior-release recovery binds live package inputs to the committed workbook snapshot'
+Assert-True ($resumeSource.Contains('Assert-GssResumeHistoricalRecoveryEvidence')) 'Prior-release recovery validates historical metadata through committed RecoveryOnly snapshots'
+Assert-True (
+    $resumeExpectedEvidenceIndex -gt $resumePublishIndex -and
+    $resumeExpectedEvidenceIndex -lt $resumeCurrentReleasePublishIndex
+) 'Prior-release publisher receives the validated package-input evidence while current-release publication keeps its existing call shape'
+
+$resumeTokens = $null
+$resumeParseErrors = $null
+$resumeAst = [System.Management.Automation.Language.Parser]::ParseInput(
+    $resumeSource,
+    [ref]$resumeTokens,
+    [ref]$resumeParseErrors
+)
+Assert-Equal $resumeParseErrors.Count 0 'Resume script parses without errors'
+foreach ($resumeFunctionName in @(
+    'Get-GssResumeReleaseVersion',
+    'Get-GssResumeReleaseMode',
+    'Get-GssResumeAnnotatedReleaseCommit',
+    'Get-GssResumeHash',
+    'Get-GssResumeTextHash',
+    'Test-GssResumeSamePath',
+    'ConvertTo-GssResumeManifestPortablePath',
+    'ConvertTo-GssResumePortablePath',
+    'Get-GssResumePackageInputDescriptor',
+    'Get-GssResumeTrustedBackupManifest',
+    'Assert-GssResumePackageInputSet',
+    'Assert-GssResumeHistoricalRecoveryEvidence',
+    'Assert-GssResumePriorReleaseReceipt',
+    'Get-GssResumeCommittedSnapshotEvidence'
+)) {
+    $resumeFunction = $resumeAst.Find({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -eq $resumeFunctionName
+    }, $true)
+    Assert-True ($null -ne $resumeFunction) "Resume helper exists: $resumeFunctionName"
+    Set-Item -Path "Function:\$resumeFunctionName" -Value $resumeFunction.Body.GetScriptBlock()
+}
+
+Assert-Equal (Get-GssResumeReleaseMode -RunRelease 'v1.1.9' -CurrentRelease 'v1.1.9') 'CurrentRelease' 'Resume accepts the exact current release'
+Assert-Equal (Get-GssResumeReleaseMode -RunRelease 'v1.1.10' -CurrentRelease 'v1.1.10') 'CurrentRelease' 'Resume preserves exact current-release behavior for future canonical releases'
+Assert-Equal (Get-GssResumeReleaseMode -RunRelease 'v1.1.8' -CurrentRelease 'v1.1.9') 'DeclaredPriorReleasePackageRecovery' 'Resume accepts the explicitly reviewed v1.1.8 to v1.1.9 package recovery bridge'
+Assert-ThrowsLike {
+    Get-GssResumeReleaseMode -RunRelease 'v1.1.7' -CurrentRelease 'v1.1.9'
+} '*does not have a code-reviewed package-recovery compatibility declaration*' 'Resume rejects undeclared older releases'
+Assert-ThrowsLike {
+    Get-GssResumeReleaseMode -RunRelease 'v1.1.9' -CurrentRelease 'v1.1.10'
+} '*does not have a code-reviewed package-recovery compatibility declaration*' 'Resume rejects a future adjacent patch without a reviewed declaration'
+Assert-ThrowsLike {
+    Get-GssResumeReleaseMode -RunRelease 'v1.1.9' -CurrentRelease 'v1.2.0'
+} '*does not have a code-reviewed package-recovery compatibility declaration*' 'Resume rejects a minor-version predecessor'
+Assert-ThrowsLike {
+    Get-GssResumeReleaseMode -RunRelease '1.1.9' -CurrentRelease '1.1.9'
+} '*not a canonical vMAJOR.MINOR.PATCH tag*' 'Resume rejects malformed release tags even when equal'
+
+$resumeFixtureRun = [pscustomobject]@{
+    RunId = '11111111-1111-1111-1111-111111111111'
+    RunFingerprint = ('b' * 64)
+    HostName = [Environment]::MachineName
+    ProgramRelease = 'v1.1.8'
+}
+$resumeFixtureReceipt = [pscustomobject]@{
+    ReceiptSchemaVersion = 1
+    RunId = $resumeFixtureRun.RunId
+    RunFingerprint = $resumeFixtureRun.RunFingerprint
+    HostName = $resumeFixtureRun.HostName
+    ProgramRelease = $resumeFixtureRun.ProgramRelease
+    ReleaseIntegrityStatus = 'Passed'
+    ReleaseCommit = ('a' * 40)
+    LiveRunLogPath = 'C:\GSS\_automation_runs\logs\committed-apply.json'
+    TransactionStatus = 'PackageBlocked'
+    BackupStatus = 'Committed'
+    PackagePublished = $false
+    BackupPrepare = [pscustomobject]@{ PreparedManifestSha256 = ('c' * 64) }
+    BackupFinalize = [pscustomobject]@{
+        Status = 'Committed'
+        BackupStatus = 'Committed'
+        RunId = $resumeFixtureRun.RunId
+        Fingerprint = $resumeFixtureRun.RunFingerprint
+    }
+}
+Assert-GssResumePriorReleaseReceipt `
+    -Run $resumeFixtureRun `
+    -Receipt $resumeFixtureReceipt `
+    -LiveRunLogPath 'C:\GSS\_automation_runs\logs\committed-apply.json' `
+    -ExpectedReleaseCommit ('a' * 40)
+$resumeFixtureReceipt.ReleaseCommit = ('d' * 40)
+Assert-ThrowsLike {
+    Assert-GssResumePriorReleaseReceipt `
+        -Run $resumeFixtureRun `
+        -Receipt $resumeFixtureReceipt `
+        -LiveRunLogPath 'C:\GSS\_automation_runs\logs\committed-apply.json' `
+        -ExpectedReleaseCommit ('a' * 40)
+} '*does not match the committed run, release-integrity evidence, log, and workstation*' 'Prior-release recovery rejects a receipt commit that differs from the annotated tag commit'
+$resumeFixtureReceipt.ReleaseCommit = ('a' * 40)
+$resumeFixtureReceipt.TransactionStatus = 'Committed'
+Assert-ThrowsLike {
+    Assert-GssResumePriorReleaseReceipt `
+        -Run $resumeFixtureRun `
+        -Receipt $resumeFixtureReceipt `
+        -LiveRunLogPath 'C:\GSS\_automation_runs\logs\committed-apply.json' `
+        -ExpectedReleaseCommit ('a' * 40)
+} '*requires an unpublished PackageBlocked receipt with BackupStatus Committed*' 'Prior-release recovery rejects an already committed package state'
+
+$resumeSnapshotTestRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('gss-resume-snapshot-' + [guid]::NewGuid().ToString('N'))
+$resumeSnapshotPath = Join-Path $resumeSnapshotTestRoot 'committed-snapshot'
+$originalDriveRootContext = (Get-Item -LiteralPath Function:Get-GssDriveBackupRootContext).ScriptBlock
+$originalDriveSnapshotFinder = (Get-Item -LiteralPath Function:Find-GssDriveBackupSnapshot).ScriptBlock
+$originalCommittedSnapshotValidator = (Get-Item -LiteralPath Function:Test-GssCommittedBackupSnapshot).ScriptBlock
+New-Item -ItemType Directory -Path $resumeSnapshotPath -Force | Out-Null
+try {
+    $resumeSnapshotRunId = '22222222-2222-2222-2222-222222222222'
+    $resumeSnapshotFingerprint = ('1' * 64)
+    $resumeSnapshotDrive = [pscustomobject]@{ verification_level = 'drivefs_hash_verified' }
+    $resumeSnapshotPreparedManifest = [pscustomobject]@{
+        status = 'Prepared'
+        run_id = $resumeSnapshotRunId
+        fingerprint = $resumeSnapshotFingerprint
+        snapshot_purpose = 'WorkbookTransaction'
+        host = [Environment]::MachineName
+        release = 'v1.1.8'
+        report_week = '2026-08-23'
+        drive = $resumeSnapshotDrive
+    }
+    $resumeSnapshotManifest = [pscustomobject]@{
+        status = 'Committed'
+        run_id = $resumeSnapshotRunId
+        fingerprint = $resumeSnapshotFingerprint
+        snapshot_purpose = 'WorkbookTransaction'
+        host = [Environment]::MachineName
+        release = 'v1.1.8'
+        report_week = '2026-08-23'
+        drive = $resumeSnapshotDrive
+    }
+    $resumePreparedManifestPath = Join-Path $resumeSnapshotPath 'prepared-manifest.json'
+    $resumeManifestPath = Join-Path $resumeSnapshotPath 'backup-manifest.json'
+    $resumeCommitReceiptPath = Join-Path $resumeSnapshotPath 'commit-receipt.json'
+    $utf8WithoutBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText(
+        $resumePreparedManifestPath,
+        ($resumeSnapshotPreparedManifest | ConvertTo-Json -Depth 5 -Compress),
+        $utf8WithoutBom
+    )
+    [System.IO.File]::WriteAllText(
+        $resumeManifestPath,
+        ($resumeSnapshotManifest | ConvertTo-Json -Depth 5 -Compress),
+        $utf8WithoutBom
+    )
+    $resumePreparedManifestHash = (Get-FileHash -LiteralPath $resumePreparedManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $resumeManifestHash = (Get-FileHash -LiteralPath $resumeManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $resumeSnapshotCommitReceipt = [pscustomobject]@{
+        status = 'Committed'
+        run_id = $resumeSnapshotRunId
+        fingerprint = $resumeSnapshotFingerprint
+        snapshot_purpose = 'WorkbookTransaction'
+        verification_level = 'drivefs_hash_verified'
+        backup_manifest_sha256 = $resumeManifestHash
+        prepared_manifest_sha256 = $resumePreparedManifestHash
+    }
+    [System.IO.File]::WriteAllText(
+        $resumeCommitReceiptPath,
+        ($resumeSnapshotCommitReceipt | ConvertTo-Json -Depth 5 -Compress),
+        $utf8WithoutBom
+    )
+
+    $resumeSnapshotRun = [pscustomobject]@{
+        RunId = $resumeSnapshotRunId
+        RunFingerprint = $resumeSnapshotFingerprint
+        HostName = [Environment]::MachineName
+        ProgramRelease = 'v1.1.8'
+        CurrentWeekEnding = '2026-08-23'
+        DrivePreparedManifestSha256 = $resumePreparedManifestHash
+    }
+    $resumeSnapshotTransactionReceipt = [pscustomobject]@{
+        BackupPrepare = [pscustomobject]@{
+            PreparedManifestSha256 = $resumePreparedManifestHash
+        }
+        BackupFinalize = [pscustomobject]@{
+            BackupManifestSha256 = $resumeManifestHash
+            SnapshotPath = $resumeSnapshotPath
+            BackupManifestPath = $resumeManifestPath
+            CommitReceiptPath = $resumeCommitReceiptPath
+        }
+    }
+    $script:resumeCommittedSnapshotFixture = [pscustomobject]@{
+        RootPath = $resumeSnapshotTestRoot
+        RunId = $resumeSnapshotRunId
+        SnapshotPath = $resumeSnapshotPath
+        Validation = [pscustomobject]@{
+            Receipt = $resumeSnapshotCommitReceipt
+            Manifest = $resumeSnapshotManifest
+            PreparedManifest = $resumeSnapshotPreparedManifest
+            ReceiptPath = $resumeCommitReceiptPath
+            ManifestPath = $resumeManifestPath
+            PreparedManifestPath = $resumePreparedManifestPath
+            ManifestSha256 = $resumeManifestHash
+            PreparedManifestSha256 = $resumePreparedManifestHash
+            ValidatedFileCount = 3
+            ValidatedPreparedFileCount = 2
+        }
+    }
+
+    Set-Item -LiteralPath Function:Get-GssDriveBackupRootContext -Value {
+        [pscustomobject]@{ RootPath = $script:resumeCommittedSnapshotFixture.RootPath }
+    }
+    Set-Item -LiteralPath Function:Find-GssDriveBackupSnapshot -Value {
+        param([string]$RootPath, [string]$RunId)
+        if (-not (Test-GssResumeSamePath -Left $RootPath -Right $script:resumeCommittedSnapshotFixture.RootPath) -or
+            $RunId -cne $script:resumeCommittedSnapshotFixture.RunId) {
+            throw 'Snapshot finder received unexpected fixture identity.'
+        }
+        [pscustomobject]@{
+            Path = $script:resumeCommittedSnapshotFixture.SnapshotPath
+            IsPartial = $false
+        }
+    }
+    Set-Item -LiteralPath Function:Test-GssCommittedBackupSnapshot -Value {
+        param([string]$SnapshotPath)
+        if (-not (Test-GssResumeSamePath -Left $SnapshotPath -Right $script:resumeCommittedSnapshotFixture.SnapshotPath)) {
+            throw 'Snapshot validator received an unexpected fixture path.'
+        }
+        $script:resumeCommittedSnapshotFixture.Validation
+    }
+
+    $resumeSnapshotEvidence = Get-GssResumeCommittedSnapshotEvidence `
+        -Run $resumeSnapshotRun `
+        -Receipt $resumeSnapshotTransactionReceipt
+    Assert-Equal $resumeSnapshotEvidence.Status 'Committed' 'Committed snapshot fixture returns committed status'
+    Assert-Equal $resumeSnapshotEvidence.RunId $resumeSnapshotRunId 'Committed snapshot fixture preserves run identity'
+    Assert-Equal $resumeSnapshotEvidence.Fingerprint $resumeSnapshotFingerprint 'Committed snapshot fixture preserves fingerprint'
+    Assert-Equal $resumeSnapshotEvidence.BackupManifestSha256 $resumeManifestHash 'Committed snapshot fixture returns the real final manifest hash'
+    Assert-Equal $resumeSnapshotEvidence.PreparedManifestSha256 $resumePreparedManifestHash 'Committed snapshot fixture returns the real prepared manifest hash'
+    Assert-Equal $resumeSnapshotEvidence.ValidatedFileCount 3 'Committed snapshot fixture returns final validation count'
+    Assert-Equal $resumeSnapshotEvidence.ValidatedPreparedFileCount 2 'Committed snapshot fixture returns prepared validation count'
+    Assert-Equal $resumeSnapshotEvidence.PackageOnlyRecovery $true 'Committed snapshot fixture is package-only evidence'
+
+    $resumeSnapshotManifest.fingerprint = ('9' * 64)
+    Assert-ThrowsLike {
+        Get-GssResumeCommittedSnapshotEvidence `
+            -Run $resumeSnapshotRun `
+            -Receipt $resumeSnapshotTransactionReceipt
+    } '*snapshot identity or purpose does not match*' 'Committed snapshot fixture rejects a mismatched manifest fingerprint'
+    $resumeSnapshotManifest.fingerprint = $resumeSnapshotFingerprint
+
+    $resumeSnapshotTransactionReceipt.BackupFinalize.BackupManifestSha256 = ('f' * 64)
+    Assert-ThrowsLike {
+        Get-GssResumeCommittedSnapshotEvidence `
+            -Run $resumeSnapshotRun `
+            -Receipt $resumeSnapshotTransactionReceipt
+    } '*manifest hashes do not match*' 'Committed snapshot fixture rejects a mismatched final manifest hash'
+}
+finally {
+    Set-Item -LiteralPath Function:Get-GssDriveBackupRootContext -Value $originalDriveRootContext
+    Set-Item -LiteralPath Function:Find-GssDriveBackupSnapshot -Value $originalDriveSnapshotFinder
+    Set-Item -LiteralPath Function:Test-GssCommittedBackupSnapshot -Value $originalCommittedSnapshotValidator
+    Remove-Variable -Name resumeCommittedSnapshotFixture -Scope Script -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $resumeSnapshotTestRoot -PathType Container) {
+        Remove-Item -LiteralPath $resumeSnapshotTestRoot -Recurse -Force
+    }
+}
+
+$resumeInputTestRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('gss-resume-inputs-' + [guid]::NewGuid().ToString('N'))
+$resumeInputMainDirectory = Join-Path $resumeInputTestRoot '01 Main Workbook'
+$resumeInputPdfDirectory = Join-Path $resumeInputTestRoot '04 Email Comparison PDFs'
+$resumeInputRollingDirectory = Join-Path $resumeInputTestRoot '02 Weekly Rolling Source Workbooks'
+$resumeInputLogDirectory = Join-Path $resumeInputTestRoot '_automation_runs\logs'
+$resumeInputStateDirectory = Join-Path $resumeInputTestRoot '_automation_runs\state'
+$resumeInputDetailDirectory = Join-Path $resumeInputTestRoot '03 Uploaded Survey Workbooks'
+$resumeInputArchiveDirectory = Join-Path $resumeInputDetailDirectory 'Archive - Previous Uploads'
+$resumeInputHistoricalDirectory = Join-Path $resumeInputTestRoot '_automation_runs\historical-recovery\fixture-transaction'
+foreach ($directory in @(
+    $resumeInputMainDirectory,
+    $resumeInputPdfDirectory,
+    $resumeInputRollingDirectory,
+    $resumeInputLogDirectory,
+    $resumeInputStateDirectory,
+    $resumeInputDetailDirectory,
+    $resumeInputArchiveDirectory,
+    $resumeInputHistoricalDirectory
+)) {
+    New-Item -ItemType Directory -Path $directory -Force | Out-Null
+}
+try {
+    $resumeInputTargetWorkbookPath = Join-Path $resumeInputMainDirectory 'main.xlsx'
+    $resumeInputComparisonPdfPath = Join-Path $resumeInputPdfDirectory 'comparison.pdf'
+    $resumeInputCurrentSourcePath = Join-Path $resumeInputRollingDirectory 'current.xlsx'
+    $resumeInputPriorYearSourcePath = Join-Path $resumeInputRollingDirectory 'prior-year.xlsx'
+    $resumeInputLogPath = Join-Path $resumeInputLogDirectory 'gss_update_fixture_apply.json'
+    $resumeInputCurrentDetailPath = Join-Path $resumeInputDetailDirectory 'current-detail.xlsx'
+    $resumeInputArchiveDetailPath = Join-Path $resumeInputArchiveDirectory 'archive-detail.xlsx'
+    $resumeInputLedgerPath = Join-Path $resumeInputStateDirectory 'gss_feedback_first_seen.json'
+    $resumeInputHistoricalReceiptPath = Join-Path $resumeInputHistoricalDirectory 'transaction-receipt.json'
+    $resumeInputHistoricalManifestPath = Join-Path $resumeInputHistoricalDirectory 'recovery-manifest.json'
+    $resumeInputHistoricalSummaryPath = Join-Path $resumeInputHistoricalDirectory 'drive-recovery-summary.json'
+    $resumeInputLogText = '{"Mode":"ApplyToMainWorkbook","RunId":"fixture"}'
+    $resumeInputLedgerText = '{"schema_version":"gss-feedback-first-seen/v1","entries":[]}'
+    [System.IO.File]::WriteAllText($resumeInputTargetWorkbookPath, 'target-workbook-bytes', $utf8WithoutBom)
+    [System.IO.File]::WriteAllText($resumeInputComparisonPdfPath, 'comparison-pdf-bytes', $utf8WithoutBom)
+    [System.IO.File]::WriteAllText($resumeInputCurrentSourcePath, 'current-source-bytes', $utf8WithoutBom)
+    [System.IO.File]::WriteAllText($resumeInputPriorYearSourcePath, 'prior-year-source-bytes', $utf8WithoutBom)
+    [System.IO.File]::WriteAllText($resumeInputLogPath, $resumeInputLogText, $utf8WithoutBom)
+    [System.IO.File]::WriteAllText($resumeInputCurrentDetailPath, 'current-detail-bytes', $utf8WithoutBom)
+    [System.IO.File]::WriteAllText($resumeInputArchiveDetailPath, 'archive-detail-bytes', $utf8WithoutBom)
+    [System.IO.File]::WriteAllText($resumeInputLedgerPath, $resumeInputLedgerText, $utf8WithoutBom)
+    [System.IO.File]::WriteAllText($resumeInputHistoricalReceiptPath, '{"state":"Committed"}', $utf8WithoutBom)
+    [System.IO.File]::WriteAllText($resumeInputHistoricalManifestPath, '{"schema_version":"fixture"}', $utf8WithoutBom)
+    [System.IO.File]::WriteAllText($resumeInputHistoricalSummaryPath, '{"schema_version":"fixture"}', $utf8WithoutBom)
+
+    $resumeInputManifestRecords = @(
+        $resumeInputTargetWorkbookPath,
+        $resumeInputComparisonPdfPath,
+        $resumeInputCurrentSourcePath,
+        $resumeInputPriorYearSourcePath,
+        $resumeInputLogPath,
+        $resumeInputCurrentDetailPath,
+        $resumeInputArchiveDetailPath,
+        $resumeInputLedgerPath
+    ) | ForEach-Object {
+        $item = Get-Item -LiteralPath $_
+        [pscustomobject]@{
+            portable_path = ConvertTo-GssResumePortablePath -Path $item.FullName -FolderPath $resumeInputTestRoot
+            byte_size = [long]$item.Length
+            sha256 = Get-GssResumeHash -Path $item.FullName
+        }
+    }
+    $resumeInputManifestRecords += [pscustomobject]@{
+        portable_path = 'release/fixture.zip'
+        byte_size = 1
+        sha256 = ('a' * 64)
+    }
+    $resumeInputCommittedManifest = [pscustomobject]@{ files = $resumeInputManifestRecords }
+    $resumeInputRun = [pscustomobject]@{
+        TargetWorkbook = $resumeInputTargetWorkbookPath
+        EmailComparisonPdf = $resumeInputComparisonPdfPath
+        CurrentSourceWorkbook = $resumeInputCurrentSourcePath
+        PriorYearSourceWorkbook = $resumeInputPriorYearSourcePath
+    }
+
+    $resumeInputEvidence = Assert-GssResumePackageInputSet `
+        -FolderPath $resumeInputTestRoot `
+        -LiveRunLogPath $resumeInputLogPath `
+        -Run $resumeInputRun `
+        -CommittedManifest $resumeInputCommittedManifest
+    Assert-Equal $resumeInputEvidence.InputCount 8 'Package-input fixture binds four fixed sources, log, current detail, archive detail, and ledger'
+    Assert-Equal $resumeInputEvidence.Inputs.Count 8 'Package-input evidence returns every validated source'
+    Assert-Equal (($resumeInputEvidence.Inputs[0].PSObject.Properties.Name | Sort-Object) -join ',') 'ByteSize,PortablePath,Sha256' 'Package-input evidence exposes only portable path, size, and hash'
+    Assert-Equal @($resumeInputEvidence.Inputs | Where-Object { $_.PSObject.Properties.Name -contains 'FullPath' }).Count 0 'Package-input evidence does not disclose full local paths'
+    Assert-Equal $resumeInputEvidence.DetailWorkbookCount 2 'Package-input fixture binds every enumerated detail workbook'
+    Assert-Equal $resumeInputEvidence.FeedbackLedgerIncluded $true 'Package-input fixture binds ledger presence and bytes'
+    Assert-Equal $resumeInputEvidence.HistoricalRecoveryMetadataValidation 'SeparateCommittedRecoveryOnlySnapshots' 'Historical metadata is validated through its separate RecoveryOnly contract'
+
+    $resumeInputExtraDetailPath = Join-Path $resumeInputDetailDirectory 'extra-detail.xlsx'
+    [System.IO.File]::WriteAllText($resumeInputExtraDetailPath, 'extra-detail-bytes', $utf8WithoutBom)
+    Assert-ThrowsLike {
+        Assert-GssResumePackageInputSet `
+            -FolderPath $resumeInputTestRoot `
+            -LiveRunLogPath $resumeInputLogPath `
+            -Run $resumeInputRun `
+            -CommittedManifest $resumeInputCommittedManifest
+    } '*package input is absent from the committed snapshot*extra-detail.xlsx*' 'Package-input fixture rejects an added detail workbook'
+    Remove-Item -LiteralPath $resumeInputExtraDetailPath -Force
+
+    $resumeInputRemovedDetailPath = "$resumeInputArchiveDetailPath.removed"
+    Move-Item -LiteralPath $resumeInputArchiveDetailPath -Destination $resumeInputRemovedDetailPath
+    try {
+        Assert-ThrowsLike {
+            Assert-GssResumePackageInputSet `
+                -FolderPath $resumeInputTestRoot `
+                -LiveRunLogPath $resumeInputLogPath `
+                -Run $resumeInputRun `
+                -CommittedManifest $resumeInputCommittedManifest
+        } '*package input is missing from the live source set*archive-detail.xlsx*' 'Package-input fixture rejects a deleted detail workbook'
+    }
+    finally {
+        Move-Item -LiteralPath $resumeInputRemovedDetailPath -Destination $resumeInputArchiveDetailPath
+    }
+
+    [System.IO.File]::WriteAllText($resumeInputLedgerPath, '{"changed":true}', $utf8WithoutBom)
+    Assert-ThrowsLike {
+        Assert-GssResumePackageInputSet `
+            -FolderPath $resumeInputTestRoot `
+            -LiveRunLogPath $resumeInputLogPath `
+            -Run $resumeInputRun `
+            -CommittedManifest $resumeInputCommittedManifest
+    } '*package input changed after the committed snapshot*gss_feedback_first_seen.json*' 'Package-input fixture rejects changed ledger bytes'
+    [System.IO.File]::WriteAllText($resumeInputLedgerPath, $resumeInputLedgerText, $utf8WithoutBom)
+
+    [System.IO.File]::WriteAllText($resumeInputLogPath, '{"changed":true}', $utf8WithoutBom)
+    Assert-ThrowsLike {
+        Assert-GssResumePackageInputSet `
+            -FolderPath $resumeInputTestRoot `
+            -LiveRunLogPath $resumeInputLogPath `
+            -Run $resumeInputRun `
+            -CommittedManifest $resumeInputCommittedManifest
+    } '*package input changed after the committed snapshot*gss_update_fixture_apply.json*' 'Package-input fixture rejects changed live run-log bytes'
+    [System.IO.File]::WriteAllText($resumeInputLogPath, $resumeInputLogText, $utf8WithoutBom)
+
+    [System.IO.File]::WriteAllText($resumeInputComparisonPdfPath, 'changed-comparison-pdf-bytes', $utf8WithoutBom)
+    Assert-ThrowsLike {
+        Assert-GssResumePackageInputSet `
+            -FolderPath $resumeInputTestRoot `
+            -LiveRunLogPath $resumeInputLogPath `
+            -Run $resumeInputRun `
+            -CommittedManifest $resumeInputCommittedManifest
+    } '*package input changed after the committed snapshot*comparison.pdf*' 'Package-input fixture rejects changed promoted comparison-PDF bytes'
+    [System.IO.File]::WriteAllText($resumeInputComparisonPdfPath, 'comparison-pdf-bytes', $utf8WithoutBom)
+
+    [System.IO.File]::WriteAllText($resumeInputHistoricalReceiptPath, '{"state":"changed-verification-only"}', $utf8WithoutBom)
+    $resumeInputEvidenceAfterMetadataChange = Assert-GssResumePackageInputSet `
+        -FolderPath $resumeInputTestRoot `
+        -LiveRunLogPath $resumeInputLogPath `
+        -Run $resumeInputRun `
+        -CommittedManifest $resumeInputCommittedManifest
+    Assert-Equal $resumeInputEvidenceAfterMetadataChange.SourceSetSha256 $resumeInputEvidence.SourceSetSha256 'Workbook snapshot input set excludes separately attested recovery metadata'
+}
+finally {
+    if (Test-Path -LiteralPath $resumeInputTestRoot -PathType Container) {
+        Remove-Item -LiteralPath $resumeInputTestRoot -Recurse -Force
+    }
+}
+
+$resumeRecoveryTestRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('gss-resume-recovery-' + [guid]::NewGuid().ToString('N'))
+$resumeRecoveryTransactionPath = Join-Path $resumeRecoveryTestRoot '_automation_runs\historical-recovery\fixture-transaction'
+$originalRecoveryRootContext = (Get-Item -LiteralPath Function:Get-GssDriveBackupRootContext).ScriptBlock
+$originalRecoverySnapshotFinder = (Get-Item -LiteralPath Function:Find-GssDriveBackupSnapshot).ScriptBlock
+$originalRecoverySnapshotValidator = (Get-Item -LiteralPath Function:Test-GssCommittedBackupSnapshot).ScriptBlock
+New-Item -ItemType Directory -Path $resumeRecoveryTransactionPath -Force | Out-Null
+try {
+    $resumeRecoveryRunId = 'gss-recovery-fixture-fy26'
+    $resumeRecoveryFingerprint = 'sha256:' + ('7' * 64)
+    $resumeRecoverySummaryPath = Join-Path $resumeRecoveryTransactionPath 'drive-recovery-summary.json'
+    $resumeRecoveryManifestPath = Join-Path $resumeRecoveryTransactionPath 'recovery-manifest.json'
+    $resumeRecoveryReceiptPath = Join-Path $resumeRecoveryTransactionPath 'transaction-receipt.json'
+    $resumeRecoverySummary = [pscustomobject]@{
+        schema_version = 'gss-recovery-drive-summary/v1'
+        RunId = $resumeRecoveryRunId
+        RunFingerprint = $resumeRecoveryFingerprint
+        SnapshotPurpose = 'RecoveryOnly'
+    }
+    [System.IO.File]::WriteAllText(
+        $resumeRecoverySummaryPath,
+        ($resumeRecoverySummary | ConvertTo-Json -Compress),
+        $utf8WithoutBom
+    )
+    [System.IO.File]::WriteAllText($resumeRecoveryManifestPath, '{"recovery":"manifest"}', $utf8WithoutBom)
+    [System.IO.File]::WriteAllText($resumeRecoveryReceiptPath, '{"state":"Committed"}', $utf8WithoutBom)
+
+    $resumeRecoveryRoleBindings = @(
+        [pscustomobject]@{ Role = 'recovery_run_summary'; PortablePath = 'recovery/evidence/drive-recovery-summary.json'; LivePath = $resumeRecoverySummaryPath },
+        [pscustomobject]@{ Role = 'recovery_manifest'; PortablePath = 'recovery/evidence/recovery-manifest.json'; LivePath = $resumeRecoveryManifestPath },
+        [pscustomobject]@{ Role = 'recovery_receipt'; PortablePath = 'recovery/evidence/transaction-receipt.json'; LivePath = $resumeRecoveryReceiptPath }
+    )
+    $resumeRecoveryFiles = @($resumeRecoveryRoleBindings | ForEach-Object {
+        $item = Get-Item -LiteralPath $_.LivePath
+        [pscustomobject]@{
+            role = $_.Role
+            portable_path = $_.PortablePath
+            byte_size = [long]$item.Length
+            sha256 = Get-GssResumeHash -Path $item.FullName
+        }
+    })
+    $resumeRecoveryDrive = [pscustomobject]@{ verification_level = 'drivefs_hash_verified' }
+    $resumeRecoveryCommitReceipt = [pscustomobject]@{
+        status = 'Committed'
+        run_id = $resumeRecoveryRunId
+        fingerprint = $resumeRecoveryFingerprint
+        snapshot_purpose = 'RecoveryOnly'
+        verification_level = 'drivefs_hash_verified'
+    }
+    $resumeRecoveryManifest = [pscustomobject]@{
+        status = 'Committed'
+        run_id = $resumeRecoveryRunId
+        fingerprint = $resumeRecoveryFingerprint
+        snapshot_purpose = 'RecoveryOnly'
+        drive = $resumeRecoveryDrive
+        files = $resumeRecoveryFiles
+    }
+    $resumeRecoveryPreparedManifest = [pscustomobject]@{
+        status = 'Prepared'
+        run_id = $resumeRecoveryRunId
+        fingerprint = $resumeRecoveryFingerprint
+        snapshot_purpose = 'RecoveryOnly'
+        drive = $resumeRecoveryDrive
+    }
+    $script:resumeRecoveryFixture = [pscustomobject]@{
+        RootPath = Join-Path $resumeRecoveryTestRoot 'drive-root'
+        RunId = $resumeRecoveryRunId
+        SnapshotPath = Join-Path $resumeRecoveryTestRoot 'drive-root\committed-snapshot'
+        Validation = [pscustomobject]@{
+            Receipt = $resumeRecoveryCommitReceipt
+            Manifest = $resumeRecoveryManifest
+            PreparedManifest = $resumeRecoveryPreparedManifest
+        }
+    }
+
+    Set-Item -LiteralPath Function:Get-GssDriveBackupRootContext -Value {
+        [pscustomobject]@{ RootPath = $script:resumeRecoveryFixture.RootPath }
+    }
+    Set-Item -LiteralPath Function:Find-GssDriveBackupSnapshot -Value {
+        param([string]$RootPath, [string]$RunId)
+        if (-not (Test-GssResumeSamePath -Left $RootPath -Right $script:resumeRecoveryFixture.RootPath) -or
+            $RunId -cne $script:resumeRecoveryFixture.RunId) {
+            throw 'Recovery snapshot finder received unexpected fixture identity.'
+        }
+        [pscustomobject]@{ Path = $script:resumeRecoveryFixture.SnapshotPath; IsPartial = $false }
+    }
+    Set-Item -LiteralPath Function:Test-GssCommittedBackupSnapshot -Value {
+        param([string]$SnapshotPath)
+        if (-not (Test-GssResumeSamePath -Left $SnapshotPath -Right $script:resumeRecoveryFixture.SnapshotPath)) {
+            throw 'Recovery snapshot validator received an unexpected fixture path.'
+        }
+        $script:resumeRecoveryFixture.Validation
+    }
+
+    $resumeRecoveryEvidence = Assert-GssResumeHistoricalRecoveryEvidence -FolderPath $resumeRecoveryTestRoot
+    Assert-Equal $resumeRecoveryEvidence.TransactionCount 1 'Historical recovery fixture validates one consulted transaction'
+    Assert-Equal $resumeRecoveryEvidence.EvidenceFileCount 3 'Historical recovery fixture binds summary, manifest, and receipt'
+    Assert-Equal $resumeRecoveryEvidence.Verification 'CommittedRecoveryOnlySnapshots' 'Historical recovery fixture requires committed RecoveryOnly evidence'
+
+    [System.IO.File]::WriteAllText($resumeRecoveryReceiptPath, '{"state":"Changed"}', $utf8WithoutBom)
+    Assert-ThrowsLike {
+        Assert-GssResumeHistoricalRecoveryEvidence -FolderPath $resumeRecoveryTestRoot
+    } '*recovery evidence changed after its committed RecoveryOnly snapshot*transaction-receipt.json*' 'Historical recovery fixture rejects changed receipt bytes'
+    [System.IO.File]::WriteAllText($resumeRecoveryReceiptPath, '{"state":"Committed"}', $utf8WithoutBom)
+
+    $resumeRecoveryCommitReceipt.verification_level = 'unverified'
+    Assert-ThrowsLike {
+        Assert-GssResumeHistoricalRecoveryEvidence -FolderPath $resumeRecoveryTestRoot
+    } '*recovery snapshot is not committed*' 'Historical recovery fixture requires DriveFS hash verification'
+}
+finally {
+    Set-Item -LiteralPath Function:Get-GssDriveBackupRootContext -Value $originalRecoveryRootContext
+    Set-Item -LiteralPath Function:Find-GssDriveBackupSnapshot -Value $originalRecoverySnapshotFinder
+    Set-Item -LiteralPath Function:Test-GssCommittedBackupSnapshot -Value $originalRecoverySnapshotValidator
+    Remove-Variable -Name resumeRecoveryFixture -Scope Script -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $resumeRecoveryTestRoot -PathType Container) {
+        Remove-Item -LiteralPath $resumeRecoveryTestRoot -Recurse -Force
+    }
+}
 Assert-True ($safeLauncherSource.Contains("if (`$finalizeStatus -eq 'Blocked')")) 'Safe launcher handles Drive blocked separately from pending finalize'
 Assert-True ($safeLauncherSource.Contains("'BackupBlocked'")) 'Safe launcher records non-retryable Drive conflict for manual review'
 Assert-True ($safeLauncherSource.Contains('-Operation Abort')) 'Prepared Drive snapshot is explicitly aborted after safe rollback or pre-commit failure'

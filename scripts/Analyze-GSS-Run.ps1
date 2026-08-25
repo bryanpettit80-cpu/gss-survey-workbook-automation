@@ -5,7 +5,8 @@ param(
     [int]$LookbackWeeks = 8,
     [string]$MainWorkbookName = 'GSS Score Trends - Main.xlsx',
     [switch]$OutputObject,
-    [switch]$PublishEmailPackage
+    [switch]$PublishEmailPackage,
+    [AllowNull()][object]$ExpectedPackageInputEvidence
 )
 
 $ErrorActionPreference = 'Stop'
@@ -1004,7 +1005,8 @@ function Invoke-GssRunAnalysis {
         [int]$Weeks,
         [string]$WorkbookName,
         [switch]$ReturnObject,
-        [switch]$PublishPackage
+        [switch]$PublishPackage,
+        [AllowNull()][object]$ExpectedPackageInputEvidence
     )
 
     $FolderPath = Resolve-GssAnalysisFolder $FolderPath
@@ -1101,7 +1103,11 @@ function Invoke-GssRunAnalysis {
 
     if ($PublishPackage) {
         try {
-            $package = New-GssEmailPackage -FolderPath $FolderPath -RunLog $runLog -AnalysisResult $result
+            $package = New-GssEmailPackage `
+                -FolderPath $FolderPath `
+                -RunLog $runLog `
+                -AnalysisResult $result `
+                -ExpectedPackageInputEvidence $ExpectedPackageInputEvidence
             $result.EmailPackage = $package
             $result.EmailReadiness = $package.EmailReadiness
             $result.Qa.EmailReadiness = $package.EmailReadiness
@@ -1140,5 +1146,6 @@ if ($MyInvocation.InvocationName -ne '.') {
         -Weeks $LookbackWeeks `
         -WorkbookName $MainWorkbookName `
         -ReturnObject:$OutputObject `
-        -PublishPackage:$PublishEmailPackage
+        -PublishPackage:$PublishEmailPackage `
+        -ExpectedPackageInputEvidence $ExpectedPackageInputEvidence
 }

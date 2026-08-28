@@ -3,7 +3,7 @@
   "release_version": "1.1.10",
   "release_tag": "v1.1.10",
   "commit_binding": "exact_release_tag",
-  "generated_at_utc": "2026-08-28T15:03:51.5346941Z",
+  "generated_at_utc": "2026-08-28T15:53:08.7051566Z",
   "classification": "PROGRAM SOURCE ONLY - NO GSS WORKBOOKS, REPORTS, OR CUSTOMER DATA",
   "runtime_contract": {
     "require_clean_tree": true,
@@ -56,8 +56,8 @@
       "path": "README.md",
       "role": "documentation",
       "hash_mode": "utf8_lf",
-      "canonical_size_bytes": 18451,
-      "sha256": "7bf439d5176c0992f2efe97ae3f0645e39c4f996bcb3e74e3420ef76abbc2a67"
+      "canonical_size_bytes": 18875,
+      "sha256": "22fc9bcead2daff22e7b49fd32b443a2941fd27944ca7c03a531b1aa71383c92"
     },
     {
       "path": "scripts/Analyze-GSS-Run.ps1",
@@ -91,8 +91,8 @@
       "path": "scripts/Gss-EmailPackage.ps1",
       "role": "runtime",
       "hash_mode": "utf8_lf",
-      "canonical_size_bytes": 187367,
-      "sha256": "2fa0882ab8f718f5f0fda21219cf168bd8cd8ae6e5439c3b61a2ff21450afbc6"
+      "canonical_size_bytes": 189438,
+      "sha256": "f16ee3da34e90e3042642703fed612180a33d77b9cf2aceb552867eac7c6f47a"
     },
     {
       "path": "scripts/Gss-ReleaseIntegrity.psm1",
@@ -182,8 +182,8 @@
       "path": "scripts/Test-GSS-EmailPackage.ps1",
       "role": "validation",
       "hash_mode": "utf8_lf",
-      "canonical_size_bytes": 117082,
-      "sha256": "969c7ac3e9aca3d420711119cc3f2aa320dbf06a5c2a3be6ccba16aeec6a1df7"
+      "canonical_size_bytes": 121597,
+      "sha256": "c9ea1027fe0bfcb0637da22e57f78b1f1c12e1e9103682135413f2d66b36c516"
     },
     {
       "path": "scripts/Test-GSS-HistoricalRecovery.ps1",

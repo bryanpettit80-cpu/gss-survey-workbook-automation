@@ -438,7 +438,41 @@ function Assert-GssResumeHistoricalRecoveryEvidence {
         $receiptPaths = @(Get-ChildItem -LiteralPath $runtimeRoot -Directory |
             ForEach-Object {
                 $candidate = Join-Path $_.FullName 'transaction-receipt.json'
-                if (Test-Path -LiteralPath $candidate -PathType Leaf) { $candidate }
+                if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+                    try {
+                        $candidateReceipt = Get-Content -LiteralPath $candidate -Raw | ConvertFrom-Json
+                    }
+                    catch {
+                        throw "Historical recovery receipt is not valid JSON: $candidate"
+                    }
+                    $candidateState = [string]$candidateReceipt.state
+                    if ($candidateState -cin @('RolledBack', 'RolledBackConservative')) {
+                        $transactionDirectory = $_.FullName
+                        $manifestSha256 = Split-Path -Leaf $transactionDirectory
+                        $manifestPath = Join-Path $transactionDirectory 'recovery-manifest.json'
+                        $expectedTransactionId = "historical-recovery:$manifestSha256"
+                        if ([string]$candidateReceipt.schema_version -cne 'gss-historical-recovery-receipt/v1' -or
+                            $manifestSha256 -cnotmatch '^[a-f0-9]{64}$' -or
+                            [string]$candidateReceipt.manifest_sha256 -cne $manifestSha256 -or
+                            [string]$candidateReceipt.transaction_id -cne $expectedTransactionId -or
+                            -not (Test-Path -LiteralPath $manifestPath -PathType Leaf) -or
+                            (Get-GssResumeHash -Path $manifestPath) -cne $manifestSha256) {
+                            throw "Terminal historical recovery receipt identity is invalid: $candidate"
+                        }
+                        try {
+                            $candidateManifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+                        }
+                        catch {
+                            throw "Historical recovery manifest is not valid JSON: $manifestPath"
+                        }
+                        if ([string]$candidateManifest.schema_version -cne 'gss-historical-recovery/v1') {
+                            throw "Terminal historical recovery manifest version is invalid: $manifestPath"
+                        }
+                    }
+                    else {
+                        $candidate
+                    }
+                }
             } |
             Sort-Object)
     }

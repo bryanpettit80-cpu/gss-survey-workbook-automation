@@ -594,10 +594,6 @@ function Test-GssTextContainsMachineSpecificPath {
         }
     }
 
-    # Scheme-qualified HTTP URLs are portable even when their URL path or query
-    # contains path-shaped text. Remove them before checking local/network forms.
-    $scanText = [regex]::Replace($Text, '(?i)\bhttps?://[^\s<>"'']+', '')
-
     # Rooted and drive-relative paths must begin at a token boundary. A
     # drive-relative form must contain a later separator so labels such as
     # "A: acceptable" are not treated as paths. Separators that only escape a
@@ -606,6 +602,18 @@ function Test-GssTextContainsMachineSpecificPath {
     $relativeDrivePathPattern = '(?i)(?<![A-Za-z0-9])[A-Z]:(?![\\/\s"''])(?=[^\\/\s"''<>|]+[\\/](?!["'']))'
     $backslashUncPathPattern = '(?<![\\])\\\\(?![\\/"''])[^\\/\s"''<>|]+[\\/](?![\\/"''])[^\\/\s"''<>|]+'
     $forwardSlashNetworkPathPattern = '(?<![:/A-Za-z0-9._~-])//(?![/"''])[^/\s"''<>]+/(?![/"''])[^/\s"''<>]+'
+
+    # Scheme-qualified HTTP URLs are portable even when their URL path or query
+    # contains path-shaped text. Before removing a URL token, introduce a scan
+    # boundary at an adjacent Windows path so URL stripping cannot consume it.
+    # A forward slash is excluded as a delimiter because /C:/... may itself be
+    # an ordinary URL path segment.
+    $drivePathAfterUrlDelimiterPattern = '(?i)(?<=[^A-Za-z0-9_/])(?=(?:[A-Z]:[\\/](?!["''])|[A-Z]:(?![\\/\s"''])(?=[^\\/\s"''<>|]+[\\/](?!["'']))))'
+    $uncPathAfterUrlPattern = '(?<![\\])(?=\\\\(?![\\/"''])[^\\/\s"''<>|]+[\\/](?![\\/"''])[^\\/\s"''<>|]+)'
+    $scanText = [regex]::Replace($Text, $drivePathAfterUrlDelimiterPattern, ' ')
+    $scanText = [regex]::Replace($scanText, $uncPathAfterUrlPattern, ' ')
+    $scanText = [regex]::Replace($scanText, '(?i)\bhttps?://[^\s<>"'']+', '')
+
     return (
         [regex]::IsMatch($scanText, $rootedDrivePathPattern) -or
         [regex]::IsMatch($scanText, $relativeDrivePathPattern) -or

@@ -27,6 +27,8 @@ They are named for the report week, not the file-modification date. After a succ
 
 Every READY package includes three reviewed attachments, including an unchanged raw guest-detail workbook that contains personal data. READY means the package passed the workflow controls; it does not mean anonymous or PII-free. Treat the package as **CONTAINS PERSONAL DATA — RESTRICTED**. Human recipient/content review is required, and automatic sending is permanently disabled.
 
+Portable-package path screening treats a complete scheme-qualified HTTP(S) token, including RFC URL punctuation and path-shaped query or fragment values, as URL content. It preserves a possible local-path suffix for rejection only after the reviewed prose delimiters comma, semicolon, `)`, `]`, or `}`, or at an unambiguous direct backslash boundary; opening or URL-valid punctuation is not broadened into a path boundary.
+
 ## Operator Folder Map
 
 - `01 Main Workbook`: the active `GSS Score Trends - Main.xlsx` workbook, with older versions in its archive subfolder.

@@ -135,7 +135,23 @@ Assert-GssPortableContentHasNoMachineSpecificPath -TextValues @(
     $serializedColonQuoteFixture,
     $serializedOneLetterColonQuoteFixture,
     'https://example.invalid/synthetic',
-    'https://example.invalid/C:/url-segment?next=//server/share/file'
+    'https://example.invalid/C:/url-segment?next=//server/share/file',
+    'https://example.invalid/report//fileserver/restricted/report.xlsx',
+    'https://example.invalid/report?next=//fileserver/restricted/report.xlsx',
+    'https://example.invalid/report?next=C:\Private\report.xlsx',
+    'https://example.invalid/report?next=\\fileserver\restricted\report.xlsx',
+    'https://example.invalid/report#C:\Private\report.xlsx',
+    'https://example.invalid/report#\\fileserver\restricted\report.xlsx',
+    'https://example.invalid/report:C:\Private\report.xlsx',
+    'https://example.invalid/report!C:\Private\report.xlsx',
+    'https://example.invalid/report.C:\Private\report.xlsx',
+    'https://example.invalid/report(C:\Private\report.xlsx',
+    'https://example.invalid/report:\\fileserver\restricted\report.xlsx',
+    'https://example.invalid/report!\\fileserver\restricted\report.xlsx',
+    'https://example.invalid/report.\\fileserver\restricted\report.xlsx',
+    'https://example.invalid/report(\\fileserver\restricted\report.xlsx',
+    'https://example.invalid/r''C:\Private\f.xlsx',
+    'https://example.invalid/r''\\fileserver\restricted\f.xlsx'
 )
 Assert-ThrowsLike {
     Assert-GssPortableContentHasNoMachineSpecificPath -TextValues @(
@@ -157,6 +173,31 @@ Assert-ThrowsLike {
         'Reference: https://example.invalid/report\\fileserver\restricted\report.xlsx'
     )
 } '*machine-specific path*' 'URL stripping preserves an adjacent UNC path for leakage detection'
+Assert-ThrowsLike {
+    Assert-GssPortableContentHasNoMachineSpecificPath -TextValues @(
+        'Reference: https://example.invalid/report?next=portable,C:\Private\report.xlsx'
+    )
+} '*machine-specific path*' 'URL stripping preserves a punctuation-delimited drive path after a URL query'
+Assert-ThrowsLike {
+    Assert-GssPortableContentHasNoMachineSpecificPath -TextValues @(
+        'Reference: https://example.invalid/report#next=portable)\\fileserver\restricted\report.xlsx'
+    )
+} '*machine-specific path*' 'URL stripping preserves a punctuation-delimited UNC path after a URL fragment'
+Assert-ThrowsLike {
+    Assert-GssPortableContentHasNoMachineSpecificPath -TextValues @(
+        'Reference: https://example.invalid/report,//fileserver/restricted/report.xlsx'
+    )
+} '*machine-specific path*' 'URL stripping preserves a comma-delimited forward-slash network path'
+Assert-ThrowsLike {
+    Assert-GssPortableContentHasNoMachineSpecificPath -TextValues @(
+        'Reference: https://example.invalid/report;//fileserver/restricted/report.xlsx'
+    )
+} '*machine-specific path*' 'URL stripping preserves a semicolon-delimited forward-slash network path'
+Assert-ThrowsLike {
+    Assert-GssPortableContentHasNoMachineSpecificPath -TextValues @(
+        'Reference: https://example.invalid/report)//fileserver/restricted/report.xlsx'
+    )
+} '*machine-specific path*' 'URL stripping preserves a closing-delimiter forward-slash network path'
 Assert-ThrowsLike {
     Assert-GssPortableContentHasNoMachineSpecificPath -StructuredValues @(
         [pscustomobject]@{ source = 'C:\Private\report.xlsx' }
@@ -492,7 +533,11 @@ try {
     $headers19 = @('Text', 'Restaurant Name', 'Reservation Time', 'Reservation Date', 'Service', 'Overall', 'Culinary', 'Value', 'Pace of Meal', 'Recommend', 'Manager Visit', 'Steak Cooked Correctly', 'Alert Guests DO NOT CONTACT', 'Event Booking Process', 'First Visit', 'Guest Last Name', 'Guest First Name', 'Sorensen Weekly Comments', 'Sorensen')
     $unsafeBidi = [char]0x202E
     $unsafeC0 = [char]0x0001
-    $contactableText = 'Synthetic summary:"All set." A:"Quoted." Casey Testperson praised the service. Contact casey@example.invalid or 212-555-0199 and 555-1212; https://example.invalid and bare.example.invalid/path, Reservation ABC123, Resy ZX9876. Unsafe ' + $unsafeBidi + 'bidi control.'
+    $apostropheDriveUrl = 'https://example.invalid/r''C:\Private\file.xlsx'
+    $apostropheUncUrl = 'https://example.invalid/r''\\fileserver\restricted\file.xlsx'
+    $apostropheWwwUrl = 'www.example.invalid/r''C:\Private\file.xlsx'
+    $apostropheBareUrl = 'bare.example.invalid/r''C:\Private\file.xlsx'
+    $contactableText = 'Synthetic summary:"All set." A:"Quoted." Casey Testperson praised the service. Contact casey@example.invalid or 212-555-0199 and 555-1212; https://example.invalid and bare.example.invalid/path, Apostrophe URLs ' + $apostropheDriveUrl + ' and ' + $apostropheUncUrl + '. Reservation ABC123, Resy ZX9876. Unsafe ' + $unsafeBidi + 'bidi control.'
     $contactable = New-TestResponse '9354 Richmond' '07/10/2026' '6:00 PM' $contactableText 'Casey' 'Testperson'
     $dnc = New-TestResponse '9354 Richmond' '07/11/2026' '7:00 PM' 'Robin Sample said the service was excellent and attentive.' 'Robin' 'Sample' 'NC'
     $old = New-TestResponse '9355 Virginia Beach' '07/01/2026' '5:00 PM' 'The food was great.' 'Taylor' 'Archive'
@@ -521,6 +566,15 @@ try {
     $controlProbe = Protect-GssFeedbackText -Text "A${unsafeC0}B${unsafeBidi}C" -KnownNames @()
     Assert-Equal $controlProbe.RedactionCount 2 'C0 and bidi controls are counted as redactions'
     Assert-True (-not [regex]::IsMatch($controlProbe.Text, (Get-GssUnsafeControlPattern))) 'C0 and bidi controls are removed before AI processing'
+    foreach ($urlProbe in @($apostropheDriveUrl, $apostropheUncUrl, $apostropheWwwUrl, $apostropheBareUrl)) {
+        $protectedUrl = Protect-GssFeedbackText -Text $urlProbe -KnownNames @()
+        Assert-Equal $protectedUrl.Text '[REDACTED URL]' "Apostrophe URL is fully redacted: $urlProbe"
+        Assert-Equal $protectedUrl.RedactionCount 1 "Apostrophe URL redaction is counted once: $urlProbe"
+        Assert-True ([bool]$protectedUrl.PiiScanPassed) "Apostrophe URL passes the post-redaction PII scan: $urlProbe"
+        Assert-GssPortableContentHasNoMachineSpecificPath -TextValues @($protectedUrl.Text)
+    }
+    $protectedSentenceUrl = Protect-GssFeedbackText -Text "Visit $apostropheDriveUrl, then continue." -KnownNames @()
+    Assert-Equal $protectedSentenceUrl.Text 'Visit [REDACTED URL], then continue.' 'Apostrophe URL redaction preserves trailing sentence punctuation'
     $phonePattern = @(Get-GssPiiRedactionRules | Where-Object Label -eq 'phone')[0].Pattern
     foreach ($phoneProbe in @('212-555-0199', '555-1212', '(212) 555-0199', '212.555.0199', '212.5550199', '+1 212.5550199', '2125550199', '+44 20 7946 0958', '(212)5550199', '+1 (212)5550199', '212-5551212')) {
         Assert-True ([regex]::IsMatch($phoneProbe, $phonePattern)) "Phone pattern recognizes $phoneProbe"
@@ -1414,6 +1468,10 @@ finally {
     Assert-True ([string]$analysisJson.sanitized_feedback[0].sanitized_text -match 'Synthetic summary:"All set\."') 'Structured colon-quote text remains publishable'
     Assert-True ([string]$analysisJson.sanitized_feedback[0].sanitized_text -match 'A:"Quoted\."') 'One-letter colon-quote text remains publishable end to end'
     Assert-True ([string]$analysisJson.sanitized_feedback[0].sanitized_text -match '\[REDACTED URL\],') 'Bare URL is redacted without swallowing sentence punctuation'
+    Assert-True (-not ([string]$analysisJson.sanitized_feedback[0].sanitized_text).Contains($apostropheDriveUrl)) 'Apostrophe drive URL is removed from generated analysis'
+    Assert-True (-not ([string]$analysisJson.sanitized_feedback[0].sanitized_text).Contains($apostropheUncUrl)) 'Apostrophe UNC URL is removed from generated analysis'
+    Assert-True (-not ([string]$analysisJson.sanitized_feedback[0].sanitized_text).Contains('C:\Private\file.xlsx')) 'Apostrophe drive-path suffix cannot leak into generated analysis'
+    Assert-True (-not ([string]$analysisJson.sanitized_feedback[0].sanitized_text).Contains('\\fileserver\restricted\file.xlsx')) 'Apostrophe UNC suffix cannot leak into generated analysis'
     Assert-True ([string]$analysisJson.sanitized_feedback[0].sanitized_text -match '\[REDACTED PHONE\]') 'Short local phone number is redacted'
     Assert-True ([string]$analysisJson.sanitized_feedback[0].sanitized_text -match '\[REDACTED BOOKING ID\]') 'Reservation and Resy identifiers are redacted'
     Assert-True ([string]$analysisJson.sanitized_feedback[0].sanitized_text -match '\[REDACTED CONTROL\]') 'Unsafe C0 and bidi controls are visibly removed'

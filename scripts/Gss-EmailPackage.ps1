@@ -537,9 +537,12 @@ function Get-GssKnownGuestNames {
 }
 
 function Get-GssPiiRedactionRules {
+    # Apostrophe is RFC URL punctuation, so scheme-qualified, www-prefixed, and
+    # bare-domain URL forms share the same token boundary. Reviewed trailing
+    # sentence punctuation remains captured separately for preservation.
     return @(
         [pscustomobject]@{ Label = 'email'; Pattern = '(?i)\b[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}\b'; Replacement = '[REDACTED EMAIL]' },
-        [pscustomobject]@{ Label = 'url'; Pattern = '(?i)(?<![@\w])(?<url>(?:(?:https?://|www\.)[^\s<>"\x27]*?|(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}(?:/[^\s<>"\x27]*?)?))(?<punct>[.,;:!?)}\]]*)(?=\s|$)'; Replacement = '[REDACTED URL]${punct}' },
+        [pscustomobject]@{ Label = 'url'; Pattern = '(?i)(?<![@\w])(?<url>(?:(?:https?://|www\.)[^\s<>"]*?|(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}(?:/[^\s<>"]*?)?))(?<punct>[.,;:!?)}\]]*)(?=\s|$)'; Replacement = '[REDACTED URL]${punct}' },
         [pscustomobject]@{ Label = 'phone'; Pattern = '(?<![\w\d.])(?:(?:\+?1[\s.-]+)?[2-9]\d{2}\.[2-9]\d{6}|(?!\d+\.\d+(?![\w\d]|\.\d))(?:\+?\d{10,15}|(?:\+?\d{1,3}[\s.-]+)?(?:\(\d{2,4}\)[\s.-]*|\d{2,4}[\s.-]+)\d{2,4}[\s.-]*\d{4}|\d{3}[- ]\d{4}))(?![\w\d]|\.\d)'; Replacement = '[REDACTED PHONE]' },
         [pscustomobject]@{ Label = 'booking_identifier'; Pattern = '(?i)\b(?:check|confirmation|booking|reservation|resy)\s*(?:(?:id|number|no\.?)\s*)?(?:#|:)?\s*(?=[A-Z0-9-]{4,}\b)(?=[A-Z0-9-]*\d)[A-Z0-9-]{4,}\b'; Replacement = '[REDACTED BOOKING ID]' }
     )
@@ -603,16 +606,58 @@ function Test-GssTextContainsMachineSpecificPath {
     $backslashUncPathPattern = '(?<![\\])\\\\(?![\\/"''])[^\\/\s"''<>|]+[\\/](?![\\/"''])[^\\/\s"''<>|]+'
     $forwardSlashNetworkPathPattern = '(?<![:/A-Za-z0-9._~-])//(?![/"''])[^/\s"''<>]+/(?![/"''])[^/\s"''<>]+'
 
-    # Scheme-qualified HTTP URLs are portable even when their URL path or query
-    # contains path-shaped text. Before removing a URL token, introduce a scan
-    # boundary at an adjacent Windows path so URL stripping cannot consume it.
-    # A forward slash is excluded as a delimiter because /C:/... may itself be
-    # an ordinary URL path segment.
-    $drivePathAfterUrlDelimiterPattern = '(?i)(?<=[^A-Za-z0-9_/])(?=(?:[A-Z]:[\\/](?!["''])|[A-Z]:(?![\\/\s"''])(?=[^\\/\s"''<>|]+[\\/](?!["'']))))'
-    $uncPathAfterUrlPattern = '(?<![\\])(?=\\\\(?![\\/"''])[^\\/\s"''<>|]+[\\/](?![\\/"''])[^\\/\s"''<>|]+)'
-    $scanText = [regex]::Replace($Text, $drivePathAfterUrlDelimiterPattern, ' ')
-    $scanText = [regex]::Replace($scanText, $uncPathAfterUrlPattern, ' ')
-    $scanText = [regex]::Replace($scanText, '(?i)\bhttps?://[^\s<>"'']+', '')
+    # Scheme-qualified HTTP URLs are portable even when their URL path, query,
+    # or fragment contains path-shaped text. Strip each URL token, preserving
+    # only a suffix that begins at a reviewed punctuation delimiter. A UNC form
+    # inside query/fragment syntax or after URL-valid/opening punctuation stays
+    # in the URL; reviewed closing delimiters and direct alphanumeric adjacency
+    # remain leakage boundaries.
+    $urlTokenPattern = '(?i)\bhttps?://[^\s<>"]+'
+    $urlAdjacentDrivePathPattern = '(?i)(?:[,;)\]}]|\\)(?=(?:[A-Z]:[\\/](?!["''])|[A-Z]:(?![\\/\s"''])(?=[^\\/\s"''<>|]+[\\/](?!["'']))))'
+    $reviewedUrlSuffixDelimiters = @(',', ';', ')', ']', '}')
+    $urlStripper = [System.Text.RegularExpressions.MatchEvaluator]{
+        param([System.Text.RegularExpressions.Match]$urlMatch)
+
+        $urlToken = [string]$urlMatch.Value
+        $boundaryIndex = $urlToken.Length
+        $driveBoundary = [regex]::Match($urlToken, $urlAdjacentDrivePathPattern)
+        if ($driveBoundary.Success) {
+            $boundaryIndex = $driveBoundary.Index
+        }
+        foreach ($uncBoundary in @([regex]::Matches($urlToken, $backslashUncPathPattern))) {
+            $prefix = $urlToken.Substring(0, $uncBoundary.Index)
+            $insideQueryOrFragment = $prefix.Contains('?') -or $prefix.Contains('#')
+            $precedingCharacter = if ($uncBoundary.Index -gt 0) {
+                [string]$urlToken[$uncBoundary.Index - 1]
+            }
+            else { '' }
+            $explicitDelimiter = $precedingCharacter -in $reviewedUrlSuffixDelimiters
+            $directBoundary = -not $insideQueryOrFragment -and
+                $uncBoundary.Index -gt 0 -and
+                [char]::IsLetterOrDigit($urlToken[$uncBoundary.Index - 1])
+            if (($explicitDelimiter -or $directBoundary) -and
+                $uncBoundary.Index -lt $boundaryIndex) {
+                $boundaryIndex = $uncBoundary.Index
+                break
+            }
+        }
+        foreach ($networkBoundary in @([regex]::Matches($urlToken, $forwardSlashNetworkPathPattern))) {
+            $precedingCharacter = if ($networkBoundary.Index -gt 0) {
+                [string]$urlToken[$networkBoundary.Index - 1]
+            }
+            else { '' }
+            if ($precedingCharacter -in $reviewedUrlSuffixDelimiters -and
+                $networkBoundary.Index -lt $boundaryIndex) {
+                $boundaryIndex = $networkBoundary.Index
+                break
+            }
+        }
+        if ($boundaryIndex -lt $urlToken.Length) {
+            return $urlToken.Substring($boundaryIndex)
+        }
+        return ''
+    }
+    $scanText = [regex]::Replace($Text, $urlTokenPattern, $urlStripper)
 
     return (
         [regex]::IsMatch($scanText, $rootedDrivePathPattern) -or

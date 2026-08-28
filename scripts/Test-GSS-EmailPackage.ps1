@@ -138,6 +138,26 @@ Assert-GssPortableContentHasNoMachineSpecificPath -TextValues @(
     'https://example.invalid/C:/url-segment?next=//server/share/file'
 )
 Assert-ThrowsLike {
+    Assert-GssPortableContentHasNoMachineSpecificPath -TextValues @(
+        'Reference: https://example.invalid/report,C:\Private\report.xlsx'
+    )
+} '*machine-specific path*' 'URL stripping preserves an adjacent drive path for leakage detection'
+Assert-ThrowsLike {
+    Assert-GssPortableContentHasNoMachineSpecificPath -TextValues @(
+        'Reference: https://example.invalid/report;D:/Private/report.xlsx'
+    )
+} '*machine-specific path*' 'URL stripping preserves a semicolon-adjacent drive path for leakage detection'
+Assert-ThrowsLike {
+    Assert-GssPortableContentHasNoMachineSpecificPath -TextValues @(
+        'Reference: https://example.invalid/report)E:\Private\report.xlsx'
+    )
+} '*machine-specific path*' 'URL stripping preserves a parenthesis-adjacent drive path for leakage detection'
+Assert-ThrowsLike {
+    Assert-GssPortableContentHasNoMachineSpecificPath -TextValues @(
+        'Reference: https://example.invalid/report\\fileserver\restricted\report.xlsx'
+    )
+} '*machine-specific path*' 'URL stripping preserves an adjacent UNC path for leakage detection'
+Assert-ThrowsLike {
     Assert-GssPortableContentHasNoMachineSpecificPath -StructuredValues @(
         [pscustomobject]@{ source = 'C:\Private\report.xlsx' }
     )

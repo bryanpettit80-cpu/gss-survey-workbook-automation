@@ -764,6 +764,36 @@ try {
     )
     [System.IO.File]::WriteAllText($resumeRecoveryManifestPath, '{"recovery":"manifest"}', $utf8WithoutBom)
     [System.IO.File]::WriteAllText($resumeRecoveryReceiptPath, '{"state":"Committed"}', $utf8WithoutBom)
+    foreach ($terminalState in @('RolledBack', 'RolledBackConservative')) {
+        $terminalManifest = [pscustomobject][ordered]@{
+            schema_version = 'gss-historical-recovery/v1'
+            fiscal_year = if ($terminalState -ceq 'RolledBack') { 'FY24' } else { 'FY25' }
+            sources = @()
+        }
+        $terminalManifestText = $terminalManifest | ConvertTo-Json -Depth 4 -Compress
+        $terminalManifestSha256 = Get-GssResumeTextHash -Text $terminalManifestText
+        $terminalDirectory = Join-Path `
+            (Split-Path -Parent $resumeRecoveryTransactionPath) `
+            $terminalManifestSha256
+        New-Item -ItemType Directory -Path $terminalDirectory -Force | Out-Null
+        $terminalManifestPath = Join-Path $terminalDirectory 'recovery-manifest.json'
+        [System.IO.File]::WriteAllText($terminalManifestPath, $terminalManifestText, $utf8WithoutBom)
+        $terminalReceipt = [pscustomobject][ordered]@{
+            schema_version = 'gss-historical-recovery-receipt/v1'
+            classification = 'CONTAINS PERSONAL DATA - RESTRICTED'
+            contains_personal_data = $true
+            manifest_sha256 = $terminalManifestSha256
+            manifest_snapshot_path = $terminalManifestPath
+            transaction_id = "historical-recovery:$terminalManifestSha256"
+            state = $terminalState
+            files = @()
+        }
+        [System.IO.File]::WriteAllText(
+            (Join-Path $terminalDirectory 'transaction-receipt.json'),
+            ($terminalReceipt | ConvertTo-Json -Depth 4 -Compress),
+            $utf8WithoutBom
+        )
+    }
 
     $resumeRecoveryRoleBindings = @(
         [pscustomobject]@{ Role = 'recovery_run_summary'; PortablePath = 'recovery/evidence/drive-recovery-summary.json'; LivePath = $resumeRecoverySummaryPath },
@@ -833,9 +863,21 @@ try {
     }
 
     $resumeRecoveryEvidence = Assert-GssResumeHistoricalRecoveryEvidence -FolderPath $resumeRecoveryTestRoot
-    Assert-Equal $resumeRecoveryEvidence.TransactionCount 1 'Historical recovery fixture validates one consulted transaction'
+    Assert-Equal $resumeRecoveryEvidence.TransactionCount 1 'Historical recovery fixture ignores terminal rollback receipts and validates one consulted transaction'
     Assert-Equal $resumeRecoveryEvidence.EvidenceFileCount 3 'Historical recovery fixture binds summary, manifest, and receipt'
     Assert-Equal $resumeRecoveryEvidence.Verification 'CommittedRecoveryOnlySnapshots' 'Historical recovery fixture requires committed RecoveryOnly evidence'
+
+    $forgedTerminalDirectory = Join-Path (Split-Path -Parent $resumeRecoveryTransactionPath) ('f' * 64)
+    New-Item -ItemType Directory -Path $forgedTerminalDirectory -Force | Out-Null
+    [System.IO.File]::WriteAllText(
+        (Join-Path $forgedTerminalDirectory 'transaction-receipt.json'),
+        '{"state":"RolledBack"}',
+        $utf8WithoutBom
+    )
+    Assert-ThrowsLike {
+        Assert-GssResumeHistoricalRecoveryEvidence -FolderPath $resumeRecoveryTestRoot
+    } '*Terminal historical recovery receipt identity is invalid*' 'Historical recovery fixture rejects an unbound state-only terminal receipt'
+    Remove-Item -LiteralPath $forgedTerminalDirectory -Recurse -Force
 
     [System.IO.File]::WriteAllText($resumeRecoveryReceiptPath, '{"state":"Changed"}', $utf8WithoutBom)
     Assert-ThrowsLike {

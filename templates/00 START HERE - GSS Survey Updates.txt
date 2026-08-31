@@ -9,7 +9,8 @@ WEEKLY UPDATE
    Also place the newest guest-detail export in:
    03 Uploaded Survey Workbooks
 2. Close the main GSS workbook if it is open in Excel.
-3. Confirm Google Drive for desktop is running and G:\My Drive is available.
+3. Confirm Google Drive for desktop is running and this computer's commissioned
+   private GSS backup folder is available.
 4. Double-click:
    Run GSS Update After Upload.cmd
 5. Wait for the copy-test and review to finish.
@@ -17,6 +18,12 @@ WEEKLY UPDATE
    the copy-test passed.
 
 IMPORTANT
+- You may run the weekly update from any configured Windows computer where this
+  synchronized GSS folder, Microsoft Excel desktop, and the commissioned private
+  Google Drive backup are available. Keep the copy-test and APPLY in the same
+  launcher window.
+- Run GSS on only one computer at a time. Do not start a second GSS update while
+  another computer's launcher is still running.
 - The live workbook is 01 Main Workbook\GSS Score Trends - Main.xlsx.
 - Finished email PDFs are in 04 Email Comparison PDFs.
 - A private Google Drive backup must be prepared before the live workbook changes.

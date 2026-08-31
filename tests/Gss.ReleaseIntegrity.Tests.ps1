@@ -42,7 +42,7 @@ Describe 'GSS release integrity module' {
         (Get-GssReleaseFileEvidence $lfPath).Sha256 | Should -Be (Get-GssReleaseFileEvidence $crlfPath).Sha256
     }
 
-    It 'requires local Excel evidence from the exact release copy-test' {
+    It 'accepts exact hashed Excel evidence certified on another workstation' {
         $head = 'a' * 40
         $tag = 'v1.0.0'
         $dataRoot = Join-Path $TestDrive 'GSS Surveys'
@@ -57,7 +57,7 @@ Describe 'GSS release integrity module' {
             Mode = 'CopyTestOnly'
             TransactionStatus = 'Prepared'
             ProgramRelease = $tag
-            HostName = [Environment]::MachineName
+            HostName = 'RELEASE-CERTIFICATION-HOST'
             RunId = '11111111-1111-1111-1111-111111111111'
             CurrentWeekEnding = '2026-07-19'
             StartingWorkbookSha256 = '1' * 64
@@ -79,12 +79,26 @@ Describe 'GSS release integrity module' {
             WorkbookPath = $workbookRelativePath
             WorkbookSha256 = $workbookHash
             SourceRunFingerprint = $sourceRun.RunFingerprint
+            SourceRunHostName = $sourceRun.HostName
             SourceRunLogPath = $sourceLogRelativePath
             FormulaErrors = 0
             ConstantErrors = 0
         }
 
+        $sourceRun.HostName | Should -Not -Be ([Environment]::MachineName)
         @(Test-GssExcelValidationReceipt -Receipt $receipt -ExpectedHead $head -ExpectedTag $tag -DataRoot $dataRoot).Count | Should -Be 0
+        $sourceRun.HostName = ''
+        $sourceRun.RunFingerprint = Get-GssReleaseRunFingerprint -Run $sourceRun
+        $sourceRun | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $sourceLogPath -Encoding UTF8
+        $receipt.SourceRunFingerprint = $sourceRun.RunFingerprint
+        @(Test-GssExcelValidationReceipt -Receipt $receipt -ExpectedHead $head -ExpectedTag $tag -DataRoot $dataRoot) | Should -Contain 'Receipt source run has no audit workstation.'
+        $sourceRun.HostName = 'RELEASE-CERTIFICATION-HOST'
+        $sourceRun.RunFingerprint = Get-GssReleaseRunFingerprint -Run $sourceRun
+        $sourceRun | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $sourceLogPath -Encoding UTF8
+        $receipt.SourceRunFingerprint = $sourceRun.RunFingerprint
+        $receipt.SourceRunHostName = 'DIFFERENT-CERTIFICATION-HOST'
+        @(Test-GssExcelValidationReceipt -Receipt $receipt -ExpectedHead $head -ExpectedTag $tag -DataRoot $dataRoot) | Should -Contain 'Receipt certifying workstation does not match its source run.'
+        $receipt.SourceRunHostName = $sourceRun.HostName
         $receipt.GitHead = 'd' * 40
         @(Test-GssExcelValidationReceipt -Receipt $receipt -ExpectedHead $head -ExpectedTag $tag -DataRoot $dataRoot) | Should -Contain 'Receipt Git HEAD does not match the release.'
         $receipt.GitHead = $head

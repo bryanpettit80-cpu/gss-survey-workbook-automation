@@ -171,10 +171,12 @@ else {
 }
 
 $sourceRunFingerprint = $null
+$sourceRunHostName = $null
 if (-not [string]::IsNullOrWhiteSpace($SourceRunLogPath)) {
     $SourceRunLogPath = (Resolve-Path -LiteralPath $SourceRunLogPath).Path
     $sourceRun = Get-Content -LiteralPath $SourceRunLogPath -Raw | ConvertFrom-Json
     $sourceRunFingerprint = [string]$sourceRun.RunFingerprint
+    $sourceRunHostName = [string]$sourceRun.HostName
 }
 
 $excel = $null
@@ -439,6 +441,7 @@ finally {
         WorkbookPath = $portableWorkbookPath
         WorkbookSha256 = if (Test-Path -LiteralPath $WorkbookPath -PathType Leaf) { Get-GssSha256 $WorkbookPath } else { $null }
         SourceRunFingerprint = $sourceRunFingerprint
+        SourceRunHostName = $sourceRunHostName
         SourceRunLogPath = if ($SourceRunLogPath -and $dataRoot) {
             ConvertTo-GssDropboxRelativePath -Path $SourceRunLogPath -FolderPath $dataRoot
         }

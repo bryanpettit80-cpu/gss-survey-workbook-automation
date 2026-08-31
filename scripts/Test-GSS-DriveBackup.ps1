@@ -812,18 +812,26 @@ try {
     $releaseWorkbookPath = Join-Path $gssRoot '_automation_runs\test-output\release-copy-test\GSS Score Trends - Main.xlsx'
     Write-GssDriveBackupAtomicText -Path $releaseWorkbookPath -Text 'copy-only workbook evidence'
     $releaseWorkbookHash = Get-GssDriveBackupSha256 -Path $releaseWorkbookPath
-    $releaseRunFingerprint = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
     $releaseSourceLogPath = Join-Path $gssRoot '_automation_runs\logs\release-copy-test.json'
     $releaseWorkbookRelative = '_automation_runs/test-output/release-copy-test/GSS Score Trends - Main.xlsx'
-    Write-GssDriveBackupAtomicJson -Path $releaseSourceLogPath -Value ([ordered]@{
+    $releaseSourceRun = [pscustomobject][ordered]@{
         Mode = 'CopyTestOnly'
         TransactionStatus = 'Prepared'
         ProgramRelease = $releaseTag
-        HostName = [Environment]::MachineName
-        RunFingerprint = $releaseRunFingerprint
+        HostName = 'RELEASE-CERTIFICATION-HOST'
+        RunId = '11111111-1111-1111-1111-111111111111'
+        CurrentWeekEnding = '2026-07-24'
+        StartingWorkbookSha256 = '1' * 64
+        CurrentSourceSha256 = '2' * 64
+        PriorYearSourceSha256 = '3' * 64
         StagedWorkbookRelativePath = $releaseWorkbookRelative
         StagedWorkbookSha256 = $releaseWorkbookHash
-    })
+        StagedPdfSha256 = '4' * 64
+        RunFingerprint = $null
+    }
+    $releaseSourceRun.RunFingerprint = Get-GssDriveBackupPreparedRunFingerprint -Run $releaseSourceRun
+    $releaseRunFingerprint = $releaseSourceRun.RunFingerprint
+    Write-GssDriveBackupAtomicJson -Path $releaseSourceLogPath -Value $releaseSourceRun
     $releaseReceiptPath = Join-Path $releaseStateDirectory 'local-excel-validation-receipt.json'
     Write-GssDriveBackupAtomicJson -Path $releaseReceiptPath -Value ([ordered]@{
         ReceiptSchemaVersion = 1
@@ -836,6 +844,7 @@ try {
         WorkbookPath = $releaseWorkbookRelative
         WorkbookSha256 = $releaseWorkbookHash
         SourceRunFingerprint = $releaseRunFingerprint
+        SourceRunHostName = $releaseSourceRun.HostName
         SourceRunLogPath = '_automation_runs/logs/release-copy-test.json'
         FormulaErrors = 0
         ConstantErrors = 0
@@ -881,6 +890,38 @@ try {
     Assert-GssDriveBackupTest ($releaseInventory.SnapshotPurpose -eq 'ReleaseOnly') 'ReleaseOnly purpose was not propagated.'
     Assert-GssDriveBackupTest ($releaseInventory.InventoryMode -eq 'ReleaseOnly') 'ReleaseOnly inventory mode was not propagated.'
     Assert-GssDriveBackupTest ($releaseInventory.FileCount -eq 3 -and -not $releaseInventory.ContainsPersonalData) 'ReleaseOnly inventory was not the exact non-personal-data triad.'
+
+    $releaseSourceRun = Read-GssDriveBackupJson -Path $releaseSourceLogPath
+    $releaseSourceRun.HostName = ''
+    Write-GssDriveBackupAtomicJson -Path $releaseSourceLogPath -Value $releaseSourceRun
+    $releaseMissingAuditHostRefused = $false
+    try {
+        [void](& $invokeScript -Operation Inventory -RunSummaryPath $releaseSummaryPath -SettingsPath $settingsPath -OutputObject)
+    }
+    catch {
+        $releaseMissingAuditHostRefused = $_.Exception.Message -match 'does not match its Prepared copy-only source run'
+    }
+    Assert-GssDriveBackupTest $releaseMissingAuditHostRefused 'ReleaseOnly accepted a source run without an audit workstation.'
+    $releaseSourceRun.HostName = 'RELEASE-CERTIFICATION-HOST'
+    Write-GssDriveBackupAtomicJson -Path $releaseSourceLogPath -Value $releaseSourceRun
+
+    $releaseSourceRun.HostName = 'TAMPERED-NONBLANK-HOST'
+    Write-GssDriveBackupAtomicJson -Path $releaseSourceLogPath -Value $releaseSourceRun
+    $releaseReceipt = Read-GssDriveBackupJson -Path $releaseReceiptPath
+    $releaseReceipt.SourceRunHostName = $releaseSourceRun.HostName
+    Write-GssDriveBackupAtomicJson -Path $releaseReceiptPath -Value $releaseReceipt
+    $releaseTamperedAuditHostRefused = $false
+    try {
+        [void](& $invokeScript -Operation Inventory -RunSummaryPath $releaseSummaryPath -SettingsPath $settingsPath -OutputObject)
+    }
+    catch {
+        $releaseTamperedAuditHostRefused = $_.Exception.Message -match 'does not match its Prepared copy-only source run'
+    }
+    Assert-GssDriveBackupTest $releaseTamperedAuditHostRefused 'ReleaseOnly accepted a nonblank audit workstation that did not match the run fingerprint.'
+    $releaseSourceRun.HostName = 'RELEASE-CERTIFICATION-HOST'
+    Write-GssDriveBackupAtomicJson -Path $releaseSourceLogPath -Value $releaseSourceRun
+    $releaseReceipt.SourceRunHostName = $releaseSourceRun.HostName
+    Write-GssDriveBackupAtomicJson -Path $releaseReceiptPath -Value $releaseReceipt
 
     $releaseExtraPath = Join-Path $releaseStateDirectory 'not-approved.txt'
     Write-GssDriveBackupAtomicText -Path $releaseExtraPath -Text 'must not enter ReleaseOnly'

@@ -1238,6 +1238,29 @@ function Get-GssReleaseOnlyInventoryFingerprint {
     return Get-GssDriveBackupByteSha256 -Bytes $bytes
 }
 
+function Get-GssDriveBackupPreparedRunFingerprint {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [object]$Run
+    )
+
+    $parts = @(
+        'gss-transaction-v1',
+        ([string](Get-GssDriveBackupProperty $Run @('RunId'))).Trim().ToLowerInvariant(),
+        ([string](Get-GssDriveBackupProperty $Run @('HostName'))).Trim().ToLowerInvariant(),
+        ([string](Get-GssDriveBackupProperty $Run @('CurrentWeekEnding'))).Trim(),
+        ([string](Get-GssDriveBackupProperty $Run @('StartingWorkbookSha256'))).Trim().ToLowerInvariant(),
+        ([string](Get-GssDriveBackupProperty $Run @('CurrentSourceSha256'))).Trim().ToLowerInvariant(),
+        ([string](Get-GssDriveBackupProperty $Run @('PriorYearSourceSha256'))).Trim().ToLowerInvariant(),
+        ([string](Get-GssDriveBackupProperty $Run @('StagedWorkbookSha256'))).Trim().ToLowerInvariant(),
+        ([string](Get-GssDriveBackupProperty $Run @('StagedPdfSha256'))).Trim().ToLowerInvariant(),
+        ([string](Get-GssDriveBackupProperty $Run @('ProgramRelease'))).Trim().ToLowerInvariant()
+    )
+    $bytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes(($parts -join "`n"))
+    return Get-GssDriveBackupByteSha256 -Bytes $bytes
+}
+
 function Assert-GssReleaseOnlyArtifactSet {
     [CmdletBinding()]
     param(
@@ -1300,6 +1323,7 @@ function Assert-GssReleaseOnlyArtifactSet {
         [string]::IsNullOrWhiteSpace([string](Get-GssDriveBackupProperty $receipt @('ExcelVersion'))) -or
         [string](Get-GssDriveBackupProperty $receipt @('WorkbookSha256')) -notmatch '^[a-fA-F0-9]{64}$' -or
         [string](Get-GssDriveBackupProperty $receipt @('SourceRunFingerprint')) -notmatch '^[a-fA-F0-9]{64}$' -or
+        [string]::IsNullOrWhiteSpace([string](Get-GssDriveBackupProperty $receipt @('SourceRunHostName'))) -or
         -not $workbookPortable.StartsWith('_automation_runs/test-output/', [System.StringComparison]::OrdinalIgnoreCase) -or
         -not $sourceLogPortable.StartsWith('_automation_runs/logs/', [System.StringComparison]::OrdinalIgnoreCase) -or
         [int](Get-GssDriveBackupProperty $receipt @('FormulaErrors') -1) -ne 0 -or
@@ -1322,8 +1346,10 @@ function Assert-GssReleaseOnlyArtifactSet {
         if ([string](Get-GssDriveBackupProperty $sourceRun @('Mode')) -cne 'CopyTestOnly' -or
             [string](Get-GssDriveBackupProperty $sourceRun @('TransactionStatus')) -cne 'Prepared' -or
             [string](Get-GssDriveBackupProperty $sourceRun @('ProgramRelease')) -cne $tag -or
-            [string](Get-GssDriveBackupProperty $sourceRun @('HostName')) -cne [Environment]::MachineName -or
+            [string]::IsNullOrWhiteSpace([string](Get-GssDriveBackupProperty $sourceRun @('HostName'))) -or
+            [string](Get-GssDriveBackupProperty $sourceRun @('HostName')) -cne [string](Get-GssDriveBackupProperty $receipt @('SourceRunHostName')) -or
             [string](Get-GssDriveBackupProperty $sourceRun @('RunFingerprint')) -cne [string](Get-GssDriveBackupProperty $receipt @('SourceRunFingerprint')) -or
+            (Get-GssDriveBackupPreparedRunFingerprint -Run $sourceRun) -cne ([string](Get-GssDriveBackupProperty $sourceRun @('RunFingerprint'))).ToLowerInvariant() -or
             ([string](Get-GssDriveBackupProperty $sourceRun @('StagedWorkbookRelativePath'))).Replace('\', '/') -cne $workbookPortable -or
             [string](Get-GssDriveBackupProperty $sourceRun @('StagedWorkbookSha256')) -cne ([string](Get-GssDriveBackupProperty $receipt @('WorkbookSha256'))).ToLowerInvariant()) {
             throw 'ReleaseOnly Excel receipt does not match its Prepared copy-only source run.'

@@ -261,14 +261,15 @@ function Test-GssExcelValidationReceipt {
     $failures = New-Object System.Collections.Generic.List[string]
     $portableWorkbookPath = ([string]$Receipt.WorkbookPath).Replace('\', '/')
     $portableSourceLogPath = ([string]$Receipt.SourceRunLogPath).Replace('\', '/')
-    if ([int]$Receipt.ReceiptSchemaVersion -ne 1) { $failures.Add('Receipt schema is not supported.') }
+    if ([int]$Receipt.ReceiptSchemaVersion -ne 2) { $failures.Add('Receipt schema is not supported.') }
     if ([string]$Receipt.Status -ne 'Passed') { $failures.Add('Receipt status is not Passed.') }
     if ([string]$Receipt.GitHead -ne $ExpectedHead) { $failures.Add('Receipt Git HEAD does not match the release.') }
     if ([string]$Receipt.ReleaseTag -ne $ExpectedTag) { $failures.Add('Receipt tag does not match the release.') }
     if ([string]::IsNullOrWhiteSpace([string]$Receipt.ExcelVersion)) { $failures.Add('Receipt has no desktop Excel version.') }
     if ([string]$Receipt.WorkbookSha256 -notmatch '^[a-fA-F0-9]{64}$') { $failures.Add('Receipt workbook hash is invalid.') }
     if ([string]$Receipt.SourceRunFingerprint -notmatch '^[a-fA-F0-9]{64}$') { $failures.Add('Receipt run fingerprint is invalid.') }
-    if ([string]::IsNullOrWhiteSpace([string]$Receipt.SourceRunHostName)) { $failures.Add('Receipt has no certifying workstation.') }
+    if ([string]::IsNullOrWhiteSpace([string]$Receipt.SourceRunHostName)) { $failures.Add('Receipt has no source-run workstation.') }
+    if ([string]::IsNullOrWhiteSpace([string]$Receipt.CertificationHostName)) { $failures.Add('Receipt has no Excel certification workstation.') }
     if ($portableWorkbookPath -notlike '_automation_runs/test-output/*') { $failures.Add('Receipt workbook is not an isolated copy-test artifact.') }
     if ($portableSourceLogPath -notlike '_automation_runs/logs/*') { $failures.Add('Receipt source log is not in the GSS automation log directory.') }
     if ([int]$Receipt.FormulaErrors -ne 0) { $failures.Add('Receipt reports formula errors.') }
@@ -311,7 +312,7 @@ function Test-GssExcelValidationReceipt {
             $failures.Add('Receipt source run has no audit workstation.')
         }
         if ([string]$sourceRun.HostName -cne [string]$Receipt.SourceRunHostName) {
-            $failures.Add('Receipt certifying workstation does not match its source run.')
+            $failures.Add('Receipt source-run workstation does not match its source run.')
         }
         if ([string]$sourceRun.RunFingerprint -ne [string]$Receipt.SourceRunFingerprint) {
             $failures.Add('Receipt run fingerprint does not match its source log.')

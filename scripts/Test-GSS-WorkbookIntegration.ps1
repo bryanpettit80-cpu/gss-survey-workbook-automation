@@ -172,6 +172,7 @@ else {
 
 $sourceRunFingerprint = $null
 $sourceRunHostName = $null
+$certificationHostName = [Environment]::MachineName
 if (-not [string]::IsNullOrWhiteSpace($SourceRunLogPath)) {
     $SourceRunLogPath = (Resolve-Path -LiteralPath $SourceRunLogPath).Path
     $sourceRun = Get-Content -LiteralPath $SourceRunLogPath -Raw | ConvertFrom-Json
@@ -431,7 +432,7 @@ finally {
         [System.IO.Path]::GetFileName($WorkbookPath)
     }
     $receipt = [pscustomobject]@{
-        ReceiptSchemaVersion = 1
+        ReceiptSchemaVersion = 2
         TimestampUtc = [datetime]::UtcNow.ToString('o')
         Status = $verificationStatus
         Error = $verificationError
@@ -442,6 +443,7 @@ finally {
         WorkbookSha256 = if (Test-Path -LiteralPath $WorkbookPath -PathType Leaf) { Get-GssSha256 $WorkbookPath } else { $null }
         SourceRunFingerprint = $sourceRunFingerprint
         SourceRunHostName = $sourceRunHostName
+        CertificationHostName = $certificationHostName
         SourceRunLogPath = if ($SourceRunLogPath -and $dataRoot) {
             ConvertTo-GssDropboxRelativePath -Path $SourceRunLogPath -FolderPath $dataRoot
         }

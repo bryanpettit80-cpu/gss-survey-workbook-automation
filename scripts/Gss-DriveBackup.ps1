@@ -1315,7 +1315,7 @@ function Assert-GssReleaseOnlyArtifactSet {
     $receiptError = [string](Get-GssDriveBackupProperty $receipt @('Error'))
     $workbookPortable = Assert-GssDriveBackupSafeRelativePath -Path ([string](Get-GssDriveBackupProperty $receipt @('WorkbookPath')))
     $sourceLogPortable = Assert-GssDriveBackupSafeRelativePath -Path ([string](Get-GssDriveBackupProperty $receipt @('SourceRunLogPath')))
-    if ([int](Get-GssDriveBackupProperty $receipt @('ReceiptSchemaVersion')) -ne 1 -or
+    if ([int](Get-GssDriveBackupProperty $receipt @('ReceiptSchemaVersion')) -ne 2 -or
         [string](Get-GssDriveBackupProperty $receipt @('Status')) -cne 'Passed' -or
         -not [string]::IsNullOrWhiteSpace($receiptError) -or
         [string](Get-GssDriveBackupProperty $receipt @('ReleaseTag')) -cne $tag -or
@@ -1324,6 +1324,7 @@ function Assert-GssReleaseOnlyArtifactSet {
         [string](Get-GssDriveBackupProperty $receipt @('WorkbookSha256')) -notmatch '^[a-fA-F0-9]{64}$' -or
         [string](Get-GssDriveBackupProperty $receipt @('SourceRunFingerprint')) -notmatch '^[a-fA-F0-9]{64}$' -or
         [string]::IsNullOrWhiteSpace([string](Get-GssDriveBackupProperty $receipt @('SourceRunHostName'))) -or
+        [string]::IsNullOrWhiteSpace([string](Get-GssDriveBackupProperty $receipt @('CertificationHostName'))) -or
         -not $workbookPortable.StartsWith('_automation_runs/test-output/', [System.StringComparison]::OrdinalIgnoreCase) -or
         -not $sourceLogPortable.StartsWith('_automation_runs/logs/', [System.StringComparison]::OrdinalIgnoreCase) -or
         [int](Get-GssDriveBackupProperty $receipt @('FormulaErrors') -1) -ne 0 -or

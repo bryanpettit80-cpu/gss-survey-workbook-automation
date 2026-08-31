@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "release_version": "1.1.10",
-  "release_tag": "v1.1.10",
+  "release_version": "1.1.11",
+  "release_tag": "v1.1.11",
   "commit_binding": "exact_release_tag",
-  "generated_at_utc": "2026-08-31T18:44:54.9736548Z",
+  "generated_at_utc": "2026-08-31T18:58:49.4847670Z",
   "classification": "PROGRAM SOURCE ONLY - NO GSS WORKBOOKS, REPORTS, OR CUSTOMER DATA",
   "runtime_contract": {
     "require_clean_tree": true,
@@ -15,7 +15,7 @@
     "excel_validation_receipt_name": "local-excel-validation-receipt.json",
     "excel_validation_receipt_relative_path": "_automation_runs/state/release/local-excel-validation-receipt.json"
   },
-  "archive_name": "gss-survey-workbook-automation-v1.1.10.zip",
+  "archive_name": "gss-survey-workbook-automation-v1.1.11.zip",
   "files": [
     {
       "path": ".github/dependabot.yml",
@@ -35,8 +35,8 @@
       "path": "AGENTS.md",
       "role": "documentation",
       "hash_mode": "utf8_lf",
-      "canonical_size_bytes": 1552,
-      "sha256": "51351b066a506cfc46b3511a431740c245fef8e3984454263ee6772042a65edf"
+      "canonical_size_bytes": 1572,
+      "sha256": "8df5a6f811d07f969236756dacd28927db5debcaa78ef0a45fdf29f2de63ad37"
     },
     {
       "path": "config/analysis-policy.json",
@@ -56,8 +56,8 @@
       "path": "README.md",
       "role": "documentation",
       "hash_mode": "utf8_lf",
-      "canonical_size_bytes": 19512,
-      "sha256": "2e7657684e21fd07c8115d6281151fe686204e6bee745d303983ed2c7ad79bf5"
+      "canonical_size_bytes": 19566,
+      "sha256": "f062835fa4ea5dcd4f8f30f65aeb77ceea978978eb82bc47d7090fac904ff353"
     },
     {
       "path": "scripts/Analyze-GSS-Run.ps1",
@@ -84,8 +84,8 @@
       "path": "scripts/Gss-DriveBackup.ps1",
       "role": "runtime",
       "hash_mode": "utf8_lf",
-      "canonical_size_bytes": 150867,
-      "sha256": "9ac42ae02e5fc5fc09ec812aa10f077c601d7b0f4ff8b1befd610fd5b666e433"
+      "canonical_size_bytes": 150982,
+      "sha256": "e119f8026140714337e368b4199c5aff3a1d089847a7df0e8840b33ddcf07cbb"
     },
     {
       "path": "scripts/Gss-EmailPackage.ps1",
@@ -98,8 +98,8 @@
       "path": "scripts/Gss-ReleaseIntegrity.psm1",
       "role": "runtime",
       "hash_mode": "utf8_lf",
-      "canonical_size_bytes": 20956,
-      "sha256": "219baac5135d348d8771ff3f9471ff088e3b093e89b8cd694f4302b9f831d2a4"
+      "canonical_size_bytes": 21103,
+      "sha256": "59eff864db6c752209444a173a6cdf1eccbdba65e36024fa43a3ff724c45f1fc"
     },
     {
       "path": "scripts/Import-GSS-HistoricalGuestDetail.ps1",
@@ -175,8 +175,8 @@
       "path": "scripts/Test-GSS-DriveBackup.ps1",
       "role": "validation",
       "hash_mode": "utf8_lf",
-      "canonical_size_bytes": 86258,
-      "sha256": "132ff37b281d9cd402d466f1a48fb0f00539cfa28d022ddd9142aafd097c8e50"
+      "canonical_size_bytes": 87814,
+      "sha256": "9a7787dc28ac34834a7ebffef503df684edddfa8aa6c4c3446192265dc4c4c5d"
     },
     {
       "path": "scripts/Test-GSS-EmailPackage.ps1",
@@ -231,8 +231,8 @@
       "path": "scripts/Test-GSS-WorkbookIntegration.ps1",
       "role": "validation",
       "hash_mode": "utf8_lf",
-      "canonical_size_bytes": 18811,
-      "sha256": "295684e9dc926e0d6f2b48c4b1cab4abeedfb6d4fb15c013b370d8098fa26c37"
+      "canonical_size_bytes": 18918,
+      "sha256": "1b09a719d143dedccc0b42669a4fd10270a528570464d5068e27c807f8173fdc"
     },
     {
       "path": "scripts/Update-GSS-MainWorkbook.ps1",
@@ -280,8 +280,8 @@
       "path": "tests/Gss.ReleaseIntegrity.Tests.ps1",
       "role": "validation",
       "hash_mode": "utf8_lf",
-      "canonical_size_bytes": 6934,
-      "sha256": "beebc3c3af65013d8940d367aacfeab2dc0e829e7a0e75123a3479c6de9f74c1"
+      "canonical_size_bytes": 8286,
+      "sha256": "eaade80e1676ab30abee1296b437aab7cb42372cbe8231b28e97ff34a03e7445"
     }
   ]
 }

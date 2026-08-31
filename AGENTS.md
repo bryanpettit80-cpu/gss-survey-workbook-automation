@@ -12,7 +12,7 @@ The operator entry point is outside the repo:
 
 Use `scripts\Update-GSS-MainWorkbook.ps1` for code changes. Run it without `-Apply` first for a copy-only test. Live runs require Microsoft Excel on Windows and write backups/logs to `..\_automation_runs`.
 
-Do not bind release eligibility to a named workstation. A passed local Excel release receipt is portable when its exact tag, commit, workbook hash, source log, certifying workstation, and run fingerprint all validate. Keep each live copy-test and `APPLY` transaction in the same launcher session and retain the transaction hostname as hash-bound audit evidence. Multi-workstation eligibility does not authorize concurrent runs: Dropbox is not a distributed lock, so only one workstation may run GSS at a time.
+Do not bind release eligibility to a named workstation. A passed local Excel release receipt is portable when its exact tag, commit, workbook hash, source log, source-run workstation, Excel certification workstation, and run fingerprint all validate. Keep each live copy-test and `APPLY` transaction in the same launcher session and retain both workstation names as audit evidence. Multi-workstation eligibility does not authorize concurrent runs: Dropbox is not a distributed lock, so only one workstation may run GSS at a time.
 
 Keep `templates\Run GSS Update After Upload.cmd` as the canonical Dropbox-facing launcher and refresh the parent launcher with `scripts\Install-GSS-OperatorLauncher.ps1`. Leave the scheduled task disabled unless the user explicitly requests scheduled live updates.
 

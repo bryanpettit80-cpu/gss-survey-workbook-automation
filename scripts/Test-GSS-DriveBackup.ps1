@@ -818,7 +818,7 @@ try {
         Mode = 'CopyTestOnly'
         TransactionStatus = 'Prepared'
         ProgramRelease = $releaseTag
-        HostName = 'RELEASE-CERTIFICATION-HOST'
+        HostName = 'RELEASE-SOURCE-HOST'
         RunId = '11111111-1111-1111-1111-111111111111'
         CurrentWeekEnding = '2026-07-24'
         StartingWorkbookSha256 = '1' * 64
@@ -834,7 +834,7 @@ try {
     Write-GssDriveBackupAtomicJson -Path $releaseSourceLogPath -Value $releaseSourceRun
     $releaseReceiptPath = Join-Path $releaseStateDirectory 'local-excel-validation-receipt.json'
     Write-GssDriveBackupAtomicJson -Path $releaseReceiptPath -Value ([ordered]@{
-        ReceiptSchemaVersion = 1
+        ReceiptSchemaVersion = 2
         TimestampUtc = '2026-07-24T12:10:00Z'
         Status = 'Passed'
         Error = $null
@@ -845,6 +845,7 @@ try {
         WorkbookSha256 = $releaseWorkbookHash
         SourceRunFingerprint = $releaseRunFingerprint
         SourceRunHostName = $releaseSourceRun.HostName
+        CertificationHostName = 'RELEASE-CERTIFICATION-HOST'
         SourceRunLogPath = '_automation_runs/logs/release-copy-test.json'
         FormulaErrors = 0
         ConstantErrors = 0
@@ -891,6 +892,33 @@ try {
     Assert-GssDriveBackupTest ($releaseInventory.InventoryMode -eq 'ReleaseOnly') 'ReleaseOnly inventory mode was not propagated.'
     Assert-GssDriveBackupTest ($releaseInventory.FileCount -eq 3 -and -not $releaseInventory.ContainsPersonalData) 'ReleaseOnly inventory was not the exact non-personal-data triad.'
 
+    $releaseReceipt = Read-GssDriveBackupJson -Path $releaseReceiptPath
+    $releaseReceipt.ReceiptSchemaVersion = 1
+    Write-GssDriveBackupAtomicJson -Path $releaseReceiptPath -Value $releaseReceipt
+    $releaseSchemaOneRefused = $false
+    try {
+        [void](& $invokeScript -Operation Inventory -RunSummaryPath $releaseSummaryPath -SettingsPath $settingsPath -OutputObject)
+    }
+    catch {
+        $releaseSchemaOneRefused = $_.Exception.Message -match 'not a passed copy-only validation'
+    }
+    Assert-GssDriveBackupTest $releaseSchemaOneRefused 'ReleaseOnly accepted a schema-1 Excel validation receipt.'
+    $releaseReceipt.ReceiptSchemaVersion = 2
+    Write-GssDriveBackupAtomicJson -Path $releaseReceiptPath -Value $releaseReceipt
+
+    $releaseReceipt.CertificationHostName = ''
+    Write-GssDriveBackupAtomicJson -Path $releaseReceiptPath -Value $releaseReceipt
+    $releaseMissingCertificationHostRefused = $false
+    try {
+        [void](& $invokeScript -Operation Inventory -RunSummaryPath $releaseSummaryPath -SettingsPath $settingsPath -OutputObject)
+    }
+    catch {
+        $releaseMissingCertificationHostRefused = $_.Exception.Message -match 'not a passed copy-only validation'
+    }
+    Assert-GssDriveBackupTest $releaseMissingCertificationHostRefused 'ReleaseOnly accepted a receipt without an Excel certification workstation.'
+    $releaseReceipt.CertificationHostName = 'RELEASE-CERTIFICATION-HOST'
+    Write-GssDriveBackupAtomicJson -Path $releaseReceiptPath -Value $releaseReceipt
+
     $releaseSourceRun = Read-GssDriveBackupJson -Path $releaseSourceLogPath
     $releaseSourceRun.HostName = ''
     Write-GssDriveBackupAtomicJson -Path $releaseSourceLogPath -Value $releaseSourceRun
@@ -902,7 +930,7 @@ try {
         $releaseMissingAuditHostRefused = $_.Exception.Message -match 'does not match its Prepared copy-only source run'
     }
     Assert-GssDriveBackupTest $releaseMissingAuditHostRefused 'ReleaseOnly accepted a source run without an audit workstation.'
-    $releaseSourceRun.HostName = 'RELEASE-CERTIFICATION-HOST'
+    $releaseSourceRun.HostName = 'RELEASE-SOURCE-HOST'
     Write-GssDriveBackupAtomicJson -Path $releaseSourceLogPath -Value $releaseSourceRun
 
     $releaseSourceRun.HostName = 'TAMPERED-NONBLANK-HOST'
@@ -918,7 +946,7 @@ try {
         $releaseTamperedAuditHostRefused = $_.Exception.Message -match 'does not match its Prepared copy-only source run'
     }
     Assert-GssDriveBackupTest $releaseTamperedAuditHostRefused 'ReleaseOnly accepted a nonblank audit workstation that did not match the run fingerprint.'
-    $releaseSourceRun.HostName = 'RELEASE-CERTIFICATION-HOST'
+    $releaseSourceRun.HostName = 'RELEASE-SOURCE-HOST'
     Write-GssDriveBackupAtomicJson -Path $releaseSourceLogPath -Value $releaseSourceRun
     $releaseReceipt.SourceRunHostName = $releaseSourceRun.HostName
     Write-GssDriveBackupAtomicJson -Path $releaseReceiptPath -Value $releaseReceipt

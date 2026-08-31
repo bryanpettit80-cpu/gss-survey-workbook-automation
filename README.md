@@ -172,7 +172,7 @@ Run these before committing script changes:
 
 PSScriptAnalyzer `1.25.0` and Pester `5.8.0` are pinned in CI. The analyzer baseline records reviewed legacy warnings and fails on any new warning fingerprint; Pester covers new modules while the established regression harnesses remain in place.
 
-For local Excel integration verification, run `Test-GSS-WorkbookIntegration.ps1` against the staged copy-test workbook and write its machine-readable receipt to `..\_automation_runs\state\release\local-excel-validation-receipt.json`. Production validates that the receipt is a passed copy-only test bound to the exact HEAD/tag, workbook hash, Excel version, certifying workstation, and run fingerprint. The validated receipt is portable across configured workstations; its recorded source hostname remains hash-bound audit evidence but is not an execution allowlist. This check is intentionally not part of GitHub Actions because the hosted runner does not provide desktop Excel.
+For local Excel integration verification, run `Test-GSS-WorkbookIntegration.ps1` against the staged copy-test workbook and write its machine-readable receipt to `..\_automation_runs\state\release\local-excel-validation-receipt.json`. Production validates that the receipt is a passed copy-only test bound to the exact HEAD/tag, workbook hash, Excel version, source-run workstation, Excel certification workstation, and run fingerprint. The validated receipt is portable across configured workstations; its separately recorded source-run and certification hostnames remain audit evidence but are not execution allowlists. This check is intentionally not part of GitHub Actions because the hosted runner does not provide desktop Excel.
 
 ### Release Contract
 

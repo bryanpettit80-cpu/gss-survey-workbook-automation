@@ -79,6 +79,7 @@ Describe 'GSS release integrity module' {
             WorkbookPath = $workbookRelativePath
             WorkbookSha256 = $workbookHash
             SourceRunFingerprint = $sourceRun.RunFingerprint
+            SourceRunHostName = $sourceRun.HostName
             SourceRunLogPath = $sourceLogRelativePath
             FormulaErrors = 0
             ConstantErrors = 0
@@ -95,6 +96,9 @@ Describe 'GSS release integrity module' {
         $sourceRun.RunFingerprint = Get-GssReleaseRunFingerprint -Run $sourceRun
         $sourceRun | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $sourceLogPath -Encoding UTF8
         $receipt.SourceRunFingerprint = $sourceRun.RunFingerprint
+        $receipt.SourceRunHostName = 'DIFFERENT-CERTIFICATION-HOST'
+        @(Test-GssExcelValidationReceipt -Receipt $receipt -ExpectedHead $head -ExpectedTag $tag -DataRoot $dataRoot) | Should -Contain 'Receipt certifying workstation does not match its source run.'
+        $receipt.SourceRunHostName = $sourceRun.HostName
         $receipt.GitHead = 'd' * 40
         @(Test-GssExcelValidationReceipt -Receipt $receipt -ExpectedHead $head -ExpectedTag $tag -DataRoot $dataRoot) | Should -Contain 'Receipt Git HEAD does not match the release.'
         $receipt.GitHead = $head

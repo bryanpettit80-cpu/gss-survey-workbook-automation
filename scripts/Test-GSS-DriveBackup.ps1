@@ -844,6 +844,7 @@ try {
         WorkbookPath = $releaseWorkbookRelative
         WorkbookSha256 = $releaseWorkbookHash
         SourceRunFingerprint = $releaseRunFingerprint
+        SourceRunHostName = $releaseSourceRun.HostName
         SourceRunLogPath = '_automation_runs/logs/release-copy-test.json'
         FormulaErrors = 0
         ConstantErrors = 0
@@ -906,6 +907,9 @@ try {
 
     $releaseSourceRun.HostName = 'TAMPERED-NONBLANK-HOST'
     Write-GssDriveBackupAtomicJson -Path $releaseSourceLogPath -Value $releaseSourceRun
+    $releaseReceipt = Read-GssDriveBackupJson -Path $releaseReceiptPath
+    $releaseReceipt.SourceRunHostName = $releaseSourceRun.HostName
+    Write-GssDriveBackupAtomicJson -Path $releaseReceiptPath -Value $releaseReceipt
     $releaseTamperedAuditHostRefused = $false
     try {
         [void](& $invokeScript -Operation Inventory -RunSummaryPath $releaseSummaryPath -SettingsPath $settingsPath -OutputObject)
@@ -916,6 +920,8 @@ try {
     Assert-GssDriveBackupTest $releaseTamperedAuditHostRefused 'ReleaseOnly accepted a nonblank audit workstation that did not match the run fingerprint.'
     $releaseSourceRun.HostName = 'RELEASE-CERTIFICATION-HOST'
     Write-GssDriveBackupAtomicJson -Path $releaseSourceLogPath -Value $releaseSourceRun
+    $releaseReceipt.SourceRunHostName = $releaseSourceRun.HostName
+    Write-GssDriveBackupAtomicJson -Path $releaseReceiptPath -Value $releaseReceipt
 
     $releaseExtraPath = Join-Path $releaseStateDirectory 'not-approved.txt'
     Write-GssDriveBackupAtomicText -Path $releaseExtraPath -Text 'must not enter ReleaseOnly'

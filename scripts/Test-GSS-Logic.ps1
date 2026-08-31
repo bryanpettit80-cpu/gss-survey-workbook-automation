@@ -252,6 +252,10 @@ Assert-True ($targetSaveIndex -ge 0 -and $targetSaveIndex -lt $targetCloseIndex)
 Assert-True ($targetCloseIndex -lt $fileEvidenceIndex) 'Target workbook is closed before file evidence is hashed'
 
 $safeLauncherSource = Get-Content -LiteralPath (Join-Path $scriptRoot 'Invoke-GSS-SafeWorkbookUpdate.ps1') -Raw
+$operatorLauncherTemplate = Get-Content -LiteralPath (Join-Path (Split-Path -Parent $scriptRoot) 'templates\Run GSS Update After Upload.cmd') -Raw
+$operatorGuideTemplate = Get-Content -LiteralPath (Join-Path (Split-Path -Parent $scriptRoot) 'templates\00 START HERE - GSS Survey Updates.txt') -Raw
+Assert-True ($operatorLauncherTemplate.Contains('Only one computer may run GSS at a time.')) 'Operator launcher warns against concurrent cross-workstation runs'
+Assert-True ($operatorGuideTemplate.Contains('Run GSS on only one computer at a time.')) 'Operator guide requires one workstation run at a time'
 Assert-True ($safeLauncherSource.Contains('$copyRun = & $updater')) 'Safe launcher captures copy-test run object'
 Assert-True ($safeLauncherSource.Contains('-RunId $runId')) 'Safe launcher binds copy test to unique run ID'
 Assert-True (

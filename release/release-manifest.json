@@ -3,7 +3,7 @@
   "release_version": "1.1.10",
   "release_tag": "v1.1.10",
   "commit_binding": "exact_release_tag",
-  "generated_at_utc": "2026-08-31T18:36:51.1444560Z",
+  "generated_at_utc": "2026-08-31T18:44:54.9736548Z",
   "classification": "PROGRAM SOURCE ONLY - NO GSS WORKBOOKS, REPORTS, OR CUSTOMER DATA",
   "runtime_contract": {
     "require_clean_tree": true,
@@ -35,8 +35,8 @@
       "path": "AGENTS.md",
       "role": "documentation",
       "hash_mode": "utf8_lf",
-      "canonical_size_bytes": 1369,
-      "sha256": "c90a15c73baf2511bd5b3cefbabeba8aee4c428032e496f2fa6216a23d9fc974"
+      "canonical_size_bytes": 1552,
+      "sha256": "51351b066a506cfc46b3511a431740c245fef8e3984454263ee6772042a65edf"
     },
     {
       "path": "config/analysis-policy.json",
@@ -56,8 +56,8 @@
       "path": "README.md",
       "role": "documentation",
       "hash_mode": "utf8_lf",
-      "canonical_size_bytes": 19292,
-      "sha256": "8e35d594e6f6d7c5df999da08c7a88626960d4cd92c5114811877e869ecfc931"
+      "canonical_size_bytes": 19512,
+      "sha256": "2e7657684e21fd07c8115d6281151fe686204e6bee745d303983ed2c7ad79bf5"
     },
     {
       "path": "scripts/Analyze-GSS-Run.ps1",
@@ -84,8 +84,8 @@
       "path": "scripts/Gss-DriveBackup.ps1",
       "role": "runtime",
       "hash_mode": "utf8_lf",
-      "canonical_size_bytes": 150604,
-      "sha256": "cefe38d3da0327b0cfdbb9779a1966e1808b410742004b1b9eeb10bdd2f97005"
+      "canonical_size_bytes": 150867,
+      "sha256": "9ac42ae02e5fc5fc09ec812aa10f077c601d7b0f4ff8b1befd610fd5b666e433"
     },
     {
       "path": "scripts/Gss-EmailPackage.ps1",
@@ -98,8 +98,8 @@
       "path": "scripts/Gss-ReleaseIntegrity.psm1",
       "role": "runtime",
       "hash_mode": "utf8_lf",
-      "canonical_size_bytes": 20638,
-      "sha256": "8090c4e32e5df3fb2b78174a66c75347690281486ced587322712a62b7ea2bc9"
+      "canonical_size_bytes": 20956,
+      "sha256": "219baac5135d348d8771ff3f9471ff088e3b093e89b8cd694f4302b9f831d2a4"
     },
     {
       "path": "scripts/Import-GSS-HistoricalGuestDetail.ps1",
@@ -175,8 +175,8 @@
       "path": "scripts/Test-GSS-DriveBackup.ps1",
       "role": "validation",
       "hash_mode": "utf8_lf",
-      "canonical_size_bytes": 85829,
-      "sha256": "dadea225d9e92143ca842b892464a1f839a98458c9ff6bde9bc958cdbd07c752"
+      "canonical_size_bytes": 86258,
+      "sha256": "132ff37b281d9cd402d466f1a48fb0f00539cfa28d022ddd9142aafd097c8e50"
     },
     {
       "path": "scripts/Test-GSS-EmailPackage.ps1",
@@ -196,8 +196,8 @@
       "path": "scripts/Test-GSS-Logic.ps1",
       "role": "validation",
       "hash_mode": "utf8_lf",
-      "canonical_size_bytes": 55943,
-      "sha256": "a785ea614387868e30ed0db0087bc2ccc42f5eb83dae2e1ac826f599d82ebafd"
+      "canonical_size_bytes": 56547,
+      "sha256": "27963f5b1b99a22fbbf21ebd9d844a307e3ddfe86428aef9a7cb8f5a9e46a6cf"
     },
     {
       "path": "scripts/Test-GSS-Pester.ps1",
@@ -231,8 +231,8 @@
       "path": "scripts/Test-GSS-WorkbookIntegration.ps1",
       "role": "validation",
       "hash_mode": "utf8_lf",
-      "canonical_size_bytes": 18684,
-      "sha256": "bde0b0cf03beba9cf3e7ac2635c0bc8f94d4f056e4eeff27ebcbe89544c5e143"
+      "canonical_size_bytes": 18811,
+      "sha256": "295684e9dc926e0d6f2b48c4b1cab4abeedfb6d4fb15c013b370d8098fa26c37"
     },
     {
       "path": "scripts/Update-GSS-MainWorkbook.ps1",
@@ -259,15 +259,15 @@
       "path": "templates/00 START HERE - GSS Survey Updates.txt",
       "role": "operator-template",
       "hash_mode": "utf8_lf",
-      "canonical_size_bytes": 2666,
-      "sha256": "ce3bb6e16fe8553ae1de5701ddf9d59d06093bcaebee708c4fe799c8e2e93586"
+      "canonical_size_bytes": 2795,
+      "sha256": "d329735c079b397922f355888d006a4e91cc8ab99542489c518fdc3d1a49ba0d"
     },
     {
       "path": "templates/Run GSS Update After Upload.cmd",
       "role": "operator-template",
       "hash_mode": "utf8_lf",
-      "canonical_size_bytes": 888,
-      "sha256": "83f24522739843b183380a0b75bf38f682b23459d42a989020ab1c4521bb9825"
+      "canonical_size_bytes": 1013,
+      "sha256": "0c78677c4231ca8cd3676d93cba3b6aec8dc77340c88cfdcbfe1f980e6efc978"
     },
     {
       "path": "tests/Gss.QuarterlyRestoreDrill.Tests.ps1",
@@ -280,8 +280,8 @@
       "path": "tests/Gss.ReleaseIntegrity.Tests.ps1",
       "role": "validation",
       "hash_mode": "utf8_lf",
-      "canonical_size_bytes": 6557,
-      "sha256": "77b687c08e057dd39c2f896029da6faa4ddeb9510bc4a69eebf0a545ebe06d21"
+      "canonical_size_bytes": 6934,
+      "sha256": "beebc3c3af65013d8940d367aacfeab2dc0e829e7a0e75123a3479c6de9f74c1"
     }
   ]
 }

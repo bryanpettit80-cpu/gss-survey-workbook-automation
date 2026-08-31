@@ -22,6 +22,8 @@ IMPORTANT
   synchronized GSS folder, Microsoft Excel desktop, and the commissioned private
   Google Drive backup are available. Keep the copy-test and APPLY in the same
   launcher window.
+- Run GSS on only one computer at a time. Do not start a second GSS update while
+  another computer's launcher is still running.
 - The live workbook is 01 Main Workbook\GSS Score Trends - Main.xlsx.
 - Finished email PDFs are in 04 Email Comparison PDFs.
 - A private Google Drive backup must be prepared before the live workbook changes.

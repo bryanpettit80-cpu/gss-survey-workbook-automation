@@ -15,6 +15,8 @@ Non-technical users should work from the parent `GSS Surveys` folder, not from t
 
 The launcher can be started on any properly configured Windows workstation with the synchronized GSS folder, Microsoft Excel desktop, and the commissioned private Google Drive backup available. Each invocation stages and tests the workbook once, then binds `APPLY` to that exact tested fingerprint. Keep the copy-test and `APPLY` in the same launcher session. The workflow must prepare and hash-verify the Drive backup before promoting the staged workbook.
 
+Run GSS on only one computer at a time. Do not open a second GSS update while another workstation's launcher is still running; Dropbox synchronization is not a cross-workstation lock.
+
 ## What the Final Message Means
 
 - `NO LIVE CHANGES MADE`: the process stopped safely without changing the live workbook.
@@ -170,7 +172,7 @@ Run these before committing script changes:
 
 PSScriptAnalyzer `1.25.0` and Pester `5.8.0` are pinned in CI. The analyzer baseline records reviewed legacy warnings and fails on any new warning fingerprint; Pester covers new modules while the established regression harnesses remain in place.
 
-For local Excel integration verification, run `Test-GSS-WorkbookIntegration.ps1` against the staged copy-test workbook and write its machine-readable receipt to `..\_automation_runs\state\release\local-excel-validation-receipt.json`. Production validates that the receipt is a passed copy-only test bound to the exact HEAD/tag, workbook hash, Excel version, and run fingerprint. The validated receipt is portable across configured workstations; its recorded source hostname remains audit evidence but is not an execution allowlist. This check is intentionally not part of GitHub Actions because the hosted runner does not provide desktop Excel.
+For local Excel integration verification, run `Test-GSS-WorkbookIntegration.ps1` against the staged copy-test workbook and write its machine-readable receipt to `..\_automation_runs\state\release\local-excel-validation-receipt.json`. Production validates that the receipt is a passed copy-only test bound to the exact HEAD/tag, workbook hash, Excel version, certifying workstation, and run fingerprint. The validated receipt is portable across configured workstations; its recorded source hostname remains hash-bound audit evidence but is not an execution allowlist. This check is intentionally not part of GitHub Actions because the hosted runner does not provide desktop Excel.
 
 ### Release Contract
 

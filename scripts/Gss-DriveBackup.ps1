@@ -1323,6 +1323,7 @@ function Assert-GssReleaseOnlyArtifactSet {
         [string]::IsNullOrWhiteSpace([string](Get-GssDriveBackupProperty $receipt @('ExcelVersion'))) -or
         [string](Get-GssDriveBackupProperty $receipt @('WorkbookSha256')) -notmatch '^[a-fA-F0-9]{64}$' -or
         [string](Get-GssDriveBackupProperty $receipt @('SourceRunFingerprint')) -notmatch '^[a-fA-F0-9]{64}$' -or
+        [string]::IsNullOrWhiteSpace([string](Get-GssDriveBackupProperty $receipt @('SourceRunHostName'))) -or
         -not $workbookPortable.StartsWith('_automation_runs/test-output/', [System.StringComparison]::OrdinalIgnoreCase) -or
         -not $sourceLogPortable.StartsWith('_automation_runs/logs/', [System.StringComparison]::OrdinalIgnoreCase) -or
         [int](Get-GssDriveBackupProperty $receipt @('FormulaErrors') -1) -ne 0 -or
@@ -1346,6 +1347,7 @@ function Assert-GssReleaseOnlyArtifactSet {
             [string](Get-GssDriveBackupProperty $sourceRun @('TransactionStatus')) -cne 'Prepared' -or
             [string](Get-GssDriveBackupProperty $sourceRun @('ProgramRelease')) -cne $tag -or
             [string]::IsNullOrWhiteSpace([string](Get-GssDriveBackupProperty $sourceRun @('HostName'))) -or
+            [string](Get-GssDriveBackupProperty $sourceRun @('HostName')) -cne [string](Get-GssDriveBackupProperty $receipt @('SourceRunHostName')) -or
             [string](Get-GssDriveBackupProperty $sourceRun @('RunFingerprint')) -cne [string](Get-GssDriveBackupProperty $receipt @('SourceRunFingerprint')) -or
             (Get-GssDriveBackupPreparedRunFingerprint -Run $sourceRun) -cne ([string](Get-GssDriveBackupProperty $sourceRun @('RunFingerprint'))).ToLowerInvariant() -or
             ([string](Get-GssDriveBackupProperty $sourceRun @('StagedWorkbookRelativePath'))).Replace('\', '/') -cne $workbookPortable -or

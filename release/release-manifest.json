@@ -3,7 +3,7 @@
   "release_version": "1.1.10",
   "release_tag": "v1.1.10",
   "commit_binding": "exact_release_tag",
-  "generated_at_utc": "2026-08-31T18:24:41.5836877Z",
+  "generated_at_utc": "2026-08-31T18:36:51.1444560Z",
   "classification": "PROGRAM SOURCE ONLY - NO GSS WORKBOOKS, REPORTS, OR CUSTOMER DATA",
   "runtime_contract": {
     "require_clean_tree": true,
@@ -84,8 +84,8 @@
       "path": "scripts/Gss-DriveBackup.ps1",
       "role": "runtime",
       "hash_mode": "utf8_lf",
-      "canonical_size_bytes": 149207,
-      "sha256": "34e0d9b7e00f14b125544b8a3233834c67f46166d93226add96452b0ed26f471"
+      "canonical_size_bytes": 150604,
+      "sha256": "cefe38d3da0327b0cfdbb9779a1966e1808b410742004b1b9eeb10bdd2f97005"
     },
     {
       "path": "scripts/Gss-EmailPackage.ps1",
@@ -175,8 +175,8 @@
       "path": "scripts/Test-GSS-DriveBackup.ps1",
       "role": "validation",
       "hash_mode": "utf8_lf",
-      "canonical_size_bytes": 84683,
-      "sha256": "0b03f2cf4e8a289d8ff017cd1208c3608d3a9e51fbfee296e7aa391002ed6056"
+      "canonical_size_bytes": 85829,
+      "sha256": "dadea225d9e92143ca842b892464a1f839a98458c9ff6bde9bc958cdbd07c752"
     },
     {
       "path": "scripts/Test-GSS-EmailPackage.ps1",

@@ -42,6 +42,16 @@ Describe 'GSS release integrity module' {
         (Get-GssReleaseFileEvidence $lfPath).Sha256 | Should -Be (Get-GssReleaseFileEvidence $crlfPath).Sha256
     }
 
+    It 'records the Excel certification host separately from the source-run host' {
+        $repoRoot = Split-Path -Parent $PSScriptRoot
+        $integrationSource = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\Test-GSS-WorkbookIntegration.ps1') -Raw
+
+        $integrationSource | Should -Match '\$sourceRunHostName\s*=\s*\[string\]\$sourceRun\.HostName'
+        $integrationSource | Should -Match '\$certificationHostName\s*=\s*\[Environment\]::MachineName'
+        $integrationSource | Should -Match 'SourceRunHostName\s*=\s*\$sourceRunHostName'
+        $integrationSource | Should -Match 'CertificationHostName\s*=\s*\$certificationHostName'
+    }
+
     It 'accepts exact hashed Excel evidence certified on another workstation' {
         $head = 'a' * 40
         $tag = 'v1.0.0'
@@ -57,7 +67,7 @@ Describe 'GSS release integrity module' {
             Mode = 'CopyTestOnly'
             TransactionStatus = 'Prepared'
             ProgramRelease = $tag
-            HostName = 'RELEASE-CERTIFICATION-HOST'
+            HostName = 'RELEASE-SOURCE-HOST'
             RunId = '11111111-1111-1111-1111-111111111111'
             CurrentWeekEnding = '2026-07-19'
             StartingWorkbookSha256 = '1' * 64
@@ -71,7 +81,7 @@ Describe 'GSS release integrity module' {
         $sourceRun.RunFingerprint = Get-GssReleaseRunFingerprint -Run $sourceRun
         $sourceRun | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $sourceLogPath -Encoding UTF8
         $receipt = [pscustomobject]@{
-            ReceiptSchemaVersion = 1
+            ReceiptSchemaVersion = 2
             Status = 'Passed'
             GitHead = $head
             ReleaseTag = $tag
@@ -80,25 +90,33 @@ Describe 'GSS release integrity module' {
             WorkbookSha256 = $workbookHash
             SourceRunFingerprint = $sourceRun.RunFingerprint
             SourceRunHostName = $sourceRun.HostName
+            CertificationHostName = 'RELEASE-CERTIFICATION-HOST'
             SourceRunLogPath = $sourceLogRelativePath
             FormulaErrors = 0
             ConstantErrors = 0
         }
 
         $sourceRun.HostName | Should -Not -Be ([Environment]::MachineName)
+        $receipt.SourceRunHostName | Should -Not -Be $receipt.CertificationHostName
         @(Test-GssExcelValidationReceipt -Receipt $receipt -ExpectedHead $head -ExpectedTag $tag -DataRoot $dataRoot).Count | Should -Be 0
+        $receipt.ReceiptSchemaVersion = 1
+        @(Test-GssExcelValidationReceipt -Receipt $receipt -ExpectedHead $head -ExpectedTag $tag -DataRoot $dataRoot) | Should -Contain 'Receipt schema is not supported.'
+        $receipt.ReceiptSchemaVersion = 2
         $sourceRun.HostName = ''
         $sourceRun.RunFingerprint = Get-GssReleaseRunFingerprint -Run $sourceRun
         $sourceRun | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $sourceLogPath -Encoding UTF8
         $receipt.SourceRunFingerprint = $sourceRun.RunFingerprint
         @(Test-GssExcelValidationReceipt -Receipt $receipt -ExpectedHead $head -ExpectedTag $tag -DataRoot $dataRoot) | Should -Contain 'Receipt source run has no audit workstation.'
-        $sourceRun.HostName = 'RELEASE-CERTIFICATION-HOST'
+        $sourceRun.HostName = 'RELEASE-SOURCE-HOST'
         $sourceRun.RunFingerprint = Get-GssReleaseRunFingerprint -Run $sourceRun
         $sourceRun | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $sourceLogPath -Encoding UTF8
         $receipt.SourceRunFingerprint = $sourceRun.RunFingerprint
         $receipt.SourceRunHostName = 'DIFFERENT-CERTIFICATION-HOST'
-        @(Test-GssExcelValidationReceipt -Receipt $receipt -ExpectedHead $head -ExpectedTag $tag -DataRoot $dataRoot) | Should -Contain 'Receipt certifying workstation does not match its source run.'
+        @(Test-GssExcelValidationReceipt -Receipt $receipt -ExpectedHead $head -ExpectedTag $tag -DataRoot $dataRoot) | Should -Contain 'Receipt source-run workstation does not match its source run.'
         $receipt.SourceRunHostName = $sourceRun.HostName
+        $receipt.CertificationHostName = ''
+        @(Test-GssExcelValidationReceipt -Receipt $receipt -ExpectedHead $head -ExpectedTag $tag -DataRoot $dataRoot) | Should -Contain 'Receipt has no Excel certification workstation.'
+        $receipt.CertificationHostName = 'RELEASE-CERTIFICATION-HOST'
         $receipt.GitHead = 'd' * 40
         @(Test-GssExcelValidationReceipt -Receipt $receipt -ExpectedHead $head -ExpectedTag $tag -DataRoot $dataRoot) | Should -Contain 'Receipt Git HEAD does not match the release.'
         $receipt.GitHead = $head

@@ -1322,7 +1322,7 @@ function Assert-GssReleaseOnlyArtifactSet {
         if ([string](Get-GssDriveBackupProperty $sourceRun @('Mode')) -cne 'CopyTestOnly' -or
             [string](Get-GssDriveBackupProperty $sourceRun @('TransactionStatus')) -cne 'Prepared' -or
             [string](Get-GssDriveBackupProperty $sourceRun @('ProgramRelease')) -cne $tag -or
-            [string](Get-GssDriveBackupProperty $sourceRun @('HostName')) -cne [Environment]::MachineName -or
+            [string]::IsNullOrWhiteSpace([string](Get-GssDriveBackupProperty $sourceRun @('HostName'))) -or
             [string](Get-GssDriveBackupProperty $sourceRun @('RunFingerprint')) -cne [string](Get-GssDriveBackupProperty $receipt @('SourceRunFingerprint')) -or
             ([string](Get-GssDriveBackupProperty $sourceRun @('StagedWorkbookRelativePath'))).Replace('\', '/') -cne $workbookPortable -or
             [string](Get-GssDriveBackupProperty $sourceRun @('StagedWorkbookSha256')) -cne ([string](Get-GssDriveBackupProperty $receipt @('WorkbookSha256'))).ToLowerInvariant()) {

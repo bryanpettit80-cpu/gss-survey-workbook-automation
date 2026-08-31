@@ -819,7 +819,7 @@ try {
         Mode = 'CopyTestOnly'
         TransactionStatus = 'Prepared'
         ProgramRelease = $releaseTag
-        HostName = [Environment]::MachineName
+        HostName = 'RELEASE-CERTIFICATION-HOST'
         RunFingerprint = $releaseRunFingerprint
         StagedWorkbookRelativePath = $releaseWorkbookRelative
         StagedWorkbookSha256 = $releaseWorkbookHash
@@ -881,6 +881,20 @@ try {
     Assert-GssDriveBackupTest ($releaseInventory.SnapshotPurpose -eq 'ReleaseOnly') 'ReleaseOnly purpose was not propagated.'
     Assert-GssDriveBackupTest ($releaseInventory.InventoryMode -eq 'ReleaseOnly') 'ReleaseOnly inventory mode was not propagated.'
     Assert-GssDriveBackupTest ($releaseInventory.FileCount -eq 3 -and -not $releaseInventory.ContainsPersonalData) 'ReleaseOnly inventory was not the exact non-personal-data triad.'
+
+    $releaseSourceRun = Read-GssDriveBackupJson -Path $releaseSourceLogPath
+    $releaseSourceRun.HostName = ''
+    Write-GssDriveBackupAtomicJson -Path $releaseSourceLogPath -Value $releaseSourceRun
+    $releaseMissingAuditHostRefused = $false
+    try {
+        [void](& $invokeScript -Operation Inventory -RunSummaryPath $releaseSummaryPath -SettingsPath $settingsPath -OutputObject)
+    }
+    catch {
+        $releaseMissingAuditHostRefused = $_.Exception.Message -match 'does not match its Prepared copy-only source run'
+    }
+    Assert-GssDriveBackupTest $releaseMissingAuditHostRefused 'ReleaseOnly accepted a source run without an audit workstation.'
+    $releaseSourceRun.HostName = 'RELEASE-CERTIFICATION-HOST'
+    Write-GssDriveBackupAtomicJson -Path $releaseSourceLogPath -Value $releaseSourceRun
 
     $releaseExtraPath = Join-Path $releaseStateDirectory 'not-approved.txt'
     Write-GssDriveBackupAtomicText -Path $releaseExtraPath -Text 'must not enter ReleaseOnly'

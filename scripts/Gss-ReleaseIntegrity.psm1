@@ -306,8 +306,8 @@ function Test-GssExcelValidationReceipt {
         if ([string]$sourceRun.ProgramRelease -ne $ExpectedTag) {
             $failures.Add('Receipt source run does not identify the exact release tag.')
         }
-        if ([string]$sourceRun.HostName -cne [Environment]::MachineName) {
-            $failures.Add('Receipt source run belongs to a different workstation.')
+        if ([string]::IsNullOrWhiteSpace([string]$sourceRun.HostName)) {
+            $failures.Add('Receipt source run has no audit workstation.')
         }
         if ([string]$sourceRun.RunFingerprint -ne [string]$Receipt.SourceRunFingerprint) {
             $failures.Add('Receipt run fingerprint does not match its source log.')

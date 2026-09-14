@@ -1,5 +1,13 @@
 {
-  "schema_version": "gss-analysis-policy/v4",
+  "schema_version": "gss-analysis-policy/v5",
+  "metric_definitions": {
+    "overall_service_culinary_value_pace": "Vendor topbox percentage: rating 5 (Excellent)",
+    "recommend": "Percentage of respondents who rated likelihood to recommend 9 or 10; the current rolling export supplies a response count but not this percentage, so it is not reported as a population score",
+    "steak_cooked_properly": "Percentage of steak-ordering respondents who answered Yes when asked whether the steak was cooked properly the first time",
+    "dissat": "Bottom-three-box percentage: ratings 1 (Poor), 2 (Fair), or 3 (Good)",
+    "comment_rating_scale": "5=Excellent; 4=Very Good; 3=Good; 2=Fair; 1=Poor",
+    "contact_restrictions": "GR means Guest Relations already contacted the guest; NC means the guest requested no contact; neither is eligible for restaurant outreach"
+  },
   "thresholds": {
     "previous_window": {
       "candidate_points": 1.0,

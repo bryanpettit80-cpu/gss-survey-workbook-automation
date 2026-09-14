@@ -446,6 +446,18 @@ function Test-GssFeedbackAnswers {
     }
 }
 
+function Test-GssContactRestricted {
+    param([object]$Record)
+
+    foreach ($fieldName in @('alertguestsdonotcontact', 'alertguests')) {
+        $value = (Get-GssFeedbackProperty $Record $fieldName).Trim()
+        if (-not [string]::IsNullOrWhiteSpace($value) -and $value -notmatch '^(?i:0|n|no|false)$') {
+            return $true
+        }
+    }
+    return $false
+}
+
 function Read-GssDetailWorkbook {
     param(
         [Parameter(Mandatory)][string]$Path,
@@ -488,8 +500,9 @@ function Read-GssDetailWorkbook {
             (Normalize-GssFeedbackText $text),
             (($answerNames | ForEach-Object { Normalize-GssFeedbackText $answers[$_] }) -join '|')
         ) -join "`n"
-        $dncValue = (Get-GssFeedbackProperty $record 'alertguestsdonotcontact').Trim()
-        $doNotContact = (-not [string]::IsNullOrWhiteSpace($dncValue)) -and ($dncValue -notmatch '^(0|n|no|false)$')
+        # Vendor exports have used both "Alert Guests" and
+        # "Alert Guests DO NOT CONTACT" for the same GR/NC restriction field.
+        $doNotContact = Test-GssContactRestricted -Record $record
 
         $responses += [pscustomobject]@{
             ResponseHash = Get-GssStringSha256 $identity

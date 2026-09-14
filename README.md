@@ -148,6 +148,14 @@ The separate commenter lens is always labeled **Among guests who provided commen
 
 The reporting date must be a Sunday, making the commenter window an explicit inclusive Monday-through-Sunday 13-week period. Stable vendor response IDs are not consistently available across the exports, so deduplication is deterministic and content-based; the reviewer output discloses the resulting low residual risk of a false or missed match.
 
+### Report Definitions
+
+- `Overall Experience`, `Service`, `Culinary`, `Value`, and `Pace of Meal` are vendor topbox scores: the percentage of responses rated **5 (Excellent)**.
+- `Recommend` is the percentage of responses rated **9 or 10**. The current rolling export supplies the Recommend response count but not this percentage, so the automation does not substitute the count or commenter-only detail as a population Recommend score.
+- `Steak Cooked Properly` is the percentage of steak-ordering respondents who answered **Yes** when asked whether the steak was cooked properly the first time.
+- `Dissat` is the bottom-three-box percentage: **1 (Poor) + 2 (Fair) + 3 (Good)**. The full comment rating scale is 5=Excellent, 4=Very Good, 3=Good, 2=Fair, and 1=Poor; steak answers use Y/N.
+- Weekly-comment columns named either `Alert Guests` or `Alert Guests DO NOT CONTACT` are accepted. `GR` means Guest Relations already contacted the guest and `NC` means the guest asked not to be contacted; both are excluded from individual evidence, quotations, and outreach suggestions. The original detail workbook is preserved as an attachment, including its filters and manual `Restaurant Manager Follow Up` notes field.
+
 Selection diagnostics are suppressed for the affected metric when report-week alignment, restaurant mapping, deduplication, score completeness, population numerator reconstruction, or `commenter count <= population count` does not validate. `Recommend` detractor results remain commenter-only unless an exact matching population aggregate becomes available. Themes are shares among comment-bearing surveys, use unique survey denominators, and may overlap.
 
 The commenter lens writes aggregate-only `commenter_lens.json` and `commenter_lens.csv` files into the restricted QA package and is also summarized in `review.json`, `review.md`, the restricted analysis document, and the email preview. The restricted email-package manifest hash-binds those reviewer files, the analysis, both previews, and the classification notice as six non-attachment artifacts. They do not add a fourth email attachment: the package still contains exactly three reviewed attachments. Raw rows, comments, contacts, and individual predictions are never written to an analytics artifact.

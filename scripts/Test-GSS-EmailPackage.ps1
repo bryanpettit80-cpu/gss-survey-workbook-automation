@@ -531,6 +531,7 @@ try {
     $archiveFolder = Join-Path $detailFolder 'Archive - Previous Uploads'
     $headers18 = @('Restaurant Name', 'Reservation Date', 'Reservation Time', 'Text', 'Overall', 'Service', 'Culinary', 'Value', 'Pace of Meal', 'Recommend', 'Manager Visit', 'Steak Cooked Correctly', 'Event Booking Process', 'First Visit', 'Guest First Name', 'Guest Last Name', 'Sorensen', 'Sorensen Weekly Comments')
     $headers19 = @('Text', 'Restaurant Name', 'Reservation Time', 'Reservation Date', 'Service', 'Overall', 'Culinary', 'Value', 'Pace of Meal', 'Recommend', 'Manager Visit', 'Steak Cooked Correctly', 'Alert Guests DO NOT CONTACT', 'Event Booking Process', 'First Visit', 'Guest Last Name', 'Guest First Name', 'Sorensen Weekly Comments', 'Sorensen')
+    $headers19ShortAlert = @($headers19 | ForEach-Object { if ($_ -eq 'Alert Guests DO NOT CONTACT') { 'Alert Guests' } else { $_ } })
     $unsafeBidi = [char]0x202E
     $unsafeC0 = [char]0x0001
     $apostropheDriveUrl = 'https://example.invalid/r''C:\Private\file.xlsx'
@@ -552,6 +553,14 @@ try {
     Assert-Equal $parsed19.Responses.Count 2 'Blank formatted rows are ignored'
     Assert-Equal $parsed18.HeaderCount 18 '18-column schema without optional DNC'
     Assert-Equal $parsed18.Responses.Count 2 '18-column response parsing'
+    Assert-True ([bool]$parsed19.Responses[1].DoNotContact) 'NC under the long alert header blocks outreach'
+
+    $shortAlertDetail = Join-Path $temporaryRoot 'short-alert.xlsx'
+    $shortAlert = New-TestResponse '9354 Richmond' '07/12/2026' '8:00 PM' 'Guest Relations restriction fixture.' 'Jordan' 'Example'
+    $shortAlert | Add-Member -NotePropertyName alertguests -NotePropertyValue 'GR'
+    New-TestDetailWorkbook -Path $shortAlertDetail -Headers $headers19ShortAlert -Records @($shortAlert)
+    $parsedShortAlert = Read-GssDetailWorkbook -Path $shortAlertDetail -FolderPath $temporaryRoot
+    Assert-True ([bool]$parsedShortAlert.Responses[0].DoNotContact) 'GR under the short Alert Guests header blocks outreach'
 
     $invalidDetail = Join-Path $temporaryRoot 'invalid.xlsx'
     $invalid = New-TestResponse '9354 Richmond' '07/10/2026' '6:00 PM' 'Invalid value fixture.' 'Alex' 'Invalid'
@@ -1387,7 +1396,7 @@ finally {
     $commenterLensJson = Read-GssUtf8NoBomFile $package.CommenterLensJsonPath | ConvertFrom-Json
     $commenterLensCsv = Read-GssUtf8NoBomFile $package.CommenterLensCsvPath
     Assert-Equal $manifest.schema_version 'gss-email-package/v2' 'Package schema version'
-    Assert-Equal $manifest.policy_version 'gss-analysis-policy/v4' 'Versioned analysis policy'
+    Assert-Equal $manifest.policy_version 'gss-analysis-policy/v5' 'Versioned analysis policy'
     Assert-Equal $manifest.classification $script:GssRestrictedClassification 'Package restricted personal-data classification'
     Assert-True ([bool]$manifest.package_contains_personal_data) 'Package explicitly contains personal data'
     Assert-True (-not [bool]$manifest.distribution_controls.automatic_sending_enabled) 'Automatic sending remains disabled'

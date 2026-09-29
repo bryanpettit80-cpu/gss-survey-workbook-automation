@@ -498,6 +498,43 @@ try {
     }
     Assert-GssDriveBackupTest $junctionRefused 'RecoveryOnly inventory traversed a junction to a file outside the GSS root.'
 
+    # Model DriveFS preserving the source PDF extension when Copy-Item is
+    # given an extensionless temporary name. The production copy must still
+    # promote the exact hashed bytes to the manifest path.
+    $pdfSource = Join-Path $gssRoot '04 Email Comparison PDFs\comparison.pdf'
+    $pdfSnapshotRoot = Join-Path $driveRoot 'pdf-extension-regression'
+    $pdfCopy = @(& {
+        Set-Item -Path Function:\Copy-Item -Value {
+            param([string]$LiteralPath, [string]$Destination)
+            if ([System.IO.Path]::GetExtension($LiteralPath) -eq '.pdf' -and
+                [System.IO.Path]::GetExtension($Destination) -ne '.pdf') {
+                $Destination += '.pdf'
+            }
+            Microsoft.PowerShell.Management\Copy-Item -LiteralPath $LiteralPath -Destination $Destination
+        }
+        Copy-GssDriveBackupInventory -Inventory @(
+            [pscustomobject]@{ SourcePath = $pdfSource; PortablePath = 'gss/email_outbox/attachments/comparison.pdf'; Role = 'test'; Classification = 'restricted_operational' }
+        ) -SnapshotDirectory $pdfSnapshotRoot -PayloadPrefix 'prepared-payload'
+    })
+    $pdfCopiedPath = Join-Path $pdfSnapshotRoot $pdfCopy[0].snapshot_path.Replace('/', '\')
+    Assert-GssDriveBackupTest ($pdfCopy.Count -eq 1 -and (Test-Path -LiteralPath $pdfCopiedPath -PathType Leaf)) 'DriveFS-style PDF extension handling left the copied file unpromoted.'
+    Assert-GssDriveBackupTest ((Get-GssDriveBackupSha256 -Path $pdfCopiedPath) -eq (Get-GssDriveBackupSha256 -Path $pdfSource)) 'DriveFS-style PDF extension handling changed copied bytes.'
+
+    # The final name can fit while its longer .t-<id>.pdf copy path does not.
+    # In that case the copy must use the compact manifest path before writing.
+    $temporaryBudgetRoot = Join-Path $driveRoot 'temporary-budget-edge'
+    $temporaryBudgetBase = Join-Path $temporaryBudgetRoot 'prepared-payload\nested\a.pdf'
+    $temporaryBudgetPadding = 245 - $temporaryBudgetBase.Length - 1
+    Assert-GssDriveBackupTest ($temporaryBudgetPadding -gt 0) 'Temporary-path budget fixture cannot be calibrated.'
+    $temporaryBudgetPortable = 'nested/' + ('n' * $temporaryBudgetPadding) + '/a.pdf'
+    $temporaryBudgetDestination = Join-Path $temporaryBudgetRoot ('prepared-payload/' + $temporaryBudgetPortable).Replace('/', '\')
+    $temporaryBudgetCopyPath = Join-Path (Split-Path -Parent $temporaryBudgetDestination) '.t-00000000.pdf'
+    Assert-GssDriveBackupTest ($temporaryBudgetDestination.Length -eq 245 -and $temporaryBudgetCopyPath.Length -ge 248) 'Temporary-path fixture did not cross only the copy-path budget.'
+    $temporaryBudgetCopy = @(Copy-GssDriveBackupInventory -Inventory @(
+        [pscustomobject]@{ SourcePath = $pdfSource; PortablePath = $temporaryBudgetPortable; Role = 'test'; Classification = 'restricted_operational' }
+    ) -SnapshotDirectory $temporaryBudgetRoot -PayloadPrefix 'prepared-payload')
+    Assert-GssDriveBackupTest ($temporaryBudgetCopy[0].snapshot_path -match '^prepared-payload/long-path/[0-9a-f]{64}\.pdf$') 'An over-budget temporary copy path was not compacted.'
+
     $longPathSnapshotRoot = Join-Path $driveRoot ('.partial-' + [guid]::NewGuid().ToString())
     $longPathPortable = 'gss/03 Uploaded Survey Workbooks/Archive - Previous Uploads/Recovered Historical Detail/FY26/' + [System.IO.Path]::GetFileName($recoveredPathOne)
     $uncompactedDestination = Join-Path $longPathSnapshotRoot ('prepared-payload/' + $longPathPortable).Replace('/', '\')

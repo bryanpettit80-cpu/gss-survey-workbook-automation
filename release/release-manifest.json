@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "release_version": "1.1.12",
-  "release_tag": "v1.1.12",
+  "release_version": "1.1.13",
+  "release_tag": "v1.1.13",
   "commit_binding": "exact_release_tag",
-  "generated_at_utc": "2026-09-14T15:54:10.1394227Z",
+  "generated_at_utc": "2026-09-29T01:47:20.6293917Z",
   "classification": "PROGRAM SOURCE ONLY - NO GSS WORKBOOKS, REPORTS, OR CUSTOMER DATA",
   "runtime_contract": {
     "require_clean_tree": true,
@@ -15,7 +15,7 @@
     "excel_validation_receipt_name": "local-excel-validation-receipt.json",
     "excel_validation_receipt_relative_path": "_automation_runs/state/release/local-excel-validation-receipt.json"
   },
-  "archive_name": "gss-survey-workbook-automation-v1.1.12.zip",
+  "archive_name": "gss-survey-workbook-automation-v1.1.13.zip",
   "files": [
     {
       "path": ".github/dependabot.yml",
@@ -84,8 +84,8 @@
       "path": "scripts/Gss-DriveBackup.ps1",
       "role": "runtime",
       "hash_mode": "utf8_lf",
-      "canonical_size_bytes": 150982,
-      "sha256": "e119f8026140714337e368b4199c5aff3a1d089847a7df0e8840b33ddcf07cbb"
+      "canonical_size_bytes": 151926,
+      "sha256": "9b304faa90e24bb5d87db98b076b85d310beabde3e881c98f6650edcb9be766c"
     },
     {
       "path": "scripts/Gss-EmailPackage.ps1",
@@ -175,8 +175,8 @@
       "path": "scripts/Test-GSS-DriveBackup.ps1",
       "role": "validation",
       "hash_mode": "utf8_lf",
-      "canonical_size_bytes": 87814,
-      "sha256": "9a7787dc28ac34834a7ebffef503df684edddfa8aa6c4c3446192265dc4c4c5d"
+      "canonical_size_bytes": 90913,
+      "sha256": "e21ff3e80b20b3afc8331723f3a5278eb61ddd5354826552480fbd68ba331c2d"
     },
     {
       "path": "scripts/Test-GSS-EmailPackage.ps1",

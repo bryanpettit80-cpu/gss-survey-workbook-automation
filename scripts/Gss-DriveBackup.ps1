@@ -29,6 +29,30 @@ function Get-GssDriveBackupCompactRelativePath {
     return (Assert-GssDriveBackupSafeRelativePath -Path "$safePrefix/long-path/$portableDigest$extension")
 }
 
+function Get-GssDriveBackupOverBudgetCopyPath {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string[]]$Directories,
+        [Parameter(Mandatory)]
+        [string]$RelativePath,
+        [Parameter(Mandatory)]
+        [string]$TemporaryLeaf
+    )
+
+    foreach ($directory in $Directories) {
+        $destination = Join-Path $directory $RelativePath.Replace('/', '\')
+        if ($destination.Length -ge $script:GssDriveBackupLegacySafePathLength) {
+            return $destination
+        }
+        $temporaryPath = Join-Path (Split-Path -Parent $destination) $TemporaryLeaf
+        if ($temporaryPath.Length -ge $script:GssDriveBackupLegacySafePathLength) {
+            return $temporaryPath
+        }
+    }
+    return $null
+}
+
 function Get-GssDriveBackupDefaultSettingsPath {
     [CmdletBinding()]
     param(
@@ -954,29 +978,25 @@ function Copy-GssDriveBackupInventory {
         $portable = Assert-GssDriveBackupSafeRelativePath -Path ([string]$item.PortablePath)
         $snapshotRelative = Assert-GssDriveBackupSafeRelativePath -Path "$safePayloadPrefix/$portable"
         $budgetDirectories = @($SnapshotDirectory) + @($PathBudgetDirectories)
+        # DriveFS can append a copied file's extension to an extensionless
+        # temporary name. Keep the source extension on the copy path so the
+        # hash and promotion steps still address the same file.
+        $temporaryExtension = [System.IO.Path]::GetExtension([string]$item.SourcePath)
+        $temporaryLeaf = '.t-00000000' + $temporaryExtension
         $usesReservedCompactNamespace = $portable.Equals('r', [System.StringComparison]::OrdinalIgnoreCase) -or
             $portable.Equals('long-path', [System.StringComparison]::OrdinalIgnoreCase) -or
             $portable.StartsWith('long-path/', [System.StringComparison]::OrdinalIgnoreCase)
-        $requiresCompaction = $usesReservedCompactNamespace -or @($budgetDirectories | Where-Object {
-            (Join-Path $_ $snapshotRelative.Replace('/', '\')).Length -ge $script:GssDriveBackupLegacySafePathLength
-        }).Count -gt 0
+        $overBudgetPath = Get-GssDriveBackupOverBudgetCopyPath -Directories $budgetDirectories -RelativePath $snapshotRelative -TemporaryLeaf $temporaryLeaf
+        $requiresCompaction = $usesReservedCompactNamespace -or -not [string]::IsNullOrEmpty($overBudgetPath)
         if ($requiresCompaction) {
             $snapshotRelative = Get-GssDriveBackupCompactRelativePath -PortablePath $portable -Prefix $safePayloadPrefix
-            $overBudgetCompactDestination = @($budgetDirectories | ForEach-Object {
-                Join-Path $_ $snapshotRelative.Replace('/', '\')
-            } | Where-Object {
-                $_.Length -ge $script:GssDriveBackupLegacySafePathLength
-            } | Select-Object -First 1)
-            if ($overBudgetCompactDestination.Count -gt 0) {
+            $overBudgetCompactDestination = Get-GssDriveBackupOverBudgetCopyPath -Directories $budgetDirectories -RelativePath $snapshotRelative -TemporaryLeaf $temporaryLeaf
+            if (-not [string]::IsNullOrEmpty($overBudgetCompactDestination)) {
                 $snapshotRelative = Get-GssDriveBackupCompactRelativePath -PortablePath $portable -Prefix $safePayloadPrefix -OmitExtension
-                $overBudgetCompactDestination = @($budgetDirectories | ForEach-Object {
-                    Join-Path $_ $snapshotRelative.Replace('/', '\')
-                } | Where-Object {
-                    $_.Length -ge $script:GssDriveBackupLegacySafePathLength
-                } | Select-Object -First 1)
+                $overBudgetCompactDestination = Get-GssDriveBackupOverBudgetCopyPath -Directories $budgetDirectories -RelativePath $snapshotRelative -TemporaryLeaf $temporaryLeaf
             }
-            if ($overBudgetCompactDestination.Count -gt 0) {
-                throw "Compacted snapshot destination still exceeds the safe Windows path budget before copy. Shorten the Drive root or RunId: $($overBudgetCompactDestination[0])"
+            if (-not [string]::IsNullOrEmpty($overBudgetCompactDestination)) {
+                throw "Compacted snapshot destination still exceeds the safe Windows path budget before copy. Shorten the Drive root or RunId: $overBudgetCompactDestination"
             }
         }
         $key = $snapshotRelative.ToLowerInvariant()
@@ -997,7 +1017,7 @@ function Copy-GssDriveBackupInventory {
             New-Item -ItemType Directory -Path $destinationParent -Force | Out-Null
         }
 
-        $partial = Join-Path $destinationParent ('.t-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+        $partial = Join-Path $destinationParent ('.t-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + $temporaryExtension)
         if (Test-Path -LiteralPath $partial) {
             throw "A stale partial backup file blocks safe preparation: $partial"
         }

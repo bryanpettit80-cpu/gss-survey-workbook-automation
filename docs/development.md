@@ -83,12 +83,15 @@ Publish a versioned program-only archive and concise release notes describing
 behavior, validation, and any unverified platform coverage. Keep installation
 instructions aligned with the published artifact.
 
-Stage the intended source, documentation, and new files before regenerating the
-release manifest; the generator inventories tracked files. From the repository
-root, run:
+Review `git status --short` and stage each intended changed or new file by its
+exact path (for example, `git add -- docs/development.md`). Do not stage the entire
+worktree or whole directories: untracked operational files may be present there.
+The manifest generator inventories tracked files, including newly staged paths.
+Review the staged file list and diff before regenerating it:
 
 ```powershell
-git add --all
+git diff --cached --name-only
+git diff --cached
 .\tools\New-GSS-ReleaseManifest.ps1 -Version '<next version>'
 git add release/release-manifest.json
 ```

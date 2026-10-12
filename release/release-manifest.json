@@ -3,7 +3,7 @@
     "release_version":  "1.2.1",
     "release_tag":  "v1.2.1",
     "commit_binding":  "exact_release_tag",
-    "generated_at_utc":  "2026-10-12T03:09:21.9266147Z",
+    "generated_at_utc":  "2026-10-12T03:17:03.6287075Z",
     "classification":  "PROGRAM SOURCE ONLY - NO GSS WORKBOOKS, REPORTS, OR CUSTOMER DATA",
     "runtime_contract":  {
                              "require_clean_tree":  false,
@@ -68,8 +68,8 @@
                       "path":  "docs/development.md",
                       "role":  "documentation",
                       "hash_mode":  "utf8_lf",
-                      "canonical_size_bytes":  7231,
-                      "sha256":  "d901164c2fbef2df6db5f3d0794e34a0688849d9b1f910a4792f51d9b55fa239"
+                      "canonical_size_bytes":  7480,
+                      "sha256":  "725469b48b3e5b3299813bcf0e9864ae0f7eae9750ee7f44904d8088265632d0"
                   },
                   {
                       "path":  "docs/future-updates.md",

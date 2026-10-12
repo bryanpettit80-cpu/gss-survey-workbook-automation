@@ -1,8 +1,8 @@
-[CmdletBinding()]
-param()
+﻿[CmdletBinding()]
+param([string]$AolSourceRoot)
 
 $ErrorActionPreference = 'Stop'
-$scriptRoot = Split-Path -Parent $PSCommandPath
+$scriptRoot = Join-Path (Split-Path -Parent (Split-Path -Parent $PSCommandPath)) 'scripts'
 . (Join-Path $scriptRoot 'Analyze-GSS-Run.ps1')
 
 function Assert-Equal {
@@ -30,6 +30,22 @@ function Assert-ThrowsLike {
             throw "Assertion failed for $Name. Expected '$Pattern'; actual '$($_.Exception.Message)'."
         }
     }
+}
+
+function Assert-TestAolConsumerPackage {
+    param([string]$SourceRoot, [string]$FolderPath, [string]$PackagePath)
+    if (-not $SourceRoot) { return }
+    $consumerCheck = @'
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from aol_gmail_sync.gss.package import load_gss_email_package
+root = Path(sys.argv[2])
+package = load_gss_email_package(Path(sys.argv[3]), dropbox_root=root, outbox_root=root / '_automation_runs' / 'email_outbox', verify_external_sources=True)
+print('Existing AOL package parser accepted: ' + package.package_id)
+'@
+    & python.exe -B -c $consumerCheck $SourceRoot $FolderPath $PackagePath
+    if ($LASTEXITCODE -ne 0) { throw 'Existing AOL package consumer rejected the isolated package fixture.' }
 }
 
 $tokens = $null
@@ -419,6 +435,7 @@ function Initialize-TestRecoveryInventoryFixture {
     $ordinary = New-TestResponse '9355 Virginia Beach' '07/04/2026' '7:00 PM' 'Ordinary archive response.' 'Archive' 'Guest'
     New-TestDetailWorkbook -Path (Join-Path $detailRoot 'Sorensen Current.xlsx') -Headers $Headers -Records @($current)
     New-TestDetailWorkbook -Path (Join-Path $ordinaryArchive 'Sorensen Archive.xlsx') -Headers $Headers -Records @($ordinary)
+    $null = Set-GssDetailReportingAssignment -FolderPath $fixtureRoot -DetailPath (Join-Path $detailRoot 'Sorensen Current.xlsx') -ReportingDate ([datetime]'2026-07-19')
 
     $correctedWeeks = @(
         [pscustomobject]@{ Week = 'FY26 FW16'; SubjectWeek = 'FY26 FW14'; Date = '09/13/2025' },
@@ -546,6 +563,39 @@ try {
     $archiveDetail = Join-Path $archiveFolder 'Sorensen Archive.xlsx'
     New-TestDetailWorkbook -Path $currentDetail -Headers $headers19 -Records @($contactable, $dnc) -BlankFormattedRow 10000
     New-TestDetailWorkbook -Path $archiveDetail -Headers $headers18 -Records @($contactable, $old)
+    $unassigned = Get-GssDetailInventory -FolderPath $folder -ReportingDate ([datetime]'2026-07-12') -AllowIncomplete
+    Assert-Equal $unassigned.Readiness.Status 'RequiresAssignment' 'Visit dates do not silently assign a detail export to a report week'
+    $null = Set-GssDetailReportingAssignment -FolderPath $folder -DetailPath $currentDetail -ReportingDate ([datetime]'2026-07-12')
+
+    $assignmentRoot = Join-Path $temporaryRoot 'assignment-checks'
+    $assignmentOriginal = Join-Path $assignmentRoot '03 Uploaded Survey Workbooks\Original.xlsx'
+    $assignmentDuplicate = Join-Path $assignmentRoot '03 Uploaded Survey Workbooks\Archive\Copy.xlsx'
+    $assignmentCorrection = Join-Path $assignmentRoot '03 Uploaded Survey Workbooks\Corrected.xlsx'
+    $identifiedHeaders = @($headers19) + @('Response ID')
+    $originalResponse = New-TestResponse '9354 Richmond' '07/10/2026' '6:00 PM' 'Service was good.' 'Alex' 'Guest'
+    $originalResponse | Add-Member -NotePropertyName responseid -NotePropertyValue 'vendor-100'
+    New-TestDetailWorkbook -Path $assignmentOriginal -Headers $identifiedHeaders -Records @($originalResponse)
+    New-TestDetailWorkbook -Path $assignmentDuplicate -Headers $identifiedHeaders -Records @($originalResponse) -BlankFormattedRow 500
+    $originalAssignment = Set-GssDetailReportingAssignment -FolderPath $assignmentRoot -DetailPath $assignmentOriginal -ReportingDate ([datetime]'2026-07-12')
+    $duplicateInventory = Get-GssDetailInventory -FolderPath $assignmentRoot -ReportingDate ([datetime]'2026-07-12')
+    Assert-Equal @($duplicateInventory.Workbooks).Count 1 'Duplicate exports differing only in formatting are one semantic source'
+    Assert-Equal @($duplicateInventory.UniqueResponses).Count 1 'Duplicate workbook does not duplicate a survey'
+    $notNextWeek = Get-GssDetailInventory -FolderPath $assignmentRoot -ReportingDate ([datetime]'2026-07-19') -AllowIncomplete
+    Assert-Equal $notNextWeek.Readiness.Status 'RequiresAssignment' 'Last week detail is not silently carried forward as this week export'
+    $correctedResponse = $originalResponse | ConvertTo-Json | ConvertFrom-Json
+    $correctedResponse.overall = '1'
+    New-TestDetailWorkbook -Path $assignmentCorrection -Headers $identifiedHeaders -Records @($correctedResponse)
+    $conflictInventory = Get-GssDetailInventory -FolderPath $assignmentRoot -ReportingDate ([datetime]'2026-07-12') -AllowIncomplete
+    Assert-Equal $conflictInventory.Readiness.Status 'Conflict' 'Conflicting stable response ID blocks unresolved corrected exports'
+    Assert-ThrowsLike {
+        Set-GssDetailReportingAssignment -FolderPath $assignmentRoot -DetailPath $assignmentCorrection -ReportingDate ([datetime]'2026-07-12')
+    } '*Explicitly identify the version being corrected*' 'Correction cannot silently replace the existing reporting assignment'
+    $null = Set-GssDetailReportingAssignment -FolderPath $assignmentRoot -DetailPath $assignmentCorrection -ReportingDate ([datetime]'2026-07-12') -SupersedesContentSha256 @($originalAssignment.ContentSha256)
+    $correctedInventory = Get-GssDetailInventory -FolderPath $assignmentRoot -ReportingDate ([datetime]'2026-07-12')
+    Assert-Equal @($correctedInventory.UniqueResponses).Count 1 'Explicit correction removes archived original and all equivalent copies'
+    Assert-Equal $correctedInventory.UniqueResponses[0].Answers.overall '1' 'Corrected rating is the authoritative result'
+    $null = Set-GssDetailReportingAssignment -FolderPath $assignmentRoot -DetailPath $assignmentCorrection -ReportingDate ([datetime]'2026-07-12')
+    Assert-Equal @((Get-GssDetailInventory -FolderPath $assignmentRoot -ReportingDate ([datetime]'2026-07-12')).UniqueResponses).Count 1 'Repeating an assignment preserves its supersession history'
 
     $parsed19 = Read-GssDetailWorkbook -Path $currentDetail -FolderPath $folder
     $parsed18 = Read-GssDetailWorkbook -Path $archiveDetail -FolderPath $folder
@@ -810,6 +860,8 @@ try {
         Mode = 'ApplyToMainWorkbook'
         CurrentWeekEnding = '2026-07-12'
         PriorYearWeekEnding = '2025-07-13'
+        CurrentSourceSemanticSha256 = ('d' * 64)
+        PriorYearSourceSemanticSha256 = ('e' * 64)
         EmailComparisonPdf = $pdf
         CurrentSourceWorkbook = $rolling
         PriorYearSourceWorkbook = $priorRolling
@@ -1275,6 +1327,14 @@ try {
         -ExpectedPackageInputEvidence $expectedPackageInputEvidence
     Assert-Equal $package.EmailReadiness 'Ready' 'Package email readiness'
     Assert-True (-not [bool]$package.ExistingPackage) 'Retry after failed publication builds and promotes a new package'
+    Assert-TestAolConsumerPackage -SourceRoot $AolSourceRoot -FolderPath $folder -PackagePath $package.PackagePath
+    $assignmentPath = Join-Path $folder '_automation_runs\state\detail-reporting.json'
+    $assignmentBytes = [System.IO.File]::ReadAllBytes($assignmentPath)
+    Remove-Item -LiteralPath $assignmentPath -Force
+    $bootstrappedInventory = Get-GssDetailInventory -FolderPath $folder -ReportingDate ([datetime]'2026-07-12')
+    Assert-Equal $bootstrappedInventory.Readiness.Status 'Ready' 'Validated existing package supplies explicit export-week evidence'
+    Assert-True (-not (Test-Path -LiteralPath $assignmentPath)) 'Read-only package bootstrap does not write assignment state'
+    [System.IO.File]::WriteAllBytes($assignmentPath, $assignmentBytes)
     Assert-True (Test-Path -LiteralPath $package.ReadyMarkerPath -PathType Leaf) 'Ready marker exists'
     $initialLedgerWriteTimeUtc = (Get-Item -LiteralPath $ledgerPath).LastWriteTimeUtc
     $initialReadyWriteTimeUtc = (Get-Item -LiteralPath $package.ReadyMarkerPath).LastWriteTimeUtc
@@ -1652,6 +1712,16 @@ finally {
 
     Write-GssUtf8NoBomFile -Path $package.ManifestPath -Value ($manifest | ConvertTo-Json -Depth 20)
     Assert-True ([bool](Test-GssExistingEmailPackage -PackagePath $package.PackagePath -PackageId $package.PackageId -ExpectedSourceDescriptors $validationDescriptors -ExpectedFeedbackSelectionFingerprint $manifest.feedback_selection_sha256)) 'Original three-attachment manifest remains valid'
+    $frozenPrior = @($manifest.sources | Where-Object role -eq 'prior_year_rolling_workbook')[0]
+    $frozenPriorPath = Resolve-GssDropboxPath -Path $frozenPrior.path -FolderPath $folder -RequireFile
+    $frozenPriorBytes = [System.IO.File]::ReadAllBytes($frozenPriorPath)
+    try {
+        [System.IO.File]::AppendAllText($frozenPriorPath, 'tampered')
+        Assert-ThrowsLike {
+            Test-GssExistingEmailPackage -PackagePath $package.PackagePath -PackageId $package.PackageId -ExpectedSourceDescriptors $validationDescriptors -ExpectedFeedbackSelectionFingerprint $manifest.feedback_selection_sha256
+        } '*Published source snapshot does not match its manifest*' 'Frozen source evidence still detects actual corruption'
+    }
+    finally { [System.IO.File]::WriteAllBytes($frozenPriorPath, $frozenPriorBytes) }
 
     $portableTextByFile = [ordered]@{
         'email_manifest.json' = Get-Content -Raw -LiteralPath $package.ManifestPath
@@ -1705,13 +1775,48 @@ finally {
     Assert-True ([bool]$second.ExistingPackage) 'Identical rerun reuses one validated package'
     Assert-Equal @(Get-ChildItem -LiteralPath (Split-Path -Parent $package.PackagePath) -Directory | Where-Object { $_.Name -notlike '.staging-*' }).Count 1 'No duplicate package directory'
 
+    # Earlier negative tests deliberately rewrote artifact bytes and restored
+    # them. Re-finalize this synthetic fixture's marker timestamp before the
+    # independent consumer checks; the producer itself writes READY last.
+    (Get-Item -LiteralPath $package.ReadyMarkerPath).LastWriteTimeUtc = [datetime]::UtcNow
+    $immutableBefore = Get-TestDirectoryInventory -RootPath $package.PackagePath
+    $renamedDetail = Join-Path $detailFolder 'Guest feedback renamed.xlsx'
+    Move-Item -LiteralPath $currentDetail -Destination $renamedDetail
+    $currentDetail = $renamedDetail
+    New-TestDetailWorkbook -Path $currentDetail -Headers $headers19 -Records @($contactable, $dnc) -BlankFormattedRow 10001
+    $renamedRolling = Join-Path (Split-Path -Parent $rolling) 'Rolling renamed.xlsx'
+    Move-Item -LiteralPath $rolling -Destination $renamedRolling
+    $rolling = $renamedRolling
+    Write-TestBytes $rolling 'synthetic rolling workbook resaved with the same business values'
+    Write-TestBytes $liveWorkbook 'synthetic live workbook with harmless save metadata changes'
+    $newLogPath = Join-Path (Split-Path -Parent $logPath) 'another-run.json'
+    Write-TestBytes $newLogPath '{"run":"new attempt with identical report meaning"}'
+    $analysis.LogPath = $newLogPath
+    $runLog.CurrentSourceWorkbook = $rolling
+    $runLog.FileEvidence = @(
+        (New-LoggedEvidence 'comparison_pdf' $pdf $folder),
+        (New-LoggedEvidence 'rolling_workbook' $rolling $folder),
+        (New-LoggedEvidence 'prior_year_rolling_workbook' $priorRolling $folder),
+        (New-LoggedEvidence 'live_workbook' $liveWorkbook $folder)
+    )
+    $resaved = New-GssEmailPackage -FolderPath $folder -RunLog $runLog -AnalysisResult $analysis -LedgerPath $ledgerPath
+    Assert-Equal $resaved.PackageId $package.PackageId 'Renames, formatting-only detail resave, workbook metadata and a fresh run log retain report identity'
+    Assert-True ([bool]$resaved.ExistingPackage) 'Harmless source changes reuse the immutable package'
+    Assert-Equal (Get-TestDirectoryInventory -RootPath $package.PackagePath) $immutableBefore 'Semantic reuse never rewrites published package contents'
+    foreach ($source in @($manifest.sources)) {
+        Assert-True ([string]$source.path -like ('_automation_runs/email_outbox/' + $package.PackageId + '/*')) 'Source evidence is frozen inside the package'
+        $sourceSnapshot = Resolve-GssDropboxPath -Path $source.path -FolderPath $folder -RequireFile
+        Assert-Equal (Get-GssSha256 $sourceSnapshot) $source.sha256 'Source snapshot survives edits and renames of the original input'
+    }
+    Assert-TestAolConsumerPackage -SourceRoot $AolSourceRoot -FolderPath $folder -PackagePath $package.PackagePath
+
     'incomplete' | Set-Content -LiteralPath $package.ReadyMarkerPath -Encoding ASCII
     Assert-ThrowsLike { New-GssEmailPackage -FolderPath $folder -RunLog $runLog -AnalysisResult $analysis -LedgerPath $ledgerPath } '*READY marker does not match package ID*' 'Existing package requires exact READY marker contents'
     "$($manifest.schema_version)`n$($manifest.package_id)" | Set-Content -LiteralPath $package.ReadyMarkerPath -Encoding ASCII
 
     $descriptors = @($manifest.sources | ForEach-Object { [pscustomobject]@{ role = $_.role; source_path = $_.path; byte_size = $_.byte_size; sha256 = $_.sha256 } })
-    $sameId = Get-GssDeterministicPackageId -ReportingDate '2026-07-12' -SourceDescriptors $descriptors -FeedbackSelectionFingerprint $manifest.feedback_selection_sha256
-    Assert-Equal $sameId $package.PackageId 'Deterministic package ID snapshot'
+    $sameId = 'gss-20260712-' + ([string]$manifest.semantic_report_sha256).Substring(0, 20)
+    Assert-Equal $sameId $package.PackageId 'Package ID identifies report meaning rather than generated artifact bytes'
     $legacyPackageId = Get-GssDeterministicPackageId -ReportingDate '2026-07-12' -SourceDescriptors $descriptors -FeedbackSelectionFingerprint $manifest.feedback_selection_sha256 -SchemaVersion 'gss-email-package/v1'
     Assert-True ($legacyPackageId -ne $package.PackageId) 'Schema v2 uses a new deterministic package ID and cannot collide with legacy v1 output'
     $changedDescriptors = @($descriptors | ForEach-Object { [pscustomobject]@{ role = $_.role; source_path = $_.source_path; byte_size = $_.byte_size; sha256 = $_.sha256 } })

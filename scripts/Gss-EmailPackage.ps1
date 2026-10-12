@@ -57,7 +57,8 @@ $script:GssCommenterLensCsvColumns = @(
 )
 
 function Read-GssAnalysisPolicy {
-    $policyPath = Join-Path (Split-Path -Parent $scriptRoot) 'config\analysis-policy.json'
+    param([string]$Path)
+    $policyPath = if ($Path) { $Path } else { Join-Path (Split-Path -Parent $scriptRoot) 'config\analysis-policy.json' }
     if (-not (Test-Path -LiteralPath $policyPath -PathType Leaf)) {
         throw "GSS analysis policy is missing: $policyPath"
     }
@@ -72,27 +73,37 @@ function Read-GssAnalysisPolicy {
     if ([string]$policy.schema_version -notmatch '^gss-analysis-policy/v\d+$') {
         throw "GSS analysis policy has an invalid schema version: $($policy.schema_version)"
     }
-    if ([double]$policy.thresholds.previous_window.candidate_points -ne 1 -or
-        [double]$policy.thresholds.previous_window.action_points -ne 2 -or
-        [double]$policy.thresholds.prior_year.candidate_points -ne 2 -or
-        [double]$policy.thresholds.prior_year.action_points -ne 5) {
-        throw 'GSS analysis policy must preserve the approved 1/2-point previous-window and 2/5-point prior-year thresholds.'
+    foreach ($window in @($policy.thresholds.previous_window, $policy.thresholds.prior_year)) {
+        if ($null -eq $window.candidate_points -or $null -eq $window.action_points -or
+            [double]::IsNaN([double]$window.candidate_points) -or [double]::IsNaN([double]$window.action_points) -or
+            [double]$window.candidate_points -le 0 -or [double]$window.candidate_points -gt [double]$window.action_points -or
+            [double]$window.action_points -gt 100) {
+            throw 'Analysis thresholds must be finite percentage points with 0 < candidate <= action <= 100.'
+        }
     }
-    if ([int]$policy.confidence.high_minimum_responses -ne 100 -or
-        [int]$policy.confidence.developing_minimum_responses -ne 50 -or
-        [int]$policy.confidence.low_minimum_responses -ne 1 -or
+    foreach ($count in @($policy.confidence.high_minimum_responses, $policy.confidence.developing_minimum_responses, $policy.confidence.low_minimum_responses)) {
+        if ($null -eq $count -or [double]::IsNaN([double]$count) -or [double]$count -lt 1 -or
+            [double]$count -gt [int]::MaxValue -or [double]$count -ne [math]::Floor([double]$count)) {
+            throw 'Response-volume boundaries must be positive whole response counts.'
+        }
+    }
+    if ([double]$policy.confidence.high_minimum_responses -le [double]$policy.confidence.developing_minimum_responses -or
+        [double]$policy.confidence.developing_minimum_responses -le [double]$policy.confidence.low_minimum_responses -or
         -not [bool]$policy.confidence.developing_requires_threshold_and_corroboration -or
         [bool]$policy.confidence.low_eligible_for_top_findings -or
         [bool]$policy.confidence.not_scored_eligible_for_top_findings) {
-        throw 'GSS analysis policy must preserve the approved High, Developing, Low, and Not scored confidence boundaries.'
+        throw 'Response-volume boundaries must be ordered High > Developing > Low, with corroboration and unscored-result safeguards retained.'
     }
     if ([int]$policy.rolling_windows.weeks -ne 13 -or
         [int]$policy.rolling_windows.adjacent_overlap_weeks -ne 12) {
         throw 'GSS analysis policy must identify 13-week rolling windows with 12 weeks of overlap between adjacent windows.'
     }
-    if ([int]$policy.guest_feedback.minimum_unique_responses_per_theme -ne 2 -or
+    if ([double]::IsNaN([double]$policy.guest_feedback.minimum_unique_responses_per_theme) -or
+        [double]$policy.guest_feedback.minimum_unique_responses_per_theme -lt 1 -or
+        [double]$policy.guest_feedback.minimum_unique_responses_per_theme -gt [int]::MaxValue -or
+        [double]$policy.guest_feedback.minimum_unique_responses_per_theme -ne [math]::Floor([double]$policy.guest_feedback.minimum_unique_responses_per_theme) -or
         -not [bool]$policy.guest_feedback.theme_categories_are_non_exclusive) {
-        throw 'GSS analysis policy must preserve the approved two-response theme minimum and non-exclusive theme categories.'
+        throw 'Guest themes require a positive whole response minimum and non-exclusive categories.'
     }
     if (-not [bool]$policy.review_controls.human_review_required -or
         [bool]$policy.review_controls.automatic_sending_enabled -or
@@ -473,6 +484,7 @@ function Read-GssDetailWorkbook {
 
     $portablePath = ConvertTo-GssDropboxRelativePath -Path $Path -FolderPath $FolderPath
     $responses = @()
+    $semanticRows = @()
     $rowNumber = 1
     foreach ($record in $table.Records) {
         $rowNumber++
@@ -485,6 +497,14 @@ function Read-GssDetailWorkbook {
             throw "Detail workbook contains an incomplete response at row ${rowNumber}."
         }
         Test-GssFeedbackAnswers -Record $record
+        # Spreadsheet packaging, styles and filenames are not report identity.
+        # Include every exported field so manual follow-up notes and contact
+        # restrictions still count as meaningful attachment changes.
+        $semanticRow = [ordered]@{}
+        foreach ($header in @($table.NormalizedHeaders | Where-Object { $_ } | Sort-Object -Unique)) {
+            $semanticRow[$header] = ([string](Get-GssFeedbackProperty $record $header)).Trim()
+        }
+        $semanticRows += Get-GssStringSha256 ($semanticRow | ConvertTo-Json -Compress)
 
         $restaurantIdMatch = [regex]::Match($restaurant, '^\s*(\d{4})\b')
         $restaurantId = if ($restaurantIdMatch.Success) { $restaurantIdMatch.Groups[1].Value } else { Normalize-GssFeedbackHeader $restaurant }
@@ -503,9 +523,16 @@ function Read-GssDetailWorkbook {
         # Vendor exports have used both "Alert Guests" and
         # "Alert Guests DO NOT CONTACT" for the same GR/NC restriction field.
         $doNotContact = Test-GssContactRestricted -Record $record
+        $stableId = ''
+        foreach ($idHeader in @('responseid', 'surveyresponseid', 'surveyid')) {
+            $stableId = (Get-GssFeedbackProperty $record $idHeader).Trim()
+            if ($stableId) { break }
+        }
 
         $responses += [pscustomobject]@{
             ResponseHash = Get-GssStringSha256 $identity
+            RowContentSha256 = $semanticRows[-1]
+            StableResponseId = $stableId
             RestaurantId = $restaurantId
             Restaurant = $restaurant
             VisitDate = $visitDate
@@ -527,6 +554,8 @@ function Read-GssDetailWorkbook {
         HeaderCount = @($table.NormalizedHeaders | Where-Object { $_ }).Count
         Headers = $table.NormalizedHeaders
         Responses = $responses
+        RowContentSha256 = @($semanticRows | Sort-Object -Unique)
+        ContentSha256 = Get-GssStringSha256 ("gss-detail-content/v1`n" + ((@($semanticRows | Sort-Object -Unique)) -join "`n"))
         VisitDateStart = ($responses.VisitDate | Measure-Object -Minimum).Minimum
         VisitDateEnd = ($responses.VisitDate | Measure-Object -Maximum).Maximum
     }
@@ -1447,10 +1476,143 @@ function Assert-GssHistoricalRecoveryFileIntegrity {
     }
 }
 
+function Read-GssDetailReportingAssignment {
+    param([Parameter(Mandatory)][string]$FolderPath)
+
+    $path = Join-Path $FolderPath '_automation_runs\state\detail-reporting.json'
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return @() }
+    $registry = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ([string]$registry.schema_version -ne 'gss-detail-reporting/v1') {
+        throw 'Unsupported guest-detail reporting assignment format.'
+    }
+    $seen = @{}
+    foreach ($entry in @($registry.entries)) {
+        $week = [datetime]::MinValue
+        if ([string]$entry.content_sha256 -cnotmatch '^[a-f0-9]{64}$' -or
+            -not [datetime]::TryParseExact([string]$entry.reporting_date, 'yyyy-MM-dd',
+                [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::None, [ref]$week) -or
+            $week.DayOfWeek -ne [DayOfWeek]::Sunday) {
+            throw 'Guest-detail assignments require a semantic content fingerprint and a Sunday reporting date.'
+        }
+        $key = "$($entry.reporting_date)|$($entry.content_sha256)"
+        if ($seen.ContainsKey($key)) { throw 'Guest-detail reporting assignments contain a duplicate entry.' }
+        $seen[$key] = $true
+        foreach ($prior in @($entry.supersedes)) {
+            if ([string]$prior -cnotmatch '^[a-f0-9]{64}$' -or [string]$prior -ceq [string]$entry.content_sha256) {
+                throw 'Guest-detail supersession must identify different semantic content.'
+            }
+        }
+    }
+    return @($registry.entries)
+}
+
+function Get-GssPackagedDetailAssignment {
+    param([Parameter(Mandatory)][string]$FolderPath, [Parameter(Mandatory)][datetime]$ReportingDate)
+
+    $outbox = Join-Path $FolderPath '_automation_runs\email_outbox'
+    if (-not (Test-Path -LiteralPath $outbox -PathType Container)) { return @() }
+    $assignments = @()
+    foreach ($directory in @(Get-ChildItem -LiteralPath $outbox -Directory -Filter ('gss-' + $ReportingDate.ToString('yyyyMMdd') + '-*'))) {
+        $manifestPath = Join-Path $directory.FullName 'email_manifest.json'
+        if (-not (Test-Path -LiteralPath (Join-Path $directory.FullName 'READY') -PathType Leaf) -or
+            -not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { continue }
+        $manifest = Read-GssUtf8NoBomFile $manifestPath | ConvertFrom-Json
+        if ([string]$manifest.reporting.reporting_date -ne $ReportingDate.ToString('yyyy-MM-dd')) { continue }
+        $descriptors = @($manifest.sources | ForEach-Object {
+            [pscustomobject]@{ role = $_.role; source_path = $_.path; byte_size = $_.byte_size; sha256 = $_.sha256 }
+        })
+        # Existing package evidence can identify an export's reporting period
+        # without restoring a filename or changing any assignment during reads.
+        $null = Test-GssExistingEmailPackage -PackagePath $directory.FullName -PackageId $directory.Name `
+            -ExpectedSourceDescriptors $descriptors -ExpectedFeedbackSelectionFingerprint $manifest.feedback_selection_sha256
+        $attachment = @($manifest.attachments | Where-Object role -eq 'detail_workbook')[0]
+        $workbook = Read-GssDetailWorkbook -Path (Join-Path $directory.FullName $attachment.path.Replace('/', '\')) -FolderPath $FolderPath
+        $assignments += [pscustomobject]@{
+            content_sha256 = $workbook.ContentSha256
+            reporting_date = $ReportingDate.ToString('yyyy-MM-dd')
+            supersedes = @()
+        }
+    }
+    return $assignments
+}
+
+function Set-GssDetailReportingAssignment {
+    [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'The launcher explicitly confirms the file and reporting week before this atomic assignment; the library must not add a second operator prompt.')]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$FolderPath,
+        [Parameter(Mandatory)][string]$DetailPath,
+        [Parameter(Mandatory)][datetime]$ReportingDate,
+        [string[]]$SupersedesContentSha256 = @()
+    )
+
+    Assert-GssSundayReportingDate -ReportingDate $ReportingDate
+    $resolved = Resolve-GssDropboxPath -Path $DetailPath -FolderPath $FolderPath -RequireFile
+    $detailRoot = [System.IO.Path]::GetFullPath((Join-Path $FolderPath '03 Uploaded Survey Workbooks')).TrimEnd('\') + '\'
+    if (-not $resolved.StartsWith($detailRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Choose a workbook inside Uploaded Survey Workbooks.'
+    }
+    $mutex = New-Object System.Threading.Mutex($false, $script:GssTransactionMutexName)
+    $ownsMutex = $false
+    try {
+        try { $ownsMutex = $mutex.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $ownsMutex = $true }
+        if (-not $ownsMutex) { throw 'Another GSS workbook transaction is already active on this workstation.' }
+        $workbook = Read-GssDetailWorkbook -Path $resolved -FolderPath $FolderPath
+        $entries = @(Read-GssDetailReportingAssignment -FolderPath $FolderPath)
+        $previousAssignment = @($entries | Where-Object { $_.reporting_date -eq $ReportingDate.ToString('yyyy-MM-dd') -and $_.content_sha256 -eq $workbook.ContentSha256 })
+        $SupersedesContentSha256 = @(@($SupersedesContentSha256) + @($previousAssignment | ForEach-Object { $_.supersedes }) | Sort-Object -Unique)
+        $superseded = @($entries | ForEach-Object { $_.supersedes })
+        foreach ($prior in @($SupersedesContentSha256)) {
+            if ($prior -cnotmatch '^[a-f0-9]{64}$' -or $prior -ceq $workbook.ContentSha256) {
+                throw 'Choose different valid guest-detail content to supersede.'
+            }
+        }
+        if ($workbook.ContentSha256 -in $superseded) { throw 'This guest-detail version was already superseded. Choose the current correction.' }
+        $sameWeek = @($entries + @(Get-GssPackagedDetailAssignment -FolderPath $FolderPath -ReportingDate $ReportingDate) |
+            Where-Object { $_.reporting_date -eq $ReportingDate.ToString('yyyy-MM-dd') -and
+                $_.content_sha256 -ne $workbook.ContentSha256 -and $_.content_sha256 -notin $superseded })
+        foreach ($existing in $sameWeek) {
+            if ([string]$existing.content_sha256 -notin $SupersedesContentSha256) {
+                throw 'This week already has different guest-detail content. Explicitly identify the version being corrected.'
+            }
+        }
+        $entries = @($entries | Where-Object { -not ($_.reporting_date -eq $ReportingDate.ToString('yyyy-MM-dd') -and $_.content_sha256 -eq $workbook.ContentSha256) })
+        $entries += [pscustomobject][ordered]@{
+            content_sha256 = $workbook.ContentSha256
+            reporting_date = $ReportingDate.ToString('yyyy-MM-dd')
+            supersedes = @($SupersedesContentSha256 | Sort-Object -Unique)
+        }
+        $path = Join-Path $FolderPath '_automation_runs\state\detail-reporting.json'
+        $parent = Split-Path -Parent $path
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+        $temporary = Join-Path $parent ('.detail-' + [guid]::NewGuid().ToString('N') + '.tmp')
+        $replacementBackup = Join-Path $parent ('.detail-' + [guid]::NewGuid().ToString('N') + '.bak')
+        try {
+            Write-GssUtf8NoBomFile -Path $temporary -Value ([ordered]@{
+                schema_version = 'gss-detail-reporting/v1'
+                entries = @($entries | Sort-Object reporting_date, content_sha256)
+            } | ConvertTo-Json -Depth 6)
+            if (Test-Path -LiteralPath $path) { [System.IO.File]::Replace($temporary, $path, $replacementBackup, $true) }
+            else { [System.IO.File]::Move($temporary, $path) }
+        }
+        finally {
+            foreach ($cleanupPath in @($temporary, $replacementBackup)) {
+                if (Test-Path -LiteralPath $cleanupPath) { Remove-Item -LiteralPath $cleanupPath -Force }
+            }
+        }
+        return [pscustomobject]@{ Status = 'Assigned'; ReportingDate = $ReportingDate.ToString('yyyy-MM-dd'); ContentSha256 = $workbook.ContentSha256 }
+    }
+    finally {
+        if ($ownsMutex) { [void]$mutex.ReleaseMutex() }
+        $mutex.Dispose()
+    }
+}
+
 function Get-GssDetailInventory {
     param(
         [Parameter(Mandatory)][string]$FolderPath,
-        [Parameter(Mandatory)][datetime]$ReportingDate
+        [Parameter(Mandatory)][datetime]$ReportingDate,
+        [switch]$AllowIncomplete
     )
 
     Assert-GssSundayReportingDate -ReportingDate $ReportingDate
@@ -1500,19 +1662,52 @@ function Get-GssDetailInventory {
         $workbooks += $workbook
     }
 
-    $directPrefix = [System.IO.Path]::GetFullPath($detailFolder).TrimEnd('\') + '\'
-    $direct = @($workbooks | Where-Object {
-        $parent = [System.IO.Path]::GetDirectoryName([System.IO.Path]::GetFullPath($_.Path)).TrimEnd('\') + '\'
-        $parent.Equals($directPrefix, [System.StringComparison]::OrdinalIgnoreCase)
-    })
-    if ($direct.Count -eq 0) { throw 'No current guest-detail workbook exists directly in 03 Uploaded Survey Workbooks.' }
-    $eligible = @($direct | Where-Object { $_.VisitDateEnd.Date -le $ReportingDate.Date })
-    if ($eligible.Count -eq 0) {
-        throw "No current guest-detail workbook has a visit date on or before reporting date $($ReportingDate.ToString('yyyy-MM-dd'))."
+    $assignments = @(Read-GssDetailReportingAssignment -FolderPath $FolderPath)
+    $superseded = @($assignments | ForEach-Object { $_.supersedes } | Sort-Object -Unique)
+    $workbooks = @($workbooks | Where-Object { $_.ContentSha256 -notin $superseded } |
+        Sort-Object @{ Expression = { $_.PortablePath.Length } }, PortablePath |
+        Group-Object ContentSha256 | ForEach-Object { $_.Group[0] })
+    $weekAssignments = @($assignments | Where-Object { $_.reporting_date -eq $ReportingDate.ToString('yyyy-MM-dd') })
+    if ($weekAssignments.Count -eq 0) {
+        $weekAssignments = @(Get-GssPackagedDetailAssignment -FolderPath $FolderPath -ReportingDate $ReportingDate)
     }
-    $current = $eligible |
-        Sort-Object @{ Expression = { $_.VisitDateEnd }; Descending = $true }, @{ Expression = { $_.PortablePath }; Descending = $false } |
-        Select-Object -First 1
+    $expectedContent = @($weekAssignments | Where-Object { $_.content_sha256 -notin $superseded } |
+        Select-Object -ExpandProperty content_sha256 -Unique)
+    $eligible = @($workbooks | Where-Object { $_.ContentSha256 -in $expectedContent })
+    $current = if ($eligible.Count -eq 1) { $eligible[0] } else { $null }
+    $readiness = [pscustomobject][ordered]@{
+        Status = if ($expectedContent.Count -gt 1) { 'Conflict' } elseif ($current) { 'Ready' } elseif ($expectedContent.Count -gt 0) { 'Missing' } else { 'RequiresAssignment' }
+        ReasonCode = if ($expectedContent.Count -gt 1) { 'detail_conflict' } elseif ($current) { 'detail_ready' } elseif ($expectedContent.Count -gt 0) { 'detail_missing' } else { 'detail_assignment_required' }
+        ReportingDate = $ReportingDate.ToString('yyyy-MM-dd')
+        Message = if ($expectedContent.Count -gt 1) { 'More than one active detail export is assigned to this week. Identify the correction explicitly.' } elseif ($current) { 'Guest-detail export is assigned to this reporting week.' } elseif ($expectedContent.Count -gt 0) { 'The assigned guest-detail export is unavailable or its contents changed. Restore it or assign the correction.' } else { 'Assign the received guest-detail export to this reporting week. Visit dates alone do not identify the export week.' }
+        Candidates = @($workbooks | Sort-Object PortablePath | ForEach-Object {
+            [pscustomobject]@{ Path = $_.Path; RelativePath = $_.PortablePath; ContentSha256 = $_.ContentSha256; VisitDateStart = $_.VisitDateStart; VisitDateEnd = $_.VisitDateEnd; ResponseCount = @($_.Responses).Count }
+        })
+    }
+
+    $responseVersions = @{}
+    foreach ($response in @($workbooks.Responses)) {
+        $identityKey = ''
+        if ([string]$response.StableResponseId) {
+            $identityKey = "id:$($response.RestaurantId):$($response.StableResponseId)"
+        }
+        elseif ($response.GuestFirstName -and $response.GuestLastName -and $response.ReservationTime) {
+            $identityKey = 'visit:' + ((@($response.RestaurantId, $response.VisitDate.ToString('yyyy-MM-dd'),
+                $response.ReservationTime, $response.GuestFirstName, $response.GuestLastName) |
+                ForEach-Object { Normalize-GssFeedbackText ([string]$_) }) -join '|')
+        }
+        if (-not $identityKey) { continue }
+        if ($responseVersions.ContainsKey($identityKey) -and $responseVersions[$identityKey] -ne $response.ResponseHash) {
+            $readiness.Status = 'Conflict'
+            $readiness.ReasonCode = 'detail_conflict'
+            $readiness.Message = 'Overlapping detail exports disagree about the same response. Assign the corrected export and explicitly supersede its original.'
+            break
+        }
+        $responseVersions[$identityKey] = $response.ResponseHash
+    }
+    if (-not $AllowIncomplete -and $readiness.Status -ne 'Ready') {
+        throw "$($readiness.ReasonCode): $($readiness.Message)"
+    }
 
     $groups = @{}
     foreach ($workbook in $workbooks) {
@@ -1541,6 +1736,7 @@ function Get-GssDetailInventory {
 
     return [pscustomobject]@{
         CurrentWorkbook = $current
+        Readiness = $readiness
         Workbooks = $workbooks
         AllResponseInstances = @($workbooks.Responses)
         UniqueResponses = $uniqueResponses
@@ -2254,6 +2450,100 @@ function Get-GssDeterministicPackageId {
     if ($FeedbackSelectionFingerprint -notmatch '^[a-f0-9]{64}$') { throw 'Feedback selection fingerprint must be a lowercase SHA-256 hash.' }
     $material = "$SchemaVersion`n$PolicyVersion`n$ReportingDate`nfeedback_selection:$FeedbackSelectionFingerprint`n$sourceText"
     return 'gss-' + $ReportingDate.Replace('-', '') + '-' + (Get-GssStringSha256 $material).Substring(0, 20)
+}
+
+function ConvertTo-GssSemanticValue {
+    param([AllowNull()][object]$Value)
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [double] -or $Value -is [single] -or $Value -is [decimal]) {
+        return [math]::Round([double]$Value, 8, [MidpointRounding]::AwayFromZero)
+    }
+    if ($Value -is [string] -or $Value -is [ValueType]) { return $Value }
+    if ($Value -is [System.Collections.IDictionary]) {
+        $result = [ordered]@{}
+        foreach ($key in @($Value.Keys | Sort-Object)) { $result[$key] = ConvertTo-GssSemanticValue $Value[$key] }
+        return $result
+    }
+    if ($Value -is [System.Collections.IEnumerable]) {
+        $items = @($Value | ForEach-Object { ConvertTo-GssSemanticValue $_ })
+        return ,$items
+    }
+    $result = [ordered]@{}
+    foreach ($property in @($Value.PSObject.Properties | Sort-Object Name)) {
+        $result[$property.Name] = ConvertTo-GssSemanticValue $property.Value
+    }
+    return $result
+}
+
+function Get-GssPublicationSemanticSha256 {
+    param(
+        [Parameter(Mandatory)][object]$RunLog,
+        [Parameter(Mandatory)][object]$AnalysisResult,
+        [Parameter(Mandatory)][object]$Inventory,
+        [Parameter(Mandatory)][string]$FeedbackSelectionFingerprint,
+        [Parameter(Mandatory)][object[]]$SourceDescriptors
+    )
+
+    $sourceMeaning = [ordered]@{}
+    foreach ($item in @(
+        [pscustomobject]@{ Role = 'rolling_workbook'; Property = 'CurrentSourceSemanticSha256' },
+        [pscustomobject]@{ Role = 'prior_year_rolling_workbook'; Property = 'PriorYearSourceSemanticSha256' }
+    )) {
+        $hash = [string]$RunLog.($item.Property)
+        # Old receipts have no semantic source evidence. Their first new package
+        # conservatively keeps the original source hashes in its meaning.
+        if ($hash -cnotmatch '^[a-f0-9]{64}$') {
+            $hash = [string](@($SourceDescriptors | Where-Object role -eq $item.Role)[0].sha256)
+        }
+        $sourceMeaning[$item.Role] = $hash
+    }
+    $material = [ordered]@{
+        version = 'gss-publication-meaning/v1'
+        reporting_date = ([datetime]::Parse([string]$RunLog.CurrentWeekEnding)).ToString('yyyy-MM-dd')
+        prior_year_date = ([datetime]::Parse([string]$RunLog.PriorYearWeekEnding)).ToString('yyyy-MM-dd')
+        policy = $script:GssAnalysisPolicy
+        source_meaning = $sourceMeaning
+        metrics = @($AnalysisResult.MetricDetail | Sort-Object EntityKey, RawMetric, RestaurantId)
+        modeling = $AnalysisResult.Modeling
+        current_detail = $Inventory.CurrentWorkbook.ContentSha256
+        detail_rows = @($Inventory.AllResponseInstances | Where-Object { $_.VisitDate.Date -le ([datetime]$RunLog.CurrentWeekEnding).Date } |
+            Select-Object -ExpandProperty RowContentSha256 | Sort-Object -Unique)
+        feedback_selection = $FeedbackSelectionFingerprint
+    }
+    return Get-GssStringSha256 ((ConvertTo-GssSemanticValue $material) | ConvertTo-Json -Depth 24 -Compress)
+}
+
+function Find-GssReusableLegacyPackage {
+    param([string]$FolderPath, [datetime]$ReportingDate, [object[]]$SourceDescriptors, [string]$FeedbackSelectionFingerprint)
+    $outbox = Join-Path $FolderPath '_automation_runs\email_outbox'
+    if (-not (Test-Path -LiteralPath $outbox -PathType Container)) { return $null }
+    $currentEvidence = @($SourceDescriptors | Where-Object role -ne 'run_log' |
+        ForEach-Object { "$($_.role)|$($_.byte_size)|$($_.sha256)" } | Sort-Object) -join "`n"
+    foreach ($directory in @(Get-ChildItem -LiteralPath $outbox -Directory -Filter ('gss-' + $ReportingDate.ToString('yyyyMMdd') + '-*') | Sort-Object Name)) {
+        try {
+            $manifest = Read-GssUtf8NoBomFile (Join-Path $directory.FullName 'email_manifest.json') | ConvertFrom-Json
+            if ($manifest.PSObject.Properties['semantic_report_sha256'] -or
+                [string]$manifest.policy_version -ne $script:GssAnalysisPolicyVersion -or
+                [string]$manifest.feedback_selection_sha256 -ne $FeedbackSelectionFingerprint) { continue }
+            $legacyEvidence = @($manifest.sources | Where-Object role -ne 'run_log' |
+                ForEach-Object { "$($_.role)|$($_.byte_size)|$($_.sha256)" } | Sort-Object) -join "`n"
+            if ($legacyEvidence -cne $currentEvidence) { continue }
+            $descriptors = @($manifest.sources | ForEach-Object {
+                $path = Resolve-GssDropboxPath -Path $_.path -FolderPath $FolderPath -RequireFile
+                if ((Get-GssSha256 $path) -ne [string]$_.sha256) { throw 'Legacy package external source changed.' }
+                [pscustomobject]@{ role = $_.role; source_path = $_.path; byte_size = $_.byte_size; sha256 = $_.sha256 }
+            })
+            $null = Test-GssExistingEmailPackage -PackagePath $directory.FullName -PackageId $directory.Name `
+                -ExpectedSourceDescriptors $descriptors -ExpectedFeedbackSelectionFingerprint $FeedbackSelectionFingerprint
+            return $directory.Name
+        }
+        catch {
+            # An unverifiable legacy package is never rewritten or used as
+            # evidence. Its original files remain available for separate review.
+            continue
+        }
+    }
+    return $null
 }
 
 function Get-GssSourceDescriptor {
@@ -3064,12 +3354,20 @@ function Test-GssExistingEmailPackage {
     if ([string]$manifest.feedback_selection_sha256 -notmatch '^[a-f0-9]{64}$' -or [string]$manifest.feedback_selection_sha256 -ne $ExpectedFeedbackSelectionFingerprint) {
         throw "Existing deterministic package feedback selection does not match current package inputs: $PackageId"
     }
-    $recomputedPackageId = Get-GssDeterministicPackageId `
-        -ReportingDate ([string]$manifest.reporting.reporting_date) `
-        -SourceDescriptors @($manifest.sources) `
-        -FeedbackSelectionFingerprint ([string]$manifest.feedback_selection_sha256) `
-        -SchemaVersion ([string]$manifest.schema_version) `
-        -PolicyVersion ([string]$manifest.policy_version)
+    if ($manifest.PSObject.Properties['semantic_report_sha256']) {
+        if ([string]$manifest.semantic_report_sha256 -cnotmatch '^[a-f0-9]{64}$') {
+            throw 'Existing package semantic report fingerprint is invalid.'
+        }
+        $recomputedPackageId = 'gss-' + ([string]$manifest.reporting.reporting_date).Replace('-', '') + '-' + ([string]$manifest.semantic_report_sha256).Substring(0, 20)
+    }
+    else {
+        $recomputedPackageId = Get-GssDeterministicPackageId `
+            -ReportingDate ([string]$manifest.reporting.reporting_date) `
+            -SourceDescriptors @($manifest.sources) `
+            -FeedbackSelectionFingerprint ([string]$manifest.feedback_selection_sha256) `
+            -SchemaVersion ([string]$manifest.schema_version) `
+            -PolicyVersion ([string]$manifest.policy_version)
+    }
     if ($recomputedPackageId -ne $PackageId) {
         throw "Existing deterministic package ID does not match its attested source inventory: $PackageId"
     }
@@ -3141,6 +3439,22 @@ function Test-GssExistingEmailPackage {
         $actualSource = $matches[0]
         if ([long]$actualSource.byte_size -ne $expectedSource.byte_size -or ([string]$actualSource.sha256).ToLowerInvariant() -ne $expectedSource.sha256) {
             throw "Existing package source evidence does not match current input: $($expectedSource.role) $($expectedSource.path)"
+        }
+    }
+    if ($manifest.PSObject.Properties['semantic_report_sha256']) {
+        $packagePrefix = '_automation_runs/email_outbox/' + $PackageId + '/'
+        foreach ($source in $actualSources) {
+            $portableSource = ([string]$source.path).Replace('\', '/')
+            if (-not $portableSource.StartsWith($packagePrefix, [StringComparison]::Ordinal) -or
+                $portableSource -match '(^|/)\.\.?(/|$)') {
+                throw 'Published source evidence must remain inside its immutable package.'
+            }
+            $sourcePath = Join-Path $PackagePath $portableSource.Substring($packagePrefix.Length).Replace('/', '\')
+            if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf) -or
+                [long](Get-Item -LiteralPath $sourcePath).Length -ne [long]$source.byte_size -or
+                (Get-GssSha256 $sourcePath) -ne [string]$source.sha256) {
+                throw "Published source snapshot does not match its manifest: $($source.role)"
+            }
         }
     }
     $runLogSource = @($expectedSources | Where-Object role -eq 'run_log')
@@ -3254,10 +3568,11 @@ function New-GssEmailPackage {
         -LedgerState $ledgerRollbackState
     $ledger = Read-GssFeedbackLedger $LedgerPath
     $feedbackSelection = Get-GssFeedbackSelection -Inventory $inventory -Ledger $ledger -ReportingDate $reportingDate
-    $packageId = Get-GssDeterministicPackageId `
-        -ReportingDate $reportingDate.ToString('yyyy-MM-dd') `
-        -SourceDescriptors $sourceDescriptors `
-        -FeedbackSelectionFingerprint $feedbackSelection.Fingerprint
+    $semanticReportHash = Get-GssPublicationSemanticSha256 -RunLog $RunLog -AnalysisResult $AnalysisResult `
+        -Inventory $inventory -FeedbackSelectionFingerprint $feedbackSelection.Fingerprint -SourceDescriptors $sourceDescriptors
+    $legacyPackageId = Find-GssReusableLegacyPackage -FolderPath $FolderPath -ReportingDate $reportingDate `
+        -SourceDescriptors $sourceDescriptors -FeedbackSelectionFingerprint $feedbackSelection.Fingerprint
+    $packageId = if ($legacyPackageId) { $legacyPackageId } else { 'gss-' + $reportingDate.ToString('yyyyMMdd') + '-' + $semanticReportHash.Substring(0, 20) }
     $feedback = New-GssSanitizedFeedback `
         -Inventory $inventory `
         -Ledger $ledger `
@@ -3441,19 +3756,29 @@ function New-GssEmailPackage {
     New-Item -ItemType Directory -Path $outbox -Force | Out-Null
     $packagePath = Join-Path $outbox $packageId
     if (Test-Path -LiteralPath $packagePath -PathType Container) {
+        $publishedManifest = Read-GssUtf8NoBomFile (Join-Path $packagePath 'email_manifest.json') | ConvertFrom-Json
+        $publishedSources = @($publishedManifest.sources | ForEach-Object {
+            [pscustomobject]@{ role = $_.role; source_path = $_.path; byte_size = $_.byte_size; sha256 = $_.sha256 }
+        })
         $existingManifest = Test-GssExistingEmailPackage `
             -PackagePath $packagePath `
             -PackageId $packageId `
-            -ExpectedSourceDescriptors $sourceDescriptors `
+            -ExpectedSourceDescriptors $publishedSources `
             -ExpectedFeedbackSelectionFingerprint $feedback.SelectionFingerprint
         $null = Assert-GssExpectedPackageInputEvidence `
             -ExpectedEvidence $ExpectedPackageInputEvidence `
             -SourceDescriptors $sourceDescriptors `
             -LedgerPath $LedgerPath
-        Write-GssFeedbackLedgerWithRollbackOnFailure `
-            -Ledger $feedback.NextLedger `
-            -Path $LedgerPath `
-            -RollbackState $ledgerRollbackState
+        foreach ($source in $sourceDescriptors) {
+            if ((Get-GssSha256 $source.source_full_path) -ne [string]$source.sha256) {
+                throw 'Source changed while an existing report package was being checked.'
+            }
+        }
+        # An ordinary no-op does not rewrite first-seen state; a restored or
+        # missing ledger can still be brought back to the package's known state.
+        if (($ledger | ConvertTo-Json -Depth 5 -Compress) -cne ($feedback.NextLedger | ConvertTo-Json -Depth 5 -Compress)) {
+            Write-GssFeedbackLedgerWithRollbackOnFailure -Ledger $feedback.NextLedger -Path $LedgerPath -RollbackState $ledgerRollbackState
+        }
         return [pscustomobject]@{
             EmailReadiness = 'Ready'
             DataClassification = $script:GssRestrictedClassification
@@ -3481,19 +3806,34 @@ function New-GssEmailPackage {
             detail_workbook = "RESTRICTED GSS Detail $dateToken.xlsx"
         }
         $attachments = @()
-        foreach ($source in @($sourceDescriptors | Where-Object { $_.role -in @('comparison_pdf', 'rolling_workbook', 'detail_workbook') })) {
-            $fileName = $attachmentNames[$source.role]
-            $destination = Join-Path $attachmentDirectory $fileName
+        $packageSources = @()
+        $sourceIndex = 0
+        foreach ($source in $sourceDescriptors) {
+            $sourceIndex++
+            $isAttachment = $source.role -in @('comparison_pdf', 'rolling_workbook', 'detail_workbook')
+            $relativeDestination = if ($isAttachment) { 'attachments/' + $attachmentNames[$source.role] } else {
+                'sources/' + $source.role + '-' + $sourceIndex + [System.IO.Path]::GetExtension($source.source_full_path)
+            }
+            $destination = Join-Path $stagingPath $relativeDestination.Replace('/', '\')
+            New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null
             Copy-Item -LiteralPath $source.source_full_path -Destination $destination
             $copiedItem = Get-Item -LiteralPath $destination
             $copiedHash = Get-GssSha256 $destination
             if ([long]$copiedItem.Length -ne [long]$source.byte_size -or $copiedHash -ne $source.sha256) {
-                throw "Attachment changed while the package was being created: $($source.role)"
+                throw "Attachment or source evidence changed while the package was being created: $($source.role)"
             }
+            $frozenPath = ConvertTo-GssDropboxRelativePath -Path (Join-Path $packagePath $relativeDestination.Replace('/', '\')) -FolderPath $FolderPath
+            $packageSources += [pscustomobject]@{
+                role = $source.role
+                source_path = $frozenPath
+                byte_size = [long]$copiedItem.Length
+                sha256 = $copiedHash
+            }
+            if (-not $isAttachment) { continue }
             $attachments += [pscustomobject][ordered]@{
                 role = $source.role
-                path = 'attachments/' + $fileName
-                source_path = $source.source_path
+                path = $relativeDestination
+                source_path = $frozenPath
                 byte_size = [long]$copiedItem.Length
                 sha256 = $copiedHash
                 contains_personal_data = ($source.role -eq 'detail_workbook')
@@ -3521,7 +3861,7 @@ This package includes a raw guest detail workbook. The analysis text is risk-red
 Automatic sending is disabled. Confirm every recipient is authorized before any manual send.
 "@
 
-        $sourceLogDescriptor = @($sourceDescriptors | Where-Object role -eq 'run_log')
+        $sourceLogDescriptor = @($packageSources | Where-Object role -eq 'run_log')
         if ($sourceLogDescriptor.Count -ne 1) { throw 'Package source inventory must contain exactly one run_log descriptor.' }
         $sourceLogPath = [string]$sourceLogDescriptor[0].source_path
         $portableArtifacts = @(
@@ -3537,6 +3877,7 @@ Automatic sending is disabled. Confirm every recipient is authorized before any 
             schema_version = $script:GssEmailPackageSchemaVersion
             policy_version = $script:GssAnalysisPolicyVersion
             package_id = $packageId
+            semantic_report_sha256 = $semanticReportHash
             classification = $script:GssRestrictedClassification
             package_contains_personal_data = $true
             feedback_selection_sha256 = $feedback.SelectionFingerprint
@@ -3551,7 +3892,7 @@ Automatic sending is disabled. Confirm every recipient is authorized before any 
             html_preview_path = 'email_preview.html'
             classification_notice_path = 'RESTRICTED.txt'
             ready_marker_path = 'READY'
-            sources = @($sourceDescriptors | ForEach-Object {
+            sources = @($packageSources | ForEach-Object {
                 [pscustomobject][ordered]@{
                     role = $_.role
                     path = $_.source_path
@@ -3635,7 +3976,7 @@ Automatic sending is disabled. Confirm every recipient is authorized before any 
                 Test-GssExistingEmailPackage `
                     -PackagePath $packagePath `
                     -PackageId $packageId `
-                    -ExpectedSourceDescriptors $sourceDescriptors `
+                    -ExpectedSourceDescriptors $packageSources `
                     -ExpectedFeedbackSelectionFingerprint $feedback.SelectionFingerprint
             }
         return [pscustomobject]@{

@@ -1,512 +1,325 @@
 [CmdletBinding()]
 param(
-    [string]$Folder
+    [string]$Folder,
+    [string]$MainWorkbookName = 'GSS Score Trends - Main.xlsx',
+    [string]$ReportingWeekEnding,
+    [string[]]$CorrectionSourcePath = @(),
+    [string]$BackupFolder,
+    [switch]$NonInteractive,
+    [switch]$OutputObject
 )
 
 $ErrorActionPreference = 'Stop'
-
 $scriptRoot = Split-Path -Parent $PSCommandPath
 $repoRoot = Split-Path -Parent $scriptRoot
-$releaseValidator = Join-Path $scriptRoot 'Test-GSS-ReleaseIntegrity.ps1'
-# Production runs are permitted only from the exact clean, tagged release
-# described by release/release-manifest.json. There is intentionally no runtime
-# bypass; development copy-tests invoke Update-GSS-MainWorkbook.ps1 directly.
-$releaseIntegrity = & $releaseValidator -RepoRoot $repoRoot
-
-function Write-GssSafeAtomicJson {
-    param(
-        [Parameter(Mandatory)][string]$Path,
-        [Parameter(Mandatory)][object]$InputObject
-    )
-
-    $directory = Split-Path -Parent $Path
-    New-Item -ItemType Directory -Path $directory -Force | Out-Null
-    $temporaryPath = Join-Path $directory ('.t-{0}' -f ([guid]::NewGuid().ToString('N').Substring(0, 8)))
-    $replacementBackupPath = Join-Path $directory ('.b-{0}' -f ([guid]::NewGuid().ToString('N').Substring(0, 8)))
-    try {
-        $json = $InputObject | ConvertTo-Json -Depth 10
-        [System.IO.File]::WriteAllText($temporaryPath, $json, (New-Object System.Text.UTF8Encoding($false)))
-        if (Test-Path -LiteralPath $Path -PathType Leaf) {
-            for ($attempt = 1; $attempt -le 20; $attempt++) {
-                try {
-                    [System.IO.File]::Replace($temporaryPath, $Path, $replacementBackupPath, $true)
-                    break
-                }
-                catch [System.IO.IOException] {
-                    if ($attempt -eq 20) { throw }
-                    if (Test-Path -LiteralPath $replacementBackupPath -PathType Leaf) {
-                        Remove-Item -LiteralPath $replacementBackupPath -Force
-                    }
-                    Start-Sleep -Milliseconds 250
-                }
-            }
-        }
-        else {
-            [System.IO.File]::Move($temporaryPath, $Path)
-        }
-    }
-    finally {
-        if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) {
-            Remove-Item -LiteralPath $temporaryPath -Force
-        }
-        if (Test-Path -LiteralPath $replacementBackupPath -PathType Leaf) {
-            Remove-Item -LiteralPath $replacementBackupPath -Force
-        }
-    }
-}
-
-function Get-GssSafeHash {
-    param([Parameter(Mandatory)][string]$Path)
-
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
-        throw "Required transaction artifact is missing: $Path"
-    }
-    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
-}
-
-function Assert-GssPreparedEvidenceUnchanged {
-    param([Parameter(Mandatory)][object]$Run)
-
-    if ([string]$Run.TransactionStatus -ne 'Prepared' -or [string]::IsNullOrWhiteSpace([string]$Run.RunFingerprint)) {
-        throw 'The copy-test did not produce a promotable Prepared fingerprint.'
-    }
-    if ([string]$Run.HostName -cne [Environment]::MachineName) {
-        throw "The copy-test was prepared on '$($Run.HostName)', not this workstation."
-    }
-    foreach ($check in @(
-        [pscustomobject]@{ Name = 'starting live workbook'; Path = [string]$Run.StartingWorkbook; Expected = [string]$Run.StartingWorkbookSha256 },
-        [pscustomobject]@{ Name = 'current source workbook'; Path = [string]$Run.CurrentSourceWorkbook; Expected = [string]$Run.CurrentSourceSha256 },
-        [pscustomobject]@{ Name = 'prior-year source workbook'; Path = [string]$Run.PriorYearSourceWorkbook; Expected = [string]$Run.PriorYearSourceSha256 },
-        [pscustomobject]@{ Name = 'staged workbook'; Path = [string]$Run.StagedWorkbook; Expected = [string]$Run.StagedWorkbookSha256 },
-        [pscustomobject]@{ Name = 'staged PDF'; Path = [string]$Run.StagedPdf; Expected = [string]$Run.StagedPdfSha256 }
-    )) {
-        $actual = Get-GssSafeHash $check.Path
-        if ($actual -ne $check.Expected.ToLowerInvariant()) {
-            throw "The $($check.Name) changed after review. Run a fresh copy-test."
-        }
-    }
-}
-
-function Get-GssBackupStatus {
-    param([object]$Result)
-
-    if ($null -eq $Result) { return '' }
-    if ($Result.PSObject.Properties.Name -contains 'BackupStatus') { return [string]$Result.BackupStatus }
-    if ($Result.PSObject.Properties.Name -contains 'Status') { return [string]$Result.Status }
-    return ''
-}
-
-function Invoke-GssPreparedBackupAbort {
-    param(
-        [Parameter(Mandatory)][string]$CoordinatorPath,
-        [Parameter(Mandatory)][string]$RunSummaryPath
-    )
-
-    $abort = & $CoordinatorPath -Operation Abort -RunSummaryPath $RunSummaryPath -OutputObject
-    if ((Get-GssBackupStatus $abort) -ne 'Aborted') {
-        throw "Drive prepared snapshot did not reach Aborted status (actual: '$(Get-GssBackupStatus $abort)')."
-    }
-    return $abort
-}
-
-function Invoke-GssSafeAnalysis {
-    param(
-        [Parameter(Mandatory)][string]$AnalyzerPath,
-        [Parameter(Mandatory)][string]$FolderPath,
-        [Parameter(Mandatory)][string]$RunLogPath,
-        [switch]$PublishPackage
-    )
-
-    $arguments = @{
-        Folder = $FolderPath
-        LogPath = $RunLogPath
-        OutputObject = $true
-    }
-    if ($PublishPackage) {
-        $arguments.PublishEmailPackage = $true
-    }
-    return & $AnalyzerPath @arguments
-}
-
-if ([string]::IsNullOrWhiteSpace($Folder)) {
-    $Folder = Split-Path -Parent $repoRoot
-}
-$Folder = $Folder.Trim('"')
-$Folder = (Resolve-Path -LiteralPath $Folder).Path
-
-$DriveBackupScript = Join-Path $scriptRoot 'Invoke-GSS-DriveBackup.ps1'
+. (Join-Path $scriptRoot 'Gss-Operations.ps1')
+$runtime = Get-GssRuntimeInfo -RepoRoot $repoRoot
+if ([string]::IsNullOrWhiteSpace($Folder)) { $Folder = Split-Path -Parent $repoRoot }
+$Folder = (Resolve-Path -LiteralPath $Folder.Trim('"')).Path
 $updater = Join-Path $scriptRoot 'Update-GSS-MainWorkbook.ps1'
 $analyzer = Join-Path $scriptRoot 'Analyze-GSS-Run.ps1'
-$resumeFinalizer = Join-Path $scriptRoot 'Resume-GSS-PendingFinalize.ps1'
-$runId = [guid]::NewGuid().ToString('D')
 $stateDirectory = Join-Path $Folder '_automation_runs\state'
 $activeRunPath = Join-Path $stateDirectory 'active-transaction.json'
-$receiptPath = Join-Path $stateDirectory "transaction-$runId.json"
-$mutex = New-Object System.Threading.Mutex($false, 'Global\GSSSurveyWorkbookAutomationTransaction')
-$ownsMutex = $false
-$ownsActiveMarker = $false
+$runId = [guid]::NewGuid().ToString('D')
+$receiptPath = Join-Path $stateDirectory "operations\transaction-$runId.json"
 $receipt = [ordered]@{
-    ReceiptSchemaVersion = 1
+    ReceiptSchemaVersion = 2
     RunId = $runId
     HostName = [Environment]::MachineName
+    ProgramRelease = $runtime.ReleaseTag
     StartedUtc = [datetime]::UtcNow.ToString('o')
     UpdatedUtc = [datetime]::UtcNow.ToString('o')
-    ProgramRelease = [string]$releaseIntegrity.ReleaseTag
-    ReleaseCommit = [string]$releaseIntegrity.HeadCommit
-    ReleaseIntegrityStatus = [string]$releaseIntegrity.Status
-    TransactionStatus = 'Starting'
+    TransactionStatus = 'Preparing'
+    ReportStatus = 'Preparing'
     BackupStatus = 'NotStarted'
+    PackageStatus = 'NotStarted'
+    DraftEvidenceBackupStatus = 'NotCreated'
+    PackagePublished = $false
     AutomaticSending = 'Disabled'
     ReceiptPath = $receiptPath
 }
+$mutex = New-Object Threading.Mutex($false, 'Global\GSSSurveyWorkbookAutomationTransaction')
+$ownsMutex = $false
+$ownsMarker = $false
+$liveRun = $null
+$reportValidated = $false
+
+function Save-GssLauncherReceipt {
+    $receipt.ReportBackupStatus = [string]$receipt.BackupStatus
+    $receipt.UpdatedUtc = [datetime]::UtcNow.ToString('o')
+    Write-GssOperationJson -Path $receiptPath -Value $receipt
+    if ($ownsMarker) { Write-GssOperationJson -Path $activeRunPath -Value $receipt }
+}
+function Invoke-GssLauncherAnalysis {
+    param([object]$Run, [switch]$Publish)
+    $arguments = @{ Folder = $Folder; LogPath = [string]$Run.LogPath; OutputObject = $true }
+    if ($Publish) { $arguments.PublishEmailPackage = $true }
+    & $analyzer @arguments
+}
+function Select-GssCorrectionSource {
+    param([object]$Failure)
+    if ($NonInteractive -or [string]$Failure.Exception.Data['GssChoice'] -ne 'CorrectionSource') { throw $Failure }
+    $candidates = @($Failure.Exception.Data['Candidates'])
+    if ($candidates.Count -eq 0) { throw $Failure }
+    Write-Information ([string]$Failure.Exception.Data['Message']) -InformationAction Continue
+    for ($index = 0; $index -lt $candidates.Count; $index++) {
+        Write-Information ("{0}. {1} - week ending {2}" -f ($index + 1), $candidates[$index].Path, $candidates[$index].WeekEnding) -InformationAction Continue
+    }
+    $answer = Read-Host 'Choose the source revision to use (number), or press Enter to leave the report unchanged'
+    $choice = 0
+    if (-not [int]::TryParse($answer, [ref]$choice) -or $choice -lt 1 -or $choice -gt $candidates.Count) { throw 'Source correction was not selected. No report changes were made.' }
+    return [string]$candidates[$choice - 1].Path
+}
+function Update-GssDetailAssignment {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'The explicit file/week and supersession choices below are the operator decision; a second generic confirmation adds no protection.')]
+    [CmdletBinding()]
+    param([object]$Review)
+    if ($NonInteractive -or -not $Review.DetailReadiness -or [string]$Review.DetailReadiness.Status -notin @('RequiresAssignment', 'Conflict', 'Missing')) { return $false }
+    $candidates = @($Review.DetailReadiness.Candidates)
+    if ($candidates.Count -eq 0) { return $false }
+    Write-Information "The report is ready. Select the guest-detail export for report week $($liveRun.CurrentWeekEnding) to prepare its draft package." -InformationAction Continue
+    for ($index = 0; $index -lt $candidates.Count; $index++) {
+        Write-Information ("{0}. {1} ({2} responses; visits {3} through {4})" -f ($index + 1), $candidates[$index].RelativePath, $candidates[$index].ResponseCount, $candidates[$index].VisitDateStart, $candidates[$index].VisitDateEnd) -InformationAction Continue
+    }
+    $answer = Read-Host "Enter the file number to assign to $($liveRun.CurrentWeekEnding), or press Enter to prepare the package later"
+    $choice = 0
+    if (-not [int]::TryParse($answer, [ref]$choice) -or $choice -lt 1 -or $choice -gt $candidates.Count) { return $false }
+    . (Join-Path $scriptRoot 'Gss-EmailPackage.ps1')
+    $selected = $candidates[$choice - 1]
+    $supersedes = @()
+    if ([string]$Review.DetailReadiness.Status -in @('Conflict', 'Missing')) {
+        $week = [datetime]::ParseExact([string]$liveRun.CurrentWeekEnding, 'yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture)
+        $assignments = @(Read-GssDetailReportingAssignment -FolderPath $Folder) + @(Get-GssPackagedDetailAssignment -FolderPath $Folder -ReportingDate $week)
+        $previousChoices = @($candidates | Where-Object ContentSha256 -ne $selected.ContentSha256 | ForEach-Object {
+            [pscustomobject]@{ ContentSha256 = $_.ContentSha256; Label = $_.RelativePath }
+        })
+        foreach ($assignment in @($assignments | Where-Object { $_.reporting_date -eq $liveRun.CurrentWeekEnding -and $_.content_sha256 -ne $selected.ContentSha256 })) {
+            if ([string]$assignment.content_sha256 -notin @($previousChoices.ContentSha256)) {
+                $previousChoices += [pscustomobject]@{ ContentSha256 = $assignment.content_sha256; Label = 'Previously assigned export (file unavailable)' }
+            }
+        }
+        if ($previousChoices.Count -eq 0) { return $false }
+        Write-Information 'Choose the old export version(s) this correction replaces. Files remain archived.' -InformationAction Continue
+        for ($index = 0; $index -lt $previousChoices.Count; $index++) {
+            Write-Information ("{0}. {1} [{2}]" -f ($index + 1), $previousChoices[$index].Label, ([string]$previousChoices[$index].ContentSha256).Substring(0, 8)) -InformationAction Continue
+        }
+        $answer = Read-Host 'Enter predecessor number(s), separated by commas, or press Enter to leave this conflict unresolved'
+        if ([string]::IsNullOrWhiteSpace($answer)) { return $false }
+        foreach ($token in $answer.Split(',')) {
+            $previous = 0
+            if (-not [int]::TryParse($token.Trim(), [ref]$previous) -or $previous -lt 1 -or $previous -gt $previousChoices.Count) { throw 'The correction predecessor selection was invalid; no assignment was changed.' }
+            $supersedes += [string]$previousChoices[$previous - 1].ContentSha256
+        }
+    }
+    Set-GssDetailReportingAssignment -FolderPath $Folder -DetailPath ([string]$selected.Path) -ReportingDate ([string]$liveRun.CurrentWeekEnding) -SupersedesContentSha256 @($supersedes | Sort-Object -Unique) | Out-Null
+    return $true
+}
 
 try {
-    try {
-        $ownsMutex = $mutex.WaitOne(0)
-    }
-    catch [System.Threading.AbandonedMutexException] {
-        $ownsMutex = $true
-    }
-    if (-not $ownsMutex) {
-        throw 'Another GSS workbook transaction is already active on this workstation.'
-    }
-
-    New-Item -ItemType Directory -Path $stateDirectory -Force | Out-Null
+    try { $ownsMutex = $mutex.WaitOne(0) } catch [Threading.AbandonedMutexException] { $ownsMutex = $true }
+    if (-not $ownsMutex) { throw 'Another GSS update is running on this computer.' }
     if (Test-Path -LiteralPath $activeRunPath -PathType Leaf) {
-        $existingActive = Get-Content -LiteralPath $activeRunPath -Raw | ConvertFrom-Json
-        $existingStatus = [string]$existingActive.TransactionStatus
-        $existingReceiptPath = [string]$existingActive.ReceiptPath
-        if (-not [string]::IsNullOrWhiteSpace($existingReceiptPath) -and
-            (Test-Path -LiteralPath $existingReceiptPath -PathType Leaf)) {
-            $existingReceipt = Get-Content -LiteralPath $existingReceiptPath -Raw | ConvertFrom-Json
-            if ([string]$existingReceipt.RunId -eq [string]$existingActive.RunId) {
-                $existingStatus = [string]$existingReceipt.TransactionStatus
-            }
+        $active = Get-Content -LiteralPath $activeRunPath -Raw | ConvertFrom-Json
+        $allowed = @('Committed', 'AlreadyCurrent', 'PackageBlocked', 'PendingFinalize', 'BackupCommitted', 'BackupBlocked', 'Aborted', 'Blocked')
+        $legacyRecovery = [int]$active.ReceiptSchemaVersion -lt 2 -and [string]$active.TransactionStatus -notin @('Committed', 'PackageBlocked', 'Aborted', 'Blocked')
+        if ($legacyRecovery -or [string]$active.TransactionStatus -notin $allowed) {
+            $resumeScript = Join-Path $scriptRoot 'Resume-GSS-PendingFinalize.ps1'
+            $backupOnly = [string]$active.TransactionStatus -in @('ReportReady', 'LocalSnapshotPending', 'PendingFinalize', 'BackupCommitted', 'BackupBlocked', 'PackageBlocked')
+            $resumeCommand = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{0}" -Folder "{1}" -RunId "{2}"{3}' -f $resumeScript, $Folder, $active.RunId, $(if ($backupOnly) { '' } else { ' -RestorePreviousReport' })
+            $recoveryReason = "Run $($active.RunId) is $($active.TransactionStatus). Recovery command: $resumeCommand"
+            if ($NonInteractive) { throw $recoveryReason }
+            Write-Information $recoveryReason -InformationAction Continue
+            $word = if ($backupOnly) { 'RETRY' } else { 'RESTORE' }
+            $action = if ($backupOnly) { 'retry the pending backup and package' } else { 'restore the previous good report without overwriting unrelated changes' }
+            $answer = Read-Host "Type $word to $action, or press Enter to stop"
+            if ($answer -cne $word) { throw "Recovery was not selected. $recoveryReason" }
+            $resumed = & $resumeScript -Folder $Folder -RunId ([string]$active.RunId) -RestorePreviousReport:(-not $backupOnly) -BackupFolder $BackupFolder -OutputObject
+            if ($resumed.ReportStatus -notin @('Ready', 'PreviousReportRestored', 'PreviousReportUnchanged')) { throw "Recovery did not establish a safe report state. $recoveryReason" }
+            if ([string]$resumed.TransactionStatus -eq 'LocalSnapshotPending') { throw "The report still needs a verified local recovery snapshot. $recoveryReason" }
         }
-        if ($existingStatus -notin @('Committed', 'PackageBlocked', 'Aborted', 'Blocked')) {
-            throw "Unresolved GSS transaction '$($existingActive.RunId)' is $existingStatus. Resume or review its exact receipt before starting another run: $existingReceiptPath"
-        }
-        Remove-Item -LiteralPath $activeRunPath -Force
+        # Backup-only pending work is independently retryable and never a write lock.
+        if (Test-Path -LiteralPath $activeRunPath) { Remove-Item -LiteralPath $activeRunPath -Force }
     }
-    Write-GssSafeAtomicJson -Path $activeRunPath -InputObject $receipt
-    $ownsActiveMarker = $true
-    Write-GssSafeAtomicJson -Path $receiptPath -InputObject $receipt
-
-    Write-Information '' -InformationAction Continue
-    Write-Information 'STEP 1 OF 4 - Testing the update' -InformationAction Continue
-    Write-Information 'The live workbook is not being changed.' -InformationAction Continue
-    $copyRun = & $updater `
-        -Folder $Folder `
-        -RunId $runId `
-        -ProgramRelease ([string]$releaseIntegrity.ReleaseTag) `
-        -MutexAlreadyHeld `
-        -OutputObject
-    if (-not $copyRun -or [string]::IsNullOrWhiteSpace([string]$copyRun.LogPath)) {
-        throw 'The copy-test updater did not return its exact run log path.'
-    }
-    $receipt.CopyRunLogPath = [string]$copyRun.LogPath
-    $receipt.RunFingerprint = [string]$copyRun.RunFingerprint
-    $receipt.TransactionStatus = 'CopyPrepared'
-    $receipt.UpdatedUtc = [datetime]::UtcNow.ToString('o')
-    Write-GssSafeAtomicJson -Path $activeRunPath -InputObject $receipt
-    Write-GssSafeAtomicJson -Path $receiptPath -InputObject $receipt
-
-    Write-Information '' -InformationAction Continue
-    Write-Information 'STEP 2 OF 4 - Checking the test results' -InformationAction Continue
-    $copyReview = Invoke-GssSafeAnalysis `
-        -AnalyzerPath $analyzer `
-        -FolderPath $Folder `
-        -RunLogPath $copyRun.LogPath
-    if ($copyReview.WorkbookStatus -eq 'Blocked') {
-        $receipt.TransactionStatus = 'Blocked'
-        $receipt.Error = 'Copy-test review blocked live promotion.'
-        $receipt.ReviewPath = [string]$copyReview.MarkdownPath
-        $receipt.UpdatedUtc = [datetime]::UtcNow.ToString('o')
-        Write-GssSafeAtomicJson -Path $receiptPath -InputObject $receipt
-        Write-Information '' -InformationAction Continue
-        Write-Information 'ATTENTION NEEDED - NO LIVE CHANGES MADE' -InformationAction Continue
-        Write-Information 'The test review found a problem. The live workbook was not updated.' -InformationAction Continue
-        Write-Information "Review details: $($copyReview.MarkdownPath)" -InformationAction Continue
-        exit 1
-    }
-
-    Write-Information '' -InformationAction Continue
-    Write-Information 'STEP 3 OF 4 - Choose whether to update the live workbook' -InformationAction Continue
-    Write-Information "Reviewed transaction fingerprint: $($copyRun.RunFingerprint)" -InformationAction Continue
-    Write-Information 'The copy-test passed. Type APPLY and press Enter to continue.' -InformationAction Continue
-    Write-Information 'Press Enter without typing APPLY to stop safely.' -InformationAction Continue
-    $confirmation = Read-Host 'Confirmation'
-
-    if ($confirmation -cne 'APPLY') {
-        $receipt.TransactionStatus = 'Aborted'
-        $receipt.BackupStatus = 'NotStarted'
-        $receipt.UpdatedUtc = [datetime]::UtcNow.ToString('o')
-        Write-GssSafeAtomicJson -Path $receiptPath -InputObject $receipt
-        Write-Information '' -InformationAction Continue
-        Write-Information 'NO LIVE CHANGES MADE' -InformationAction Continue
-        Write-Information 'The copy-test finished, but the live workbook was not updated.' -InformationAction Continue
-        exit 0
-    }
-
-    # Recheck every fingerprint input after the literal APPLY confirmation and
-    # before asking Drive to prepare the required recovery snapshot.
-    Assert-GssPreparedEvidenceUnchanged $copyRun
-    if (-not (Test-Path -LiteralPath $DriveBackupScript -PathType Leaf)) {
-        throw "Required Google Drive backup coordinator is unavailable: $DriveBackupScript"
-    }
-
-    Write-Information '' -InformationAction Continue
-    Write-Information 'Preparing the required private Google Drive recovery snapshot.' -InformationAction Continue
-    $backupPrepare = & $DriveBackupScript `
-        -Operation Prepare `
-        -RunSummaryPath $copyRun.LogPath `
-        -OutputObject
-    $prepareStatus = Get-GssBackupStatus $backupPrepare
-    if ($prepareStatus -ne 'Prepared' -or
-        [string]$backupPrepare.RunId -ne [string]$copyRun.RunId -or
-        [string]$backupPrepare.Fingerprint -ne [string]$copyRun.RunFingerprint) {
-        throw "Google Drive backup preparation did not reach Prepared status (actual: '$prepareStatus')."
-    }
-    if ([string]::IsNullOrWhiteSpace([string]$backupPrepare.PreparedManifestPath) -or
-        [string]::IsNullOrWhiteSpace([string]$backupPrepare.PreparedManifestSha256)) {
-        throw 'Google Drive preparation did not return its exact manifest path and hash.'
-    }
-    $receipt.BackupStatus = 'Prepared'
-    $receipt.BackupPrepare = $backupPrepare
-    $receipt.TransactionStatus = 'BackupPrepared'
-    $receipt.UpdatedUtc = [datetime]::UtcNow.ToString('o')
-    Write-GssSafeAtomicJson -Path $activeRunPath -InputObject $receipt
-    Write-GssSafeAtomicJson -Path $receiptPath -InputObject $receipt
-
-    Write-Information '' -InformationAction Continue
-    Write-Information 'STEP 4 OF 4 - Promoting the exact reviewed workbook' -InformationAction Continue
-    $liveRun = & $updater `
-        -Folder $Folder `
-        -Apply `
-        -PreparedRunLogPath $copyRun.LogPath `
-        -ExpectedFingerprint $copyRun.RunFingerprint `
-        -DrivePreparedManifestPath $backupPrepare.PreparedManifestPath `
-        -ExpectedDrivePreparedManifestSha256 $backupPrepare.PreparedManifestSha256 `
-        -ProgramRelease ([string]$releaseIntegrity.ReleaseTag) `
-        -MutexAlreadyHeld `
-        -OutputObject
-    if (-not $liveRun -or [string]::IsNullOrWhiteSpace([string]$liveRun.LogPath)) {
-        throw 'The live updater did not return its exact transaction log path.'
-    }
-    $receipt.LiveRunLogPath = [string]$liveRun.LogPath
-    $receipt.TransactionStatus = 'WorkbookCommitted'
-    $receipt.UpdatedUtc = [datetime]::UtcNow.ToString('o')
-    Write-GssSafeAtomicJson -Path $activeRunPath -InputObject $receipt
-    Write-GssSafeAtomicJson -Path $receiptPath -InputObject $receipt
-
-    Write-Information 'Checking the completed live update before finalizing Drive.' -InformationAction Continue
-    $liveReview = Invoke-GssSafeAnalysis `
-        -AnalyzerPath $analyzer `
-        -FolderPath $Folder `
-        -RunLogPath $liveRun.LogPath
-    if ($liveReview.WorkbookStatus -eq 'Blocked') {
-        $receipt.TransactionStatus = 'RollbackAttempting'
-        $receipt.BackupStatus = 'Prepared'
-        $receipt.UpdatedUtc = [datetime]::UtcNow.ToString('o')
-        Write-GssSafeAtomicJson -Path $activeRunPath -InputObject $receipt
-        Write-GssSafeAtomicJson -Path $receiptPath -InputObject $receipt
+    $ownsMarker = $true
+    Save-GssLauncherReceipt
+    Write-Information 'Preparing and checking the report.' -InformationAction Continue
+    while ($true) {
         try {
-            $rollback = & $updater `
-                -Folder $Folder `
-                -RollbackRunLogPath $liveRun.LogPath `
-                -ProgramRelease ([string]$releaseIntegrity.ReleaseTag) `
-                -MutexAlreadyHeld `
-                -OutputObject
+            $arguments = @{ Folder = $Folder; MainWorkbookName = $MainWorkbookName; RunId = $runId; ProgramRelease = $runtime.ReleaseTag; MutexAlreadyHeld = $true; OutputObject = $true }
+            if ($ReportingWeekEnding) { $arguments.ReportingWeekEnding = $ReportingWeekEnding }
+            if ($CorrectionSourcePath.Count -gt 0) { $arguments.CorrectionSourcePath = $CorrectionSourcePath }
+            $copyRun = & $updater @arguments
+            break
         }
-        catch {
-            $receipt.TransactionStatus = 'RollbackBlocked'
-            $receipt.BackupStatus = 'Prepared'
-            $receipt.RollbackError = $_.Exception.Message
-            $receipt.Error = 'The post-promotion review blocked the live workbook and conflict-aware rollback did not complete.'
-            $receipt.ReviewPath = [string]$liveReview.MarkdownPath
-            $receipt.UpdatedUtc = [datetime]::UtcNow.ToString('o')
-            Write-GssSafeAtomicJson -Path $activeRunPath -InputObject $receipt
-            Write-GssSafeAtomicJson -Path $receiptPath -InputObject $receipt
-            throw
-        }
-        if ([string]$rollback.Status -eq 'RolledBack') {
-            $backupAbort = Invoke-GssPreparedBackupAbort -CoordinatorPath $DriveBackupScript -RunSummaryPath $copyRun.LogPath
-            $receipt.TransactionStatus = 'Aborted'
-            $receipt.BackupStatus = 'Aborted'
-            $receipt.BackupAbort = $backupAbort
-        }
-        else {
-            $receipt.TransactionStatus = 'RollbackBlocked'
-            $receipt.BackupStatus = 'Prepared'
-        }
-        $receipt.Rollback = $rollback
-        $receipt.Error = 'The post-promotion review blocked the live workbook.'
-        $receipt.ReviewPath = [string]$liveReview.MarkdownPath
-        $receipt.UpdatedUtc = [datetime]::UtcNow.ToString('o')
-        Write-GssSafeAtomicJson -Path $activeRunPath -InputObject $receipt
-        Write-GssSafeAtomicJson -Path $receiptPath -InputObject $receipt
-        Write-Information '' -InformationAction Continue
-        Write-Information 'ATTENTION NEEDED' -InformationAction Continue
-        Write-Information 'The final review failed and the conflict-aware rollback was attempted.' -InformationAction Continue
-        Write-Information "Review details: $($liveReview.MarkdownPath)" -InformationAction Continue
-        exit 1
+        catch { $CorrectionSourcePath += Select-GssCorrectionSource -Failure $_ }
     }
-
-    # A valid workbook is never rolled back solely because cloud finalization
-    # is unavailable. It remains applied, while package publication stays
-    # blocked and RetryFinalize can resume idempotently from this log.
-    try {
-        $backupFinalize = & $DriveBackupScript `
-            -Operation Finalize `
-            -RunSummaryPath $liveRun.LogPath `
-            -OutputObject
-        $finalizeStatus = Get-GssBackupStatus $backupFinalize
-        if ($finalizeStatus -eq 'Committed' -and
-            ([string]$backupFinalize.RunId -ne [string]$liveRun.RunId -or
-                [string]$backupFinalize.Fingerprint -ne [string]$liveRun.RunFingerprint)) {
-            throw 'Drive finalization returned Committed for different transaction evidence.'
+    if (-not $copyRun -or -not $copyRun.LogPath) { throw 'The updater did not return its prepared report.' }
+    $receipt.CopyRunLogPath = Get-GssOperationRelativePath -Root $Folder -Path $copyRun.LogPath
+    $receipt.RunFingerprint = $copyRun.RunFingerprint
+    $receipt.ReportingWeekEnding = $copyRun.CurrentWeekEnding
+    $copyReview = Invoke-GssLauncherAnalysis -Run $copyRun
+    if ($copyReview.WorkbookStatus -eq 'Blocked') { throw "Report validation failed; the previous report is unchanged. $($copyReview.MarkdownPath)" }
+    $existingReport = Find-GssExistingReport -PreparedRun $copyRun -Folder $Folder
+    if ($existingReport) {
+        $receipt.TransactionStatus = 'AlreadyCurrent'
+        $receipt.ReportStatus = 'AlreadyCurrent'
+        $receipt.ReportRunId = [string]$existingReport.RunId
+        $receipt.LiveRunLogPath = Get-GssOperationRelativePath -Root $Folder -Path $existingReport.LogPath
+        $receipt.WorkbookPath = $existingReport.TargetWorkbookRelativePath
+        $receipt.PdfPath = $existingReport.EmailComparisonPdfRelativePath
+        $reportValidated = $true
+        $liveRun = $existingReport
+        if ($copyRun.AcceptedSourceChoices) {
+            $choiceReceiptPath = & {
+                param($UpdaterPath, $Prepared, $Existing, $DataFolder)
+                . $UpdaterPath
+                Write-GssAcceptedSourceChoiceReceipt -PreparedRun $Prepared -ExistingRun $Existing -FolderPath $DataFolder -LogDirectory (Join-Path $DataFolder '_automation_runs\logs')
+            } $updater $copyRun $existingReport $Folder
+            if ($choiceReceiptPath) { $receipt.AcceptedSourceChoiceLogPath = Get-GssOperationRelativePath -Root $Folder -Path $choiceReceiptPath }
         }
+        try { [void](Update-GssDetailAssignment -Review $copyReview) } catch { $receipt.PackageError = $_.Exception.Message }
+        # The new check has made no live write, so it must not hold a marker
+        # against retrying the existing report's independent backup/package.
+        if (Test-Path -LiteralPath $activeRunPath) { Remove-Item -LiteralPath $activeRunPath -Force }
+        $ownsMarker = $false
+        try {
+            $resumed = & (Join-Path $scriptRoot 'Resume-GSS-PendingFinalize.ps1') -Folder $Folder -LiveRunLogPath $existingReport.LogPath -FreshPreparedRunLogPath $copyRun.LogPath -BackupFolder $BackupFolder -OutputObject
+            $receipt.BackupStatus = $resumed.BackupStatus
+            $receipt.PackageStatus = $resumed.PackageStatus
+            $receipt.PackagePublished = [bool]$resumed.PackagePublished
+            $receipt.DraftEvidenceBackupStatus = [string]$resumed.DraftEvidenceBackupStatus
+            if ($resumed.PackagePath) { $receipt.PackagePath = $resumed.PackagePath }
+        }
+        catch { $receipt.BackupStatus = 'Pending'; $receipt.PackageStatus = 'WaitingForRecovery'; $receipt.Error = $_.Exception.Message }
+        $receipt.CompletedUtc = [datetime]::UtcNow.ToString('o')
+        Save-GssLauncherReceipt
+        Write-Information "REPORT ALREADY CURRENT - week ending $($existingReport.CurrentWeekEnding). No report files were replaced. Backup: $($receipt.BackupStatus). Draft package: $($receipt.PackageStatus)." -InformationAction Continue
+        if ($OutputObject) { [pscustomobject]$receipt }
+        return
+    }
+    $receipt.StartingWorkbookRelativePath = if ($copyRun.StartingWorkbookRelativePath) { [string]$copyRun.StartingWorkbookRelativePath } else { Get-GssOperationRelativePath -Root $Folder -Path (Join-Path $Folder "01 Main Workbook\$MainWorkbookName") }
+    $receipt.StartingWorkbookSha256 = [string]$copyRun.StartingWorkbookSha256
+    $startingPdfPath = Join-Path $Folder ('04 Email Comparison PDFs\' + [IO.Path]::GetFileName([string]$copyRun.EmailComparisonPdf))
+    $receipt.StartingPdfRelativePath = Get-GssOperationRelativePath -Root $Folder -Path $startingPdfPath
+    $receipt.StartingPdfExisted = Test-Path -LiteralPath $startingPdfPath -PathType Leaf
+    $receipt.StartingPdfSha256 = if ($receipt.StartingPdfExisted) { Get-GssOperationHash $startingPdfPath } else { $null }
+    $receipt.TransactionStatus = 'Promoting'
+    Save-GssLauncherReceipt
+    $liveRun = & $updater -Folder $Folder -MainWorkbookName $MainWorkbookName -Apply -PreparedRunLogPath $copyRun.LogPath -ExpectedFingerprint $copyRun.RunFingerprint -ProgramRelease $runtime.ReleaseTag -MutexAlreadyHeld -OutputObject
+    if (-not $liveRun -or -not $liveRun.LogPath) { throw 'The updater did not return its committed transaction log.' }
+    $receipt.LiveRunLogPath = Get-GssOperationRelativePath -Root $Folder -Path $liveRun.LogPath
+    $receipt.TransactionStatus = 'Validating'
+    Save-GssLauncherReceipt
+    $liveReview = Invoke-GssLauncherAnalysis -Run $liveRun
+    if ($liveReview.WorkbookStatus -eq 'Blocked') { throw "The completed report failed validation. $($liveReview.MarkdownPath)" }
+    $reportValidated = $true
+    $receipt.ReportStatus = 'Ready'
+    $receipt.TransactionStatus = 'ReportReady'
+    $receipt.ReviewPath = Get-GssOperationRelativePath -Root $Folder -Path $liveReview.MarkdownPath
+    $receipt.WorkbookPath = $liveRun.TargetWorkbookRelativePath
+    $receipt.PdfPath = $liveRun.EmailComparisonPdfRelativePath
+    Save-GssLauncherReceipt
+
+    try {
+        if (Update-GssDetailAssignment -Review $liveReview) { $liveReview = Invoke-GssLauncherAnalysis -Run $liveRun }
+    }
+    catch { $receipt.PackageError = $_.Exception.Message }
+
+    try {
+        $snapshotPath = New-GssRunSnapshot -Run $liveRun -Folder $Folder
+        $receipt.LocalSnapshotPath = Get-GssOperationRelativePath -Root $Folder -Path $snapshotPath
+        $receipt.LocalSnapshotStatus = 'Verified'
     }
     catch {
-        $backupFinalize = [pscustomobject]@{
-            BackupStatus = 'PendingFinalize'
-            Error = $_.Exception.Message
+        $receipt.TransactionStatus = 'LocalSnapshotPending'
+        $receipt.LocalSnapshotStatus = 'Failed'
+        $receipt.BackupStatus = 'Pending'
+        $receipt.BackupError = $_.Exception.Message
+    }
+    if ($receipt.LocalSnapshotStatus -eq 'Verified') {
+        try {
+            $backup = Sync-GssRunSnapshot -ManifestPath $snapshotPath -BackupFolder $BackupFolder
+            $receipt.BackupStatus = $backup.BackupStatus
+            $receipt.Backup = $backup
         }
-        $finalizeStatus = 'PendingFinalize'
+        catch { $receipt.BackupStatus = 'Pending'; $receipt.BackupError = $_.Exception.Message }
     }
-    $receipt.BackupStatus = $finalizeStatus
-    $receipt.BackupFinalize = $backupFinalize
-    $receipt.ReviewPath = [string]$liveReview.MarkdownPath
-    $receipt.UpdatedUtc = [datetime]::UtcNow.ToString('o')
+    Save-GssLauncherReceipt
 
-    if ($finalizeStatus -eq 'Blocked') {
-        $receipt.TransactionStatus = 'BackupBlocked'
-        $receipt.BackupStatus = 'Blocked'
-        Write-GssSafeAtomicJson -Path $activeRunPath -InputObject $receipt
-        Write-GssSafeAtomicJson -Path $receiptPath -InputObject $receipt
-        Write-Information '' -InformationAction Continue
-        Write-Information 'WORKBOOK READY - DRIVE BACKUP BLOCKED' -InformationAction Continue
-        Write-Information 'The validated workbook remains applied, but Drive reported a non-retryable conflict.' -InformationAction Continue
-        Write-Information 'Package publication is blocked. Review the Drive backup status and chain evidence manually.' -InformationAction Continue
-        exit 1
-    }
-    if ($finalizeStatus -ne 'Committed') {
-        $receipt.TransactionStatus = 'PendingFinalize'
-        $receipt.BackupStatus = 'PendingFinalize'
-        Write-GssSafeAtomicJson -Path $activeRunPath -InputObject $receipt
-        Write-GssSafeAtomicJson -Path $receiptPath -InputObject $receipt
-        Write-Information '' -InformationAction Continue
-        Write-Information 'WORKBOOK READY - DRIVE FINALIZATION PENDING' -InformationAction Continue
-        Write-Information 'The validated workbook remains applied. Email package publication is blocked.' -InformationAction Continue
-        Write-Information "Resume with: powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$resumeFinalizer`" -LiveRunLogPath `"$($liveRun.LogPath)`"" -InformationAction Continue
-        exit 1
-    }
-
-    # Package publication occurs only after Drive returned Committed.
-    $receipt.TransactionStatus = 'BackupCommitted'
-    $receipt.BackupStatus = 'Committed'
-    $receipt.UpdatedUtc = [datetime]::UtcNow.ToString('o')
-    Write-GssSafeAtomicJson -Path $activeRunPath -InputObject $receipt
-    Write-GssSafeAtomicJson -Path $receiptPath -InputObject $receipt
-    $publishedReview = Invoke-GssSafeAnalysis `
-        -AnalyzerPath $analyzer `
-        -FolderPath $Folder `
-        -RunLogPath $liveRun.LogPath `
-        -PublishPackage
-    $receipt.PackagePublished = [bool]($publishedReview.EmailReadiness -eq 'Ready' -and $publishedReview.EmailPackage)
-    $receipt.PackagePath = if ($publishedReview.EmailPackage) { [string]$publishedReview.EmailPackage.PackagePath } else { $null }
-    if ($receipt.PackagePublished) {
-        $receipt.TransactionStatus = 'Committed'
-        $receipt.CompletedUtc = [datetime]::UtcNow.ToString('o')
-    }
-    else {
-        $receipt.TransactionStatus = 'PackageBlocked'
-        $receipt.Error = @($publishedReview.Qa.EmailBlockers) -join '; '
-    }
-    $receipt.UpdatedUtc = [datetime]::UtcNow.ToString('o')
-    Write-GssSafeAtomicJson -Path $receiptPath -InputObject $receipt
-
-    Write-Information '' -InformationAction Continue
-    Write-Information 'UPDATE COMPLETE' -InformationAction Continue
-    Write-Information 'The exact reviewed workbook was applied, validated, and committed to the private Drive backup.' -InformationAction Continue
-    Write-Information "Review details: $($publishedReview.MarkdownPath)" -InformationAction Continue
-    if ($publishedReview.EmailReadiness -eq 'Ready' -and $publishedReview.EmailPackage) {
-        Write-Information "Email package ready: $($publishedReview.EmailPackage.PackagePath)" -InformationAction Continue
-    }
-    else {
-        Write-Information 'EMAIL PACKAGE NOT READY' -InformationAction Continue
-        Write-Information 'The workbook and Drive backup succeeded, but package publication remains blocked.' -InformationAction Continue
-        foreach ($blocker in @($publishedReview.Qa.EmailBlockers)) {
-            Write-Information "  - $blocker" -InformationAction Continue
+    try {
+        if ($receipt.BackupStatus -eq 'Committed') {
+            $published = Invoke-GssLauncherAnalysis -Run $liveRun -Publish
+            $receipt.PackagePublished = [bool]($published.EmailReadiness -eq 'Ready' -and $published.EmailPackage)
+            $receipt.PackageStatus = if ($receipt.PackagePublished) { 'Ready' } elseif ($published.EmailReadiness -eq 'WaitingForInput') { 'WaitingForInput' } else { 'Blocked' }
+            $receipt.PackagePath = if ($receipt.PackagePublished) { Get-GssOperationRelativePath -Root $Folder -Path $published.EmailPackage.PackagePath } else { $null }
+            if ($receipt.PackagePublished) { $receipt.DraftEvidenceBackupStatus = 'LocalOnly' }
+            if (-not $receipt.PackagePublished) { $receipt.PackageBlockers = @($published.Qa.EmailBlockers) }
         }
-        exit 1
+        else { $receipt.PackageStatus = 'WaitingForBackup' }
     }
+    catch { $receipt.PackageStatus = 'Blocked'; $receipt.PackageError = $_.Exception.Message }
+    if ($receipt.LocalSnapshotStatus -eq 'Verified') { $receipt.TransactionStatus = 'Committed' }
+    $receipt.CompletedUtc = [datetime]::UtcNow.ToString('o')
+    Save-GssLauncherReceipt
+    Write-Information "REPORT READY - week ending $($liveRun.CurrentWeekEnding). Backup: $($receipt.BackupStatus). Draft package: $($receipt.PackageStatus)." -InformationAction Continue
+    Write-Information "Review: $($liveReview.MarkdownPath)" -InformationAction Continue
 }
 catch {
-    $outerFailure = $_
-    if ($receipt.BackupStatus -eq 'Prepared' -and
-        $receipt.TransactionStatus -notin @('WorkbookCommitted', 'PendingFinalize', 'BackupCommitted', 'Committed', 'PackageBlocked', 'RollbackAttempting', 'RollbackBlocked', 'BackupBlocked')) {
+    $failure = $_
+    $receipt.Error = $failure.Exception.Message
+    if ($liveRun -and -not $reportValidated) {
         try {
-            $canAbort = $false
-            if ($copyRun -and $copyRun.StartingWorkbook -and (Test-Path -LiteralPath $copyRun.StartingWorkbook -PathType Leaf)) {
-                $canAbort = (Get-GssSafeHash ([string]$copyRun.StartingWorkbook)) -eq ([string]$copyRun.StartingWorkbookSha256).ToLowerInvariant()
+            $receipt.TransactionStatus = 'RollbackAttempting'
+            Save-GssLauncherReceipt
+            $rollback = & $updater -Folder $Folder -MainWorkbookName $MainWorkbookName -RollbackRunLogPath $liveRun.LogPath -ProgramRelease $runtime.ReleaseTag -MutexAlreadyHeld -OutputObject
+            if ([string]$rollback.Status -ne 'RolledBack') { throw 'Rollback did not verify the previous report.' }
+            $receipt.TransactionStatus = 'Aborted'
+            $receipt.ReportStatus = 'PreviousReportRestored'
+            $receipt.Rollback = $rollback
+        }
+        catch { $receipt.TransactionStatus = 'RollbackBlocked'; $receipt.ReportStatus = 'RecoveryRequired'; $receipt.RollbackError = $_.Exception.Message }
+    }
+    elseif ($receipt.TransactionStatus -eq 'Promoting') {
+        $receipt.TransactionStatus = 'RecoveryRequired'
+        $receipt.ReportStatus = 'RecoveryRequired'
+        try {
+            $journals = @(Get-ChildItem -LiteralPath (Join-Path $Folder '_automation_runs\logs') -File -Filter "*_$runId`_apply.json")
+            if ($journals.Count -eq 0) {
+                $closed = Complete-GssUnstartedOperation -Folder $Folder -RunId $runId -ResumeScript (Join-Path $scriptRoot 'Resume-GSS-PendingFinalize.ps1')
+                $receipt.TransactionStatus = $closed.TransactionStatus
+                $receipt.ReportStatus = $closed.ReportStatus
+                $receipt.Recovery = $closed.Recovery
             }
-            if ($canAbort) {
-                $backupAbort = Invoke-GssPreparedBackupAbort -CoordinatorPath $DriveBackupScript -RunSummaryPath $copyRun.LogPath
-                $receipt.BackupStatus = 'Aborted'
-                $receipt.BackupAbort = $backupAbort
-                $receipt.TransactionStatus = 'Aborted'
-            }
-            else {
-                $receipt.TransactionStatus = 'RollbackBlocked'
+            elseif ($journals.Count -eq 1) {
+                $failedRun = Get-Content -LiteralPath $journals[0].FullName -Raw | ConvertFrom-Json
+                if ([string]$failedRun.TransactionStatus -in @('Aborted', 'Blocked')) {
+                    $closed = & (Join-Path $scriptRoot 'Resume-GSS-PendingFinalize.ps1') -Folder $Folder -RunId $runId -RestorePreviousReport -OutputObject
+                    $receipt.TransactionStatus = $closed.TransactionStatus
+                    $receipt.ReportStatus = $closed.ReportStatus
+                    $receipt.Recovery = $closed.Recovery
+                }
             }
         }
-        catch {
-            $receipt.TransactionStatus = 'Blocked'
-            $receipt.BackupAbortError = $_.Exception.Message
-        }
+        catch { $receipt.RecoveryError = $_.Exception.Message }
     }
-    $receipt.TransactionStatus = if ($receipt.BackupStatus -eq 'Committed' -or $receipt.TransactionStatus -eq 'BackupCommitted') {
-        'PackageBlocked'
-    }
-    elseif ($receipt.TransactionStatus -eq 'WorkbookCommitted') {
-        'PendingFinalize'
-    }
-    elseif ($receipt.TransactionStatus -eq 'RollbackAttempting') {
-        'RollbackBlocked'
-    }
-    elseif ($receipt.TransactionStatus -in @('Aborted', 'RollbackBlocked', 'BackupBlocked')) {
-        $receipt.TransactionStatus
-    }
-    else {
-        'Blocked'
-    }
-    $receipt.Error = $outerFailure.Exception.Message
-    $receipt.UpdatedUtc = [datetime]::UtcNow.ToString('o')
-    try {
-        if ($ownsActiveMarker -and (Test-Path -LiteralPath $activeRunPath -PathType Leaf)) {
-            Write-GssSafeAtomicJson -Path $activeRunPath -InputObject $receipt
-        }
-        Write-GssSafeAtomicJson -Path $receiptPath -InputObject $receipt
-    }
-    catch { Write-Verbose "The final transaction receipt could not be updated: $($_.Exception.Message)" }
-    throw
+    elseif (-not $reportValidated) { $receipt.TransactionStatus = 'Blocked'; $receipt.ReportStatus = 'Blocked' }
+    if ($ownsMutex -and $ownsMarker) { Save-GssLauncherReceipt }
+    throw $failure
 }
 finally {
-    if ($ownsActiveMarker -and
-        $receipt.TransactionStatus -in @('Committed', 'PackageBlocked', 'Aborted', 'Blocked') -and
-        (Test-Path -LiteralPath $activeRunPath -PathType Leaf)) {
+    if ($ownsMarker -or $reportValidated) {
         try {
-            $active = Get-Content -LiteralPath $activeRunPath -Raw | ConvertFrom-Json
-            if ([string]$active.RunId -eq $runId) {
-                Remove-Item -LiteralPath $activeRunPath -Force
+            Write-GssOperationSummary -Folder $Folder -Receipt ([pscustomobject]$receipt) -ResumeScript (Join-Path $scriptRoot 'Resume-GSS-PendingFinalize.ps1')
+            if ($ownsMarker -and $receipt.TransactionStatus -notin @('RecoveryRequired', 'RollbackAttempting', 'RollbackBlocked', 'Promoting', 'Validating', 'ReportReady', 'LocalSnapshotPending')) {
+                if (Test-Path -LiteralPath $activeRunPath) {
+                    $active = Get-Content -LiteralPath $activeRunPath -Raw | ConvertFrom-Json
+                    if ([string]$active.RunId -eq $runId) { Remove-Item -LiteralPath $activeRunPath -Force }
+                }
             }
         }
-        catch { Write-Verbose "The active transaction marker could not be inspected or removed: $($_.Exception.Message)" }
+        catch { Write-Warning "Could not publish the final status: $($_.Exception.Message)" }
     }
-    if ($ownsMutex) {
-        try { $mutex.ReleaseMutex() }
-        catch { Write-Verbose "The GSS transaction mutex could not be released cleanly: $($_.Exception.Message)" }
-    }
+    if ($ownsMutex) { $mutex.ReleaseMutex() }
     $mutex.Dispose()
 }
+if ($OutputObject) { [pscustomobject]$receipt }

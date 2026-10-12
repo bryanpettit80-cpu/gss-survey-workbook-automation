@@ -18,6 +18,7 @@ backups/
 logs/
 test-output/
 TestResults/
+[Tt]est[Rr]esults.xml
 *.trx
 *.nunit.xml
 *.log

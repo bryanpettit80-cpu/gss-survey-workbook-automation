@@ -1037,14 +1037,29 @@ function Invoke-GssRunAnalysis {
     $commenterLensJsonPath = Join-Path $reviewFolder 'commenter_lens.json'
     $commenterLensCsvPath = Join-Path $reviewFolder 'commenter_lens.csv'
     $modeling = Get-GssPopulationModelingAvailability
+    $detailReadiness = $null
     try {
-        $commenterInventory = Get-GssDetailInventory -FolderPath $FolderPath -ReportingDate $currentWeek
+        $commenterInventory = Get-GssDetailInventory -FolderPath $FolderPath -ReportingDate $currentWeek -AllowIncomplete
+        $detailReadiness = $commenterInventory.Readiness
+        if ($detailReadiness.Status -eq 'Conflict') { throw 'Guest-detail corrections require review.' }
         $commenterLens = Get-GssCommenterLens `
             -Inventory $commenterInventory `
             -MetricDetail $metricDetail `
             -ReportingDate $currentWeek
     }
     catch {
+        if ($null -eq $detailReadiness) {
+            $detailFolder = Join-Path $FolderPath '03 Uploaded Survey Workbooks'
+            $missing = -not (Test-Path -LiteralPath $detailFolder -PathType Container) -or
+                @(Get-ChildItem -LiteralPath $detailFolder -Filter '*.xlsx' -File -Recurse -ErrorAction SilentlyContinue).Count -eq 0
+            $detailReadiness = [pscustomobject]@{
+                Status = if ($missing) { 'Missing' } else { 'Conflict' }
+                ReasonCode = if ($missing) { 'detail_missing' } else { 'detail_invalid' }
+                ReportingDate = $currentWeek.ToString('yyyy-MM-dd')
+                Message = if ($missing) { 'The guest-detail export has not arrived.' } else { 'Guest-detail files or reporting assignments could not be validated. Review the detail sources.' }
+                Candidates = @()
+            }
+        }
         $commenterLens = Get-GssCommenterLensFallback `
             -ReportingDate $currentWeek `
             -Status DataQualityReview `
@@ -1093,6 +1108,7 @@ function Invoke-GssRunAnalysis {
         MetricDetail = $metricDetail
         Modeling = $modeling
         CommenterLens = $commenterLens
+        DetailReadiness = $detailReadiness
         EmailPackage = $null
         RawDataSummary = [pscustomobject]@{
             RowCount = $workbookData.RawRows.Count
@@ -1103,6 +1119,7 @@ function Invoke-GssRunAnalysis {
 
     if ($PublishPackage) {
         try {
+            if ($detailReadiness.Status -ne 'Ready') { throw $detailReadiness.Message }
             $package = New-GssEmailPackage `
                 -FolderPath $FolderPath `
                 -RunLog $runLog `
@@ -1113,9 +1130,9 @@ function Invoke-GssRunAnalysis {
             $result.Qa.EmailReadiness = $package.EmailReadiness
         }
         catch {
-            $packageBlocker = 'Email package creation failed. Inspect the local source files and rerun after correction; no raw error text was persisted.'
-            $result.EmailReadiness = 'Blocked'
-            $result.Qa.EmailReadiness = 'Blocked'
+            $packageBlocker = if ($detailReadiness.Status -ne 'Ready') { $detailReadiness.Message } else { 'Email package creation failed. Inspect the local source files and rerun after correction; no raw error text was persisted.' }
+            $result.EmailReadiness = if ($detailReadiness.Status -in @('Missing', 'RequiresAssignment')) { 'WaitingForInput' } else { 'Blocked' }
+            $result.Qa.EmailReadiness = $result.EmailReadiness
             $result.Qa.EmailBlockers = @($result.Qa.EmailBlockers) + $packageBlocker
             $result.Qa.Blockers = @($result.Qa.Blockers) + $packageBlocker
             if ($result.WorkbookStatus -ne 'Blocked') { $result.OverallStatus = 'Review' }

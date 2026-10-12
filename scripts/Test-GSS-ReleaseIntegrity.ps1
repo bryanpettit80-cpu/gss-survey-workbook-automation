@@ -3,7 +3,9 @@ param(
     [string]$RepoRoot,
     [string]$ManifestPath,
     [switch]$SkipTagCheck,
-    [switch]$AllowDirtyTree
+    [switch]$InstallationOnly,
+    [switch]$AllowDirtyTree,
+    [switch]$RequireExcelReceipt
 )
 
 $ErrorActionPreference = 'Stop'
@@ -17,7 +19,9 @@ Import-Module (Join-Path (Split-Path -Parent $PSCommandPath) 'Gss-ReleaseIntegri
 $arguments = @{
     RepoRoot = $RepoRoot
     SkipTagCheck = $SkipTagCheck
+    InstallationOnly = $InstallationOnly
     AllowDirtyTree = $AllowDirtyTree
+    RequireExcelReceipt = $RequireExcelReceipt
 }
 if (-not [string]::IsNullOrWhiteSpace($ManifestPath)) {
     $arguments.ManifestPath = $ManifestPath

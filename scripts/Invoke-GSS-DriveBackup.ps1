@@ -1,10 +1,12 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
-    [ValidateSet('Commission', 'RecordMetadataReadback', 'Prepare', 'Finalize', 'RetryFinalize', 'Abort', 'Inventory', 'RetentionReport', 'VerifyRestore', 'RestoreDrillStatus', 'CapacityProjection')]
+    [ValidateSet('SyncRun', 'VerifyRun', 'Commission', 'RecordMetadataReadback', 'Prepare', 'Finalize', 'RetryFinalize', 'Abort', 'Inventory', 'RetentionReport', 'VerifyRestore', 'RestoreDrillStatus', 'CapacityProjection')]
     [string]$Operation,
     [string]$RunSummaryPath,
     [string]$RunId,
+    [string]$RunSnapshotPath,
+    [string]$BackupFolder,
     [string]$SettingsPath,
     [string]$DriveRootPath,
     [string]$DriveFolderId,
@@ -23,6 +25,20 @@ $ErrorActionPreference = 'Stop'
 
 $scriptRoot = Split-Path -Parent $PSCommandPath
 . (Join-Path $scriptRoot 'Gss-DriveBackup.ps1')
+. (Join-Path $scriptRoot 'Gss-Operations.ps1')
+
+if ($Operation -in @('SyncRun', 'VerifyRun')) {
+    if ([string]::IsNullOrWhiteSpace($RunSnapshotPath)) { throw "$Operation requires RunSnapshotPath." }
+    $result = if ($Operation -eq 'SyncRun') {
+        Sync-GssRunSnapshot -ManifestPath $RunSnapshotPath -BackupFolder $BackupFolder
+    }
+    else {
+        $snapshot = Test-GssRunSnapshot -ManifestPath $RunSnapshotPath
+        [pscustomobject]@{ Status = 'Verified'; RunId = $snapshot.run_id; FileCount = @($snapshot.files).Count; LiveWorkbookOverwritten = $false }
+    }
+    if ($OutputObject) { $result } else { $result | Format-List }
+    return
+}
 
 if ([string]::IsNullOrWhiteSpace($SettingsPath)) {
     $SettingsPath = Get-GssDriveBackupDefaultSettingsPath

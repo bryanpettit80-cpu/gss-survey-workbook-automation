@@ -80,7 +80,7 @@ function Get-GssReleaseTrackedFile {
 function Get-GssReleaseRole {
     param([Parameter(Mandatory)][string]$Path)
 
-    if ($Path -like 'scripts/Test-*' -or $Path -like 'tests/*') { return 'validation' }
+    if ($Path -like 'scripts/Test-*' -or $Path -like 'tests/*' -or $Path -like 'tools/*') { return 'validation' }
     if ($Path -like 'scripts/*') { return 'runtime' }
     if ($Path -like 'requirements*.lock') { return 'runtime-dependency' }
     if ($Path -like 'templates/*') { return 'operator-template' }
@@ -178,14 +178,19 @@ function New-GssReleaseManifest {
         generated_at_utc = [datetime]::UtcNow.ToString('o')
         classification = 'PROGRAM SOURCE ONLY - NO GSS WORKBOOKS, REPORTS, OR CUSTOMER DATA'
         runtime_contract = [ordered]@{
-            require_clean_tree = $true
-            reject_untracked_executables = $true
-            require_exact_tag_at_head = $true
+            require_clean_tree = $false
+            reject_untracked_executables = $false
+            require_exact_tag_at_head = $false
             automatic_sending = 'permanently_disabled'
-            live_execution = 'manual_apply_only'
-            excel_validation_receipt_required = $true
+            live_execution = 'validated_operator_launch'
+            excel_validation_receipt_required = $false
             excel_validation_receipt_name = 'local-excel-validation-receipt.json'
             excel_validation_receipt_relative_path = '_automation_runs/state/release/local-excel-validation-receipt.json'
+        }
+        installation_contract = [ordered]@{
+            verify_manifest_file_hashes = $true
+            release_checkout_clean = $true
+            release_tag_matches_commit = $true
         }
         archive_name = "gss-survey-workbook-automation-$Tag.zip"
         files = $files
@@ -347,6 +352,8 @@ function Get-GssReleaseRunFingerprint {
         ([string]$Run.StagedPdfSha256).Trim().ToLowerInvariant(),
         ([string]$Run.ProgramRelease).Trim().ToLowerInvariant()
     )
+    if ($Run.PSObject.Properties['SourceSetSha256'] -and -not [string]::IsNullOrWhiteSpace([string]$Run.SourceSetSha256)) { $parts += ([string]$Run.SourceSetSha256).Trim().ToLowerInvariant() }
+    if ($Run.PSObject.Properties['SourceChoiceSetSha256'] -and -not [string]::IsNullOrWhiteSpace([string]$Run.SourceChoiceSetSha256)) { $parts += ([string]$Run.SourceChoiceSetSha256).Trim().ToLowerInvariant() }
     $sha256 = [System.Security.Cryptography.SHA256]::Create()
     try {
         $bytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes(($parts -join "`n"))
@@ -363,7 +370,9 @@ function Test-GssReleaseIntegrity {
         [Parameter(Mandatory)][string]$RepoRoot,
         [string]$ManifestPath,
         [switch]$SkipTagCheck,
-        [switch]$AllowDirtyTree
+        [switch]$InstallationOnly,
+        [switch]$AllowDirtyTree,
+        [switch]$RequireExcelReceipt
     )
 
     $repo = (Resolve-Path -LiteralPath $RepoRoot).Path
@@ -385,6 +394,21 @@ function Test-GssReleaseIntegrity {
     $failures = New-Object System.Collections.Generic.List[string]
     foreach ($failure in @(Test-GssReleaseManifestFile -Manifest $manifest -RepoRoot $repo)) {
         $failures.Add($failure)
+    }
+
+    if ($InstallationOnly) {
+        if ($failures.Count -gt 0) {
+            throw "GSS installation file check failed:`n- $($failures -join "`n- ")"
+        }
+        return [pscustomobject]@{
+            Status = 'Passed'
+            CheckScope = 'InstalledProgramFiles'
+            ReleaseVersion = [string]$manifest.release_version
+            ReleaseTag = [string]$manifest.release_tag
+            VerifiedFileCount = @($manifest.files).Count
+            GitRequired = $false
+            WorkbookValidationPerformed = $false
+        }
     }
 
     $manifestPaths = @(
@@ -435,9 +459,11 @@ function Test-GssReleaseIntegrity {
             $failures.Add("HEAD $head is not the exact commit tagged $($manifest.release_tag) ($tagCommit).")
         }
 
+        # Historical Excel evidence is optional release certification, never a
+        # prerequisite for installing or running the program on another PC.
+        if ($RequireExcelReceipt) {
         $receiptRelativePath = [string]$manifest.runtime_contract.excel_validation_receipt_relative_path
-        if (-not [bool]$manifest.runtime_contract.excel_validation_receipt_required -or
-            $receiptRelativePath -ne '_automation_runs/state/release/local-excel-validation-receipt.json') {
+        if ($receiptRelativePath -ne '_automation_runs/state/release/local-excel-validation-receipt.json') {
             $failures.Add('Release manifest does not require the exact local Excel validation receipt path.')
         }
         else {
@@ -469,6 +495,7 @@ function Test-GssReleaseIntegrity {
                     $failures.Add("Local Excel validation receipt could not be verified: $($_.Exception.Message)")
                 }
             }
+        }
         }
     }
 

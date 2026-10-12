@@ -221,120 +221,120 @@
       "count": 1
     },
     {
-      "fingerprint": "scripts/Test-GSS-Analytics.ps1|PSAvoidUsingWriteHost|File 'Test-GSS-Analytics.ps1' uses Write-Host. Avoid using Write-Host because it might not work in all hosts, does not work when there is no host, and (prior to PS 5.0) cannot be suppressed, captured, or redirected. Instead, use Write-Output, Write-Verbose, or Write-Information.",
-      "path": "scripts/Test-GSS-Analytics.ps1",
+      "fingerprint": "tests/Test-GSS-Analytics.ps1|PSAvoidUsingWriteHost|File 'Test-GSS-Analytics.ps1' uses Write-Host. Avoid using Write-Host because it might not work in all hosts, does not work when there is no host, and (prior to PS 5.0) cannot be suppressed, captured, or redirected. Instead, use Write-Output, Write-Verbose, or Write-Information.",
+      "path": "tests/Test-GSS-Analytics.ps1",
       "rule": "PSAvoidUsingWriteHost",
       "severity": "Warning",
       "message": "File 'Test-GSS-Analytics.ps1' uses Write-Host. Avoid using Write-Host because it might not work in all hosts, does not work when there is no host, and (prior to PS 5.0) cannot be suppressed, captured, or redirected. Instead, use Write-Output, Write-Verbose, or Write-Information.",
       "count": 1
     },
     {
-      "fingerprint": "scripts/Test-GSS-Analytics.ps1|PSUseShouldProcessForStateChangingFunctions|Function 'New-TestFindingItem' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
-      "path": "scripts/Test-GSS-Analytics.ps1",
+      "fingerprint": "tests/Test-GSS-Analytics.ps1|PSUseShouldProcessForStateChangingFunctions|Function 'New-TestFindingItem' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "path": "tests/Test-GSS-Analytics.ps1",
       "rule": "PSUseShouldProcessForStateChangingFunctions",
       "severity": "Warning",
       "message": "Function 'New-TestFindingItem' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
       "count": 1
     },
     {
-      "fingerprint": "scripts/Test-GSS-Analytics.ps1|PSUseShouldProcessForStateChangingFunctions|Function 'New-TestRawRow' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
-      "path": "scripts/Test-GSS-Analytics.ps1",
+      "fingerprint": "tests/Test-GSS-Analytics.ps1|PSUseShouldProcessForStateChangingFunctions|Function 'New-TestRawRow' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "path": "tests/Test-GSS-Analytics.ps1",
       "rule": "PSUseShouldProcessForStateChangingFunctions",
       "severity": "Warning",
       "message": "Function 'New-TestRawRow' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
       "count": 1
     },
     {
-      "fingerprint": "scripts/Test-GSS-EmailPackage.ps1|PSAvoidUsingWriteHost|File 'Test-GSS-EmailPackage.ps1' uses Write-Host. Avoid using Write-Host because it might not work in all hosts, does not work when there is no host, and (prior to PS 5.0) cannot be suppressed, captured, or redirected. Instead, use Write-Output, Write-Verbose, or Write-Information.",
-      "path": "scripts/Test-GSS-EmailPackage.ps1",
+      "fingerprint": "tests/Test-GSS-EmailPackage.ps1|PSAvoidUsingWriteHost|File 'Test-GSS-EmailPackage.ps1' uses Write-Host. Avoid using Write-Host because it might not work in all hosts, does not work when there is no host, and (prior to PS 5.0) cannot be suppressed, captured, or redirected. Instead, use Write-Output, Write-Verbose, or Write-Information.",
+      "path": "tests/Test-GSS-EmailPackage.ps1",
       "rule": "PSAvoidUsingWriteHost",
       "severity": "Warning",
       "message": "File 'Test-GSS-EmailPackage.ps1' uses Write-Host. Avoid using Write-Host because it might not work in all hosts, does not work when there is no host, and (prior to PS 5.0) cannot be suppressed, captured, or redirected. Instead, use Write-Output, Write-Verbose, or Write-Information.",
       "count": 1
     },
     {
-      "fingerprint": "scripts/Test-GSS-EmailPackage.ps1|PSReviewUnusedParameter|The parameter 'DelayMilliseconds' has been declared but not used.",
-      "path": "scripts/Test-GSS-EmailPackage.ps1",
+      "fingerprint": "tests/Test-GSS-EmailPackage.ps1|PSReviewUnusedParameter|The parameter 'DelayMilliseconds' has been declared but not used.",
+      "path": "tests/Test-GSS-EmailPackage.ps1",
       "rule": "PSReviewUnusedParameter",
       "severity": "Warning",
       "message": "The parameter 'DelayMilliseconds' has been declared but not used.",
       "count": 1
     },
     {
-      "fingerprint": "scripts/Test-GSS-EmailPackage.ps1|PSReviewUnusedParameter|The parameter 'MaxAttempts' has been declared but not used.",
-      "path": "scripts/Test-GSS-EmailPackage.ps1",
+      "fingerprint": "tests/Test-GSS-EmailPackage.ps1|PSReviewUnusedParameter|The parameter 'MaxAttempts' has been declared but not used.",
+      "path": "tests/Test-GSS-EmailPackage.ps1",
       "rule": "PSReviewUnusedParameter",
       "severity": "Warning",
       "message": "The parameter 'MaxAttempts' has been declared but not used.",
       "count": 1
     },
     {
-      "fingerprint": "scripts/Test-GSS-EmailPackage.ps1|PSReviewUnusedParameter|The parameter 'PackagePath' has been declared but not used.",
-      "path": "scripts/Test-GSS-EmailPackage.ps1",
+      "fingerprint": "tests/Test-GSS-EmailPackage.ps1|PSReviewUnusedParameter|The parameter 'PackagePath' has been declared but not used.",
+      "path": "tests/Test-GSS-EmailPackage.ps1",
       "rule": "PSReviewUnusedParameter",
       "severity": "Warning",
       "message": "The parameter 'PackagePath' has been declared but not used.",
       "count": 1
     },
     {
-      "fingerprint": "scripts/Test-GSS-EmailPackage.ps1|PSReviewUnusedParameter|The parameter 'ValidationOperation' has been declared but not used.",
-      "path": "scripts/Test-GSS-EmailPackage.ps1",
+      "fingerprint": "tests/Test-GSS-EmailPackage.ps1|PSReviewUnusedParameter|The parameter 'ValidationOperation' has been declared but not used.",
+      "path": "tests/Test-GSS-EmailPackage.ps1",
       "rule": "PSReviewUnusedParameter",
       "severity": "Warning",
       "message": "The parameter 'ValidationOperation' has been declared but not used.",
       "count": 1
     },
     {
-      "fingerprint": "scripts/Test-GSS-EmailPackage.ps1|PSUseShouldProcessForStateChangingFunctions|Function 'New-LoggedEvidence' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
-      "path": "scripts/Test-GSS-EmailPackage.ps1",
+      "fingerprint": "tests/Test-GSS-EmailPackage.ps1|PSUseShouldProcessForStateChangingFunctions|Function 'New-LoggedEvidence' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "path": "tests/Test-GSS-EmailPackage.ps1",
       "rule": "PSUseShouldProcessForStateChangingFunctions",
       "severity": "Warning",
       "message": "Function 'New-LoggedEvidence' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
       "count": 1
     },
     {
-      "fingerprint": "scripts/Test-GSS-EmailPackage.ps1|PSUseShouldProcessForStateChangingFunctions|Function 'New-TestDetailWorkbook' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
-      "path": "scripts/Test-GSS-EmailPackage.ps1",
+      "fingerprint": "tests/Test-GSS-EmailPackage.ps1|PSUseShouldProcessForStateChangingFunctions|Function 'New-TestDetailWorkbook' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "path": "tests/Test-GSS-EmailPackage.ps1",
       "rule": "PSUseShouldProcessForStateChangingFunctions",
       "severity": "Warning",
       "message": "Function 'New-TestDetailWorkbook' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
       "count": 1
     },
     {
-      "fingerprint": "scripts/Test-GSS-EmailPackage.ps1|PSUseShouldProcessForStateChangingFunctions|Function 'New-TestResponse' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
-      "path": "scripts/Test-GSS-EmailPackage.ps1",
+      "fingerprint": "tests/Test-GSS-EmailPackage.ps1|PSUseShouldProcessForStateChangingFunctions|Function 'New-TestResponse' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "path": "tests/Test-GSS-EmailPackage.ps1",
       "rule": "PSUseShouldProcessForStateChangingFunctions",
       "severity": "Warning",
       "message": "Function 'New-TestResponse' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
       "count": 1
     },
     {
-      "fingerprint": "scripts/Test-GSS-EmailPackage.ps1|PSUseSingularNouns|The cmdlet 'Write-TestBytes' uses a plural noun. A singular noun should be used instead.",
-      "path": "scripts/Test-GSS-EmailPackage.ps1",
+      "fingerprint": "tests/Test-GSS-EmailPackage.ps1|PSUseSingularNouns|The cmdlet 'Write-TestBytes' uses a plural noun. A singular noun should be used instead.",
+      "path": "tests/Test-GSS-EmailPackage.ps1",
       "rule": "PSUseSingularNouns",
       "severity": "Warning",
       "message": "The cmdlet 'Write-TestBytes' uses a plural noun. A singular noun should be used instead.",
       "count": 1
     },
     {
-      "fingerprint": "scripts/Test-GSS-Logic.ps1|PSAvoidUsingWriteHost|File 'Test-GSS-Logic.ps1' uses Write-Host. Avoid using Write-Host because it might not work in all hosts, does not work when there is no host, and (prior to PS 5.0) cannot be suppressed, captured, or redirected. Instead, use Write-Output, Write-Verbose, or Write-Information.",
-      "path": "scripts/Test-GSS-Logic.ps1",
+      "fingerprint": "tests/Test-GSS-Logic.ps1|PSAvoidUsingWriteHost|File 'Test-GSS-Logic.ps1' uses Write-Host. Avoid using Write-Host because it might not work in all hosts, does not work when there is no host, and (prior to PS 5.0) cannot be suppressed, captured, or redirected. Instead, use Write-Output, Write-Verbose, or Write-Information.",
+      "path": "tests/Test-GSS-Logic.ps1",
       "rule": "PSAvoidUsingWriteHost",
       "severity": "Warning",
       "message": "File 'Test-GSS-Logic.ps1' uses Write-Host. Avoid using Write-Host because it might not work in all hosts, does not work when there is no host, and (prior to PS 5.0) cannot be suppressed, captured, or redirected. Instead, use Write-Output, Write-Verbose, or Write-Information.",
       "count": 1
     },
     {
-      "fingerprint": "scripts/Test-GSS-Logic.ps1|PSUseShouldProcessForStateChangingFunctions|Function 'New-TestSource' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
-      "path": "scripts/Test-GSS-Logic.ps1",
+      "fingerprint": "tests/Test-GSS-Logic.ps1|PSUseShouldProcessForStateChangingFunctions|Function 'New-TestSource' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
+      "path": "tests/Test-GSS-Logic.ps1",
       "rule": "PSUseShouldProcessForStateChangingFunctions",
       "severity": "Warning",
       "message": "Function 'New-TestSource' has verb that could change system state. Therefore, the function has to support 'ShouldProcess'.",
       "count": 1
     },
     {
-      "fingerprint": "scripts/Test-GSS-PowerShellSyntax.ps1|PSAvoidUsingWriteHost|File 'Test-GSS-PowerShellSyntax.ps1' uses Write-Host. Avoid using Write-Host because it might not work in all hosts, does not work when there is no host, and (prior to PS 5.0) cannot be suppressed, captured, or redirected. Instead, use Write-Output, Write-Verbose, or Write-Information.",
-      "path": "scripts/Test-GSS-PowerShellSyntax.ps1",
+      "fingerprint": "tools/Test-GSS-PowerShellSyntax.ps1|PSAvoidUsingWriteHost|File 'Test-GSS-PowerShellSyntax.ps1' uses Write-Host. Avoid using Write-Host because it might not work in all hosts, does not work when there is no host, and (prior to PS 5.0) cannot be suppressed, captured, or redirected. Instead, use Write-Output, Write-Verbose, or Write-Information.",
+      "path": "tools/Test-GSS-PowerShellSyntax.ps1",
       "rule": "PSAvoidUsingWriteHost",
       "severity": "Warning",
       "message": "File 'Test-GSS-PowerShellSyntax.ps1' uses Write-Host. Avoid using Write-Host because it might not work in all hosts, does not work when there is no host, and (prior to PS 5.0) cannot be suppressed, captured, or redirected. Instead, use Write-Output, Write-Verbose, or Write-Information.",

@@ -1,53 +1,47 @@
-GSS SURVEY UPDATE - QUICK GUIDE
-================================
+GSS SURVEY UPDATE
+=================
 
-Use this folder after the newest weekly GSS workbook has been received.
-
-WEEKLY UPDATE
-1. Save the newest Sorensen FW workbook in:
+1. Save rolling population workbooks in:
    02 Weekly Rolling Source Workbooks
-   Also place the newest guest-detail export in:
+2. Save guest-detail exports in:
    03 Uploaded Survey Workbooks
-2. Close the main GSS workbook if it is open in Excel.
-3. Confirm Google Drive for desktop is running and this computer's commissioned
-   private GSS backup folder is available.
-4. Double-click:
-   Run GSS Update After Upload.cmd
-5. Wait for the copy-test and review to finish.
-6. Type APPLY only when the screen shows the tested run fingerprint and says
-   the copy-test passed.
+3. Close the main workbook in Excel.
+4. Double-click Run GSS Update After Upload.cmd.
+5. Read the result and Last GSS Result.txt.
 
-IMPORTANT
-- You may run the weekly update from any configured Windows computer where this
-  synchronized GSS folder, Microsoft Excel desktop, and the commissioned private
-  Google Drive backup are available. Keep the copy-test and APPLY in the same
-  launcher window.
-- Run GSS on only one computer at a time. Do not start a second GSS update while
-  another computer's launcher is still running.
-- The live workbook is 01 Main Workbook\GSS Score Trends - Main.xlsx.
-- Finished email PDFs are in 04 Email Comparison PDFs.
-- A private Google Drive backup must be prepared before the live workbook changes.
-- If Google Drive is unavailable, the live update stops without changing the workbook.
-- After a successful live update and committed Drive backup, the system prepares
-  a restricted email package for human review.
-- The raw guest-detail attachment contains personal data. Treat every READY
-  package as CONTAINS PERSONAL DATA - RESTRICTED.
-- Automatic email sending is permanently disabled.
-- Missing guest-detail data can block the email draft without blocking the workbook update.
-- Do not edit GSS Survey Workbook Automation or _automation_runs.
-- Backup retention is report-only. The automation never deletes Drive backups.
-- If BackupStatus is PendingFinalize, the valid workbook stays in place but no
-  READY package is published until backup finalization succeeds.
-- Technical recovery for PendingFinalize is:
-  GSS Survey Workbook Automation\scripts\Resume-GSS-PendingFinalize.ps1
-  -LiveRunLogPath <exact apply log>
-  This resumes backup/package finalization and never reapplies the workbook.
-- If the screen says ATTENTION NEEDED, stop and ask for technical help.
+Launching starts a normal validated update. No extra APPLY confirmation is
+required. The program checks a staged copy and preserves the previous good
+report before replacing it. Conflicting source corrections require a specific
+choice. An undated guest-detail file may need its reporting week assigned.
 
-FOLDER MAP
-01 Main Workbook                 Active workbook and archived prior versions
-02 Weekly Rolling Source Workbooks  Weekly Sorensen FW source files
-03 Uploaded Survey Workbooks     Uploaded survey-detail files and archive
-04 Email Comparison PDFs         Finished comparison PDFs
-05 Reference Materials           Training and reference documents
-06 Exports and Images            Screenshots and image exports
+Finished comparison PDFs are in 04 Email Comparison PDFs.
+
+BACKUP PENDING means a backup needs retry. A Drive outage does not invalidate
+a valid local report. If the local recovery snapshot failed, follow the recovery
+message before another update. A Drive desktop copy check does not prove that
+remote cloud upload has finished.
+
+A population report with zero responses and blank scores is not currently
+supported by the workbook model. The update stops and preserves the previous
+good report instead of displaying misleading zero scores.
+
+DRAFT PACKAGE BLOCKED means draft prerequisites are missing. It does not by
+itself mean the workbook update failed. Packages contain personal guest data
+and require recipient/content review. GSS never sends email automatically.
+The report backup covers the original report snapshot. Detail added or corrected
+later is saved in the draft package locally; LOCALONLY does not mean that later
+draft evidence has an independent backup.
+
+Run on only one computer at a time. Finish the previous run, close Excel, and
+complete Dropbox synchronization before switching computers. Download cloud
+files before reporting. The program requires Windows and Microsoft Excel.
+
+If a run is interrupted, preserve its files and follow the specific recovery
+message. Do not delete a transaction marker to force another update.
+
+Setup and recovery instructions:
+GSS Survey Workbook Automation\docs\operations.md
+
+Use the main workbook and source/report folders for everyday work. Logs, tests,
+backups, state, and packages are internal files under _automation_runs.
+Scheduled reporting and automatic email sending remain disabled.

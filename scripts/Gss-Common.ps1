@@ -65,42 +65,60 @@ function Get-GssFiles {
         Where-Object { -not (Test-ExcludedGssPath $_.FullName $FolderPath) }
 }
 
+function Test-GssMainWorkbookStructure {
+    param([Parameter(Mandatory)][string]$Path)
+
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archive = $null
+    $reader = $null
+    try {
+        $archive = [System.IO.Compression.ZipFile]::OpenRead($Path)
+        $entry = $archive.GetEntry('xl/workbook.xml')
+        if (-not $entry) { return $false }
+        $reader = New-Object System.IO.StreamReader($entry.Open())
+        $document = New-Object System.Xml.XmlDocument
+        $document.XmlResolver = $null
+        $document.LoadXml($reader.ReadToEnd())
+        $names = @($document.SelectNodes('//*[local-name()="sheet"]') | ForEach-Object { $_.GetAttribute('name') })
+        return @('Raw_Data', 'QA Checks', 'Email Comparison' | Where-Object { $_ -notin $names }).Count -eq 0
+    }
+    catch {
+        return $false
+    }
+    finally {
+        if ($reader) { $reader.Dispose() }
+        if ($archive) { $archive.Dispose() }
+    }
+}
+
 function Resolve-MainWorkbookPath {
     param([string]$FolderPath, [string]$WorkbookName)
 
+    if ([string]::IsNullOrWhiteSpace($WorkbookName)) { $WorkbookName = 'GSS Score Trends - Main.xlsx' }
     $mainWorkbookFolder = Resolve-GssChildFolder $FolderPath '01 Main Workbook'
     if ($mainWorkbookFolder) {
         $preferredPath = Join-Path $mainWorkbookFolder $WorkbookName
-        if (Test-Path -LiteralPath $preferredPath) {
+        if (Test-Path -LiteralPath $preferredPath -PathType Leaf) {
             return (Resolve-Path -LiteralPath $preferredPath).Path
         }
 
-        $preferredMatches = @(Get-GssFiles $mainWorkbookFolder $WorkbookName)
-        if ($preferredMatches.Count -eq 1) {
-            return $preferredMatches[0].FullName
+        if ($WorkbookName -eq 'GSS Score Trends - Main.xlsx') {
+            $candidates = @(Get-ChildItem -LiteralPath $mainWorkbookFolder -File -Filter '*.xlsx' |
+                Where-Object { -not $_.Name.StartsWith('~$') -and (Test-GssMainWorkbookStructure -Path $_.FullName) })
+            if ($candidates.Count -eq 1) { return $candidates[0].FullName }
+            if ($candidates.Count -gt 1) {
+                throw "Multiple score-trends workbooks are present. Select one with -MainWorkbookName. Candidates: $(($candidates.Name) -join '; ')"
+            }
         }
-        if ($preferredMatches.Count -gt 1) {
-            $paths = ($preferredMatches | ForEach-Object { $_.FullName }) -join '; '
-            throw "Multiple main workbook matches were found in '$mainWorkbookFolder'. Move old copies out of that folder or pass -MainWorkbookName. Matches: $paths"
-        }
+        throw "Main workbook not found in '$mainWorkbookFolder': $WorkbookName. Restore the workbook or select its filename with -MainWorkbookName. Archived copies are not selected automatically."
     }
 
     $directPath = Join-Path $FolderPath $WorkbookName
-    if (Test-Path -LiteralPath $directPath) {
+    if (Test-Path -LiteralPath $directPath -PathType Leaf) {
         return (Resolve-Path -LiteralPath $directPath).Path
     }
 
-    Write-Warning "Main workbook was not found in '01 Main Workbook'. Falling back to a recursive compatibility search under $FolderPath."
-    $matches = @(Get-GssFiles $FolderPath $WorkbookName)
-    if ($matches.Count -eq 1) {
-        return $matches[0].FullName
-    }
-    if ($matches.Count -gt 1) {
-        $paths = ($matches | ForEach-Object { $_.FullName }) -join '; '
-        throw "Multiple main workbook matches were found. Move old copies out of the GSS Surveys folder or pass -MainWorkbookName. Matches: $paths"
-    }
-
-    throw "Main workbook not found under ${FolderPath}: $WorkbookName"
+    throw "Main workbook not found directly under '$FolderPath' or in '01 Main Workbook': $WorkbookName. Archived copies are not selected automatically."
 }
 
 function ConvertTo-GssDropboxRelativePath {

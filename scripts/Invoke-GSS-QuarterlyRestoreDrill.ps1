@@ -9,12 +9,12 @@ $ErrorActionPreference = 'Stop'
 
 $scriptRoot = Split-Path -Parent $PSCommandPath
 $repoRoot = Split-Path -Parent $scriptRoot
-$releaseValidator = Join-Path $scriptRoot 'Test-GSS-ReleaseIntegrity.ps1'
+. (Join-Path $scriptRoot 'Gss-Operations.ps1')
 $backupCommand = Join-Path $scriptRoot 'Invoke-GSS-DriveBackup.ps1'
 $excelValidator = Join-Path $scriptRoot 'Test-GSS-WorkbookIntegration.ps1'
 . (Join-Path $scriptRoot 'Gss-DriveBackup.ps1')
 
-$release = & $releaseValidator -RepoRoot $repoRoot
+$release = Get-GssRuntimeInfo -RepoRoot $repoRoot
 
 $backupArguments = @{
     Operation = 'VerifyRestore'

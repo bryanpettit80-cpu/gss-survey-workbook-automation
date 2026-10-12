@@ -13,5 +13,10 @@ It requires restricted-recipient and content review by a person. Automatic sendi
 is permanently disabled. Missing or corrupt detail data blocks email drafting but
 does not block an otherwise safe workbook update.
 
-For the weekly update, save the newest Sorensen FW workbook in:
+For the weekly update, save the vendor's rolling population workbook in:
 02 Weekly Rolling Source Workbooks
+
+An undated guest-detail export needs an explicit reporting-week assignment.
+The launcher may offer a file/week choice when existing package evidence does
+not establish it. A correction must supersede its previous export so the same
+survey is not counted twice. Keep original files for traceability.

@@ -1,9 +1,9 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param()
 
 $ErrorActionPreference = 'Stop'
 
-$scriptRoot = Split-Path -Parent $PSCommandPath
+$scriptRoot = Join-Path (Split-Path -Parent (Split-Path -Parent $PSCommandPath)) 'scripts'
 . (Join-Path $scriptRoot 'Analyze-GSS-Run.ps1')
 
 function Assert-Equal {
@@ -278,5 +278,27 @@ $notScoredWithGuest = New-TestFindingItem '9354' 'Service Not Scored' 'Improveme
 $notScoredFindings = @(Select-GssRestaurantFindings @($notScoredWithGuest) @($guestTheme)) | Where-Object RestaurantId -eq '9354'
 Assert-Equal @($notScoredFindings.Opportunities).Count 0 'Not scored is never a top Opportunity'
 Assert-Equal @($notScoredFindings.Strengths).Count 0 'Not scored is never a top Strength'
+
+$policyProbePath = Join-Path ([System.IO.Path]::GetTempPath()) ('gss-policy-' + [guid]::NewGuid().ToString('N') + '.json')
+try {
+    $policyProbe = $script:GssAnalysisPolicy | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+    $policyProbe.thresholds.previous_window.candidate_points = 1.5
+    $policyProbe.thresholds.previous_window.action_points = 3
+    $policyProbe.confidence.high_minimum_responses = 120
+    $policyProbe.confidence.developing_minimum_responses = 40
+    $policyProbe.guest_feedback.minimum_unique_responses_per_theme = 3
+    $policyProbe | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $policyProbePath -Encoding UTF8
+    $configuredPolicy = Read-GssAnalysisPolicy -Path $policyProbePath
+    Assert-Equal $configuredPolicy.thresholds.previous_window.candidate_points 1.5 'Valid reporting thresholds have one source of truth in policy'
+    Assert-Equal $configuredPolicy.confidence.high_minimum_responses 120 'Ordered response-volume thresholds are configurable'
+    foreach ($badThreshold in @(0, 4, 'NaN', 'Infinity')) {
+        $policyProbe.thresholds.previous_window.candidate_points = $badThreshold
+        $policyProbe | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $policyProbePath -Encoding UTF8
+        $rejected = $false
+        try { $null = Read-GssAnalysisPolicy -Path $policyProbePath } catch { $rejected = $true }
+        Assert-True $rejected 'Invalid, nonfinite or reversed thresholds remain blocked'
+    }
+}
+finally { if (Test-Path -LiteralPath $policyProbePath) { Remove-Item -LiteralPath $policyProbePath -Force } }
 
 Write-Host 'GSS analytics logic tests passed.'

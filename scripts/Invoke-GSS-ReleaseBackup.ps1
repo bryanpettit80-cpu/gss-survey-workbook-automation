@@ -1,3 +1,5 @@
+# Historical pre-1.2 release-backup format. Current releases use a program-only
+# archive; ordinary report backup uses versioned run snapshots. See docs/development.md.
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]

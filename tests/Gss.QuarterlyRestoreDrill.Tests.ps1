@@ -9,6 +9,7 @@ Describe 'GSS quarterly restore drill' {
         New-Item -ItemType Directory -Path $sandboxScripts, $restoreDestination -Force | Out-Null
         Copy-Item -LiteralPath $quarterlyDrillScript -Destination (Join-Path $sandboxScripts 'Invoke-GSS-QuarterlyRestoreDrill.ps1')
         Copy-Item -LiteralPath $driveModule -Destination (Join-Path $sandboxScripts 'Gss-DriveBackup.ps1')
+        Copy-Item -LiteralPath (Join-Path $repoRoot 'scripts\Gss-Operations.ps1') -Destination (Join-Path $sandboxScripts 'Gss-Operations.ps1')
 
         @'
 [pscustomobject]@{

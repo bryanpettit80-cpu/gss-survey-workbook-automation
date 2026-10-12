@@ -1,19 +1,34 @@
-# Codex Notes
+# Contributor guidance
 
-This repository contains only the GSS workbook automation program. Do not commit survey source workbooks, PDFs, images, generated workbooks, backups, logs, or customer/business data.
+Keep this repository program-only. Never commit operational workbooks, guest
+details, PDFs, reports, screenshots, credentials, logs, backups, or real-business
+test fixtures. Synthetic fixture builders and expected results belong in tests.
 
-The live Dropbox data folder is the parent of this repository:
+Use the existing PowerShell/desktop Excel pipeline. Separate reporting business
+rules from file publication and keep changes focused. Ordinary reporting must
+not require Git, clean checkout status, original-machine eligibility, or retained
+historical test workbooks. Release validation belongs in development/install.
 
-`C:\Users\bryan\Dropbox\Automations\GSS Surveys`
+Preserve report-period/entity/value checks, explicit correction decisions,
+within-transaction hashes, write exclusion, verified local recovery copies, and
+conflict-aware rollback. Independent backup status is separate from report
+success. Do not confuse a DriveFS copy with verified remote upload.
 
-The operator entry point is outside the repo:
+Run tests against temporary synthetic fixtures or isolated copies. Never use a
+production apply to validate a code change. Keep the live source data and
+published reports untouched unless the user explicitly requests a report run.
 
-`Run GSS Update After Upload.cmd`
+Keep `templates/Run GSS Update After Upload.cmd` canonical and refresh operator
+files through `scripts/Install-GSS-OperatorLauncher.ps1`. Preserve the GSS data
+root and `_automation_runs/email_outbox` compatibility with the external consumer.
+Do not move immutable package evidence without a validated migration.
 
-Use `scripts\Update-GSS-MainWorkbook.ps1` for code changes. Run it without `-Apply` first for a copy-only test. Live runs require Microsoft Excel on Windows and write backups/logs to `..\_automation_runs`.
+Only one computer may write at a time. Sequential use after synchronization is
+supported; Dropbox is not a distributed lock. Keep schedules disabled unless
+the user explicitly requests activation. Do not add mail scanning or sending.
 
-Do not bind release eligibility to a named workstation. A passed local Excel release receipt is portable when its exact tag, commit, workbook hash, source log, source-run workstation, Excel certification workstation, and run fingerprint all validate. Keep each live copy-test and `APPLY` transaction in the same launcher session and retain both workstation names as audit evidence. Multi-workstation eligibility does not authorize concurrent runs: Dropbox is not a distributed lock, so only one workstation may run GSS at a time.
-
-Keep `templates\Run GSS Update After Upload.cmd` as the canonical Dropbox-facing launcher and refresh the parent launcher with `scripts\Install-GSS-OperatorLauncher.ps1`. Leave the scheduled task disabled unless the user explicitly requests scheduled live updates.
-
-`scripts\Analyze-GSS-Run.ps1` is the deterministic post-run QA and insight analyzer. Generated review files belong under `..\_automation_runs\qa` and must not be committed.
+Run the validation commands in [docs/development.md](docs/development.md). Update
+tests, CI paths, operator guidance, and release metadata with behavioral changes.
+Do not freeze obsolete architecture with source-text assertions when behavioral
+checks can verify the required protection. Preserve historical receipts and
+reversible cleanup evidence.

@@ -2,6 +2,29 @@ $modulePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\Gss-ReleaseI
 Import-Module $modulePath -Force
 
 Describe 'GSS release integrity module' {
+    It 'checks an extracted installation without Git or historical Excel evidence' {
+        $packageRoot = Join-Path $TestDrive 'extracted-program'
+        $filePath = Join-Path $packageRoot 'scripts\sample.ps1'
+        $manifestPath = Join-Path $packageRoot 'release\release-manifest.json'
+        New-Item -ItemType Directory -Path (Split-Path -Parent $filePath), (Split-Path -Parent $manifestPath) -Force | Out-Null
+        Set-Content -LiteralPath $filePath -Value 'Write-Output installed' -Encoding UTF8
+        $evidence = Get-GssReleaseFileEvidence $filePath
+        [ordered]@{
+            schema_version = 1
+            release_version = '1.2.0'
+            release_tag = 'v1.2.0'
+            files = @([ordered]@{ path = 'scripts/sample.ps1'; hash_mode = $evidence.HashMode; canonical_size_bytes = $evidence.CanonicalSizeBytes; sha256 = $evidence.Sha256 })
+        } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+        Mock Get-GssGitOutput -ModuleName Gss-ReleaseIntegrity { throw 'Git is unavailable on this computer.' }
+        $result = Test-GssReleaseIntegrity -RepoRoot $packageRoot -InstallationOnly
+        $result.Status | Should -Be 'Passed'
+        $result.GitRequired | Should -BeFalse
+        $result.WorkbookValidationPerformed | Should -BeFalse
+        Should -Invoke Get-GssGitOutput -ModuleName Gss-ReleaseIntegrity -Times 0
+        Add-Content -LiteralPath $filePath -Value 'changed'
+        { Test-GssReleaseIntegrity -RepoRoot $packageRoot -InstallationOnly } | Should -Throw '*installation file check failed*'
+    }
+
     It 'selects program and policy files but excludes data and the manifest itself' {
         (Test-GssReleaseTrackedPath -Path 'scripts/Update-GSS-MainWorkbook.ps1') | Should -BeTrue
         (Test-GssReleaseTrackedPath -Path 'scripts/future_analytics.py') | Should -BeTrue

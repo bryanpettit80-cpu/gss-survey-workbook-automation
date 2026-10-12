@@ -23,7 +23,9 @@ foreach ($script in $scripts) {
 }
 
 if ($failures.Count -gt 0) {
-    $failures | Format-Table -AutoSize
+    foreach ($failure in $failures) {
+        Write-Information ("{0}:{1}:{2} {3}" -f $failure.File, $failure.Line, $failure.Column, $failure.Message) -InformationAction Continue
+    }
     throw "PowerShell parser check failed for $($failures.Count) error(s)."
 }
 

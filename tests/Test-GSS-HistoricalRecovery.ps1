@@ -1,8 +1,8 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param()
 
 $ErrorActionPreference = 'Stop'
-$testScriptRoot = Split-Path -Parent $PSCommandPath
+$testScriptRoot = Join-Path (Split-Path -Parent (Split-Path -Parent $PSCommandPath)) 'scripts'
 $importScript = Join-Path $testScriptRoot 'Import-GSS-HistoricalGuestDetail.ps1'
 . (Join-Path $testScriptRoot 'Gss-EmailPackage.ps1')
 

@@ -1,9 +1,9 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param()
 
 $ErrorActionPreference = 'Stop'
 
-$scriptRoot = Split-Path -Parent $PSCommandPath
+$scriptRoot = Join-Path (Split-Path -Parent (Split-Path -Parent $PSCommandPath)) 'scripts'
 $invokeScript = Join-Path $scriptRoot 'Invoke-GSS-DriveBackup.ps1'
 . (Join-Path $scriptRoot 'Gss-DriveBackup.ps1')
 

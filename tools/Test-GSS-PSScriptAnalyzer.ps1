@@ -124,11 +124,11 @@ $newResults = @(
         }
 )
 if ($newResults.Count -gt 0) {
-    $newResults |
-        Select-Object path, rule, severity, count, @{ Name = 'approved_count'; Expression = {
-            if ($approved.ContainsKey([string]$_.fingerprint)) { [int]$approved[[string]$_.fingerprint] } else { 0 }
-        } }, message |
-        Format-Table -Wrap -AutoSize
+    foreach ($entry in $newResults) {
+        $approvedCount = if ($approved.ContainsKey([string]$entry.fingerprint)) { [int]$approved[[string]$entry.fingerprint] } else { 0 }
+        Write-Output "$($entry.path): $($entry.rule) ($($entry.count) instance(s), $approvedCount approved)"
+        Write-Output "  $($entry.message)"
+    }
     throw "PSScriptAnalyzer found $($newResults.Count) new or increased warning fingerprint(s). Fix them or explicitly review and refresh the baseline."
 }
 

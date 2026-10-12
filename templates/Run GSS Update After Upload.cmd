@@ -4,9 +4,10 @@ title GSS Survey Workbook Update
 echo.
 echo GSS SURVEY WORKBOOK UPDATE
 echo ==========================
-echo This will test the update first. The live workbook will not change
-echo unless the test passes and you type APPLY when prompted.
-echo A verified private Google Drive backup is required before live apply.
+echo This will validate the update and preserve the previous good report.
+echo Complete, valid inputs will be processed without another confirmation.
+echo Conflicting corrections require a specific choice.
+echo Google Drive backup has a separate status and can be retried.
 echo Automatic email sending is permanently disabled.
 echo Only one computer may run GSS at a time.
 echo Close this window if a GSS update is already running on another computer.

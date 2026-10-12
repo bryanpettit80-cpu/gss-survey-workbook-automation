@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$Folder,
     [string]$MainWorkbookName = 'GSS Score Trends - Main.xlsx',

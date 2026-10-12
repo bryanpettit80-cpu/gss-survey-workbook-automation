@@ -61,9 +61,10 @@ Reporting checks require the expected four entities: All Franchisees, Sorensen,
 coverage are validated before publication. Missing guest detail can hold the
 draft package without preventing a valid aggregate report.
 
-Zero-response population rows with blank scores currently stop workbook
-publication: the existing workbook model can display those blanks as false zero
-scores. The previous good report is preserved.
+Every zero-response population row currently stops workbook publication, whether
+its scores are blank or numeric. Zero responses cannot establish a measured rate,
+including a vendor-supplied zero percent. The existing model does not safely
+present these rows as unscored, so the previous good report is preserved.
 
 The main workbook's filename can be configured. Rolling sources are recognized
 by their content, not by requiring a permanent original filename. File hashes

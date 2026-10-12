@@ -50,12 +50,14 @@ invalid aggregate inputs leave the existing report unchanged. A missing or
 unassigned detail export can leave draft preparation waiting while a valid
 aggregate report completes.
 
-Zero responses with blank scores remain unscored. The existing workbook model
-can turn those blanks into displayed zero scores, so the updater stops before
-publication when such rows would remain in the workbook. The message identifies
-the entity and reporting week, and the last good report is preserved. This
-explicit limitation requires a workbook-model change before those results can be
-published safely; do not replace the blanks with zeros to bypass it.
+Every zero-response row stops publication when it would remain in the workbook,
+including historical rows and rows whose vendor scores are numeric zeros. Zero
+responses cannot establish a measured rate. The original vendor values remain
+unchanged for content identification, but the existing workbook model cannot
+present these rows safely as unscored. The message identifies the entity and
+reporting week, and the last good report is preserved. A workbook-model change is
+required before these results can be published safely. A zero-percent score with
+a positive response count remains valid.
 
 The default main workbook is `GSS Score Trends - Main.xlsx`. If it is renamed,
 the program can recognize a unique score-trends workbook directly inside

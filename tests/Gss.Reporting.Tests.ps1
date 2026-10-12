@@ -53,10 +53,20 @@ Describe 'Reporting period and number validation' {
     It 'stops publication when the legacy workbook would turn an unscored result into false zeros' {
         $source = New-TestRollingSource
         $source.Rows[2].Metrics = ConvertTo-GssMetricValue (@(0) + @($null) * 12)
-        { Assert-GssWorkbookScoreCompatibility $source.Rows } | Should -Throw '*cannot display blank scores safely*last good report is preserved*'
+        { Assert-GssWorkbookScoreCompatibility $source.Rows } | Should -Throw '*cannot report scores safely*last good report is preserved*'
         $source.Rows[2].Metrics = ConvertTo-GssMetricValue (@(150, 0) + @(75) * 11)
         # A measured zero percent with nonzero responses remains legitimate.
         { Assert-GssWorkbookScoreCompatibility $source.Rows } | Should -Not -Throw
+    }
+
+    It 'stops numeric scores with zero responses while preserving the vendor values' {
+        $source = New-TestRollingSource
+        foreach ($score in @(0, 75)) {
+            $source.Rows[2].Metrics = ConvertTo-GssMetricValue (@(0) + @($score) * 12)
+            $source.Rows[2].Metrics.Count | Should -Be 13
+            $source.Rows[2].Metrics[1] | Should -Be $score
+            { Assert-GssWorkbookScoreCompatibility $source.Rows } | Should -Throw '*Zero responses cannot establish a measured score*last good report is preserved*'
+        }
     }
 
     It 'accepts invariant numeric data on a computer using a different locale' {

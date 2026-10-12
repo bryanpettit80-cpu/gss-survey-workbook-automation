@@ -15,7 +15,7 @@ not define whether two vendor workbooks mean the same thing.
 | Different versions of one reporting period | Ask for a specific revision; retain the prior report until chosen | Reporting and desktop Excel scenarios |
 | Previously accepted correction appears again | Reuse its content decision; an unknown revision needs a new choice | Source-choice and desktop Excel scenarios |
 | Missing entity, duplicate entity, incorrect period, invalid count or percentage | Block publication with a reason | Logic and reporting suites |
-| Zero-response row with blank scores | Keep the source unscored; stop workbook publication because the legacy model can display false zeros; preserve the previous report | Reporting compatibility-gate regression; zero-response workbook rendering is explicitly unsupported |
+| Zero-response row with blank or numeric scores, including vendor numeric zeros | Preserve source values and content identity; stop workbook publication because no measured rate can be established; preserve the previous report | Reporting compatibility-gate regressions for blank and numeric metrics; zero-response workbook rendering is explicitly unsupported |
 | Excel error inspection itself fails | Fail validation rather than report zero errors | Reporting unit suite |
 | Interruption before, during, or after workbook/PDF promotion | Recover from the journal, or stop on unrelated changes | Transactions and operations suites |
 | Local recovery snapshot fails | Retain recovery state before allowing another publication | Operations suite |

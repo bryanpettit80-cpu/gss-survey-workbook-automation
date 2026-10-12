@@ -3,7 +3,7 @@
     "release_version":  "1.2.0",
     "release_tag":  "v1.2.0",
     "commit_binding":  "exact_release_tag",
-    "generated_at_utc":  "2026-10-12T01:49:07.7629217Z",
+    "generated_at_utc":  "2026-10-12T02:03:04.2256516Z",
     "classification":  "PROGRAM SOURCE ONLY - NO GSS WORKBOOKS, REPORTS, OR CUSTOMER DATA",
     "runtime_contract":  {
                              "require_clean_tree":  false,
@@ -75,22 +75,22 @@
                       "path":  "docs/operations.md",
                       "role":  "documentation",
                       "hash_mode":  "utf8_lf",
-                      "canonical_size_bytes":  8373,
-                      "sha256":  "0014661b856bec3ea69f11ed75c558a0646a53002040b882cfea14caca274e45"
+                      "canonical_size_bytes":  8507,
+                      "sha256":  "3de41669f25315a2f961044a51e9977adddd3eed4f00bbe2f1e6a880059de9e0"
                   },
                   {
                       "path":  "docs/regression-coverage.md",
                       "role":  "documentation",
                       "hash_mode":  "utf8_lf",
-                      "canonical_size_bytes":  4032,
-                      "sha256":  "31a632642dd134968428eb2764af1ff4da3049be5fa77baf5149479b97bb9daa"
+                      "canonical_size_bytes":  4120,
+                      "sha256":  "a8792434f2479645ec06f6082a75e75a76b2cf54bf1e7eec0f81f2d3e39a921b"
                   },
                   {
                       "path":  "README.md",
                       "role":  "documentation",
                       "hash_mode":  "utf8_lf",
-                      "canonical_size_bytes":  6586,
-                      "sha256":  "46a364448a78589a22bdce8104a1bec6c695444e6b50af67faf33abc5db78de3"
+                      "canonical_size_bytes":  6701,
+                      "sha256":  "1d8cc2caeeb3a3d032ab9dce910d55b75bfff356618038cc4d2d9d272267ccb4"
                   },
                   {
                       "path":  "scripts/Analyze-GSS-Run.ps1",
@@ -145,8 +145,8 @@
                       "path":  "scripts/Gss-Reporting.ps1",
                       "role":  "runtime",
                       "hash_mode":  "utf8_lf",
-                      "canonical_size_bytes":  12517,
-                      "sha256":  "2a4e86f1488d0b7467fce11b3f3ee36ef310c8e65783701ca5ad3acc3c1c24ca"
+                      "canonical_size_bytes":  12341,
+                      "sha256":  "8ddc9a8d4cb75255fe125fdc3c0c74d7c3342d8cd605179b035a8536cfe3fa17"
                   },
                   {
                       "path":  "scripts/Gss-SourceChoices.ps1",
@@ -299,8 +299,8 @@
                       "path":  "tests/Gss.Reporting.Tests.ps1",
                       "role":  "validation",
                       "hash_mode":  "utf8_lf",
-                      "canonical_size_bytes":  13978,
-                      "sha256":  "84fa2747b9739346f73e73e056c8bfae0e7834036bbeeeadf91c083b2aeff2c4"
+                      "canonical_size_bytes":  14523,
+                      "sha256":  "5b09d145e3dfdeccf74b31538069eb2baca41f7836e5587083884bdac47f0489"
                   },
                   {
                       "path":  "tests/Gss.SourceChoices.Tests.ps1",

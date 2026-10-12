@@ -160,11 +160,8 @@ function Assert-GssWorkbookScoreCompatibility {
     param([AllowEmptyCollection()][object[]]$Rows = @())
     foreach ($row in $Rows) {
         if ($row.Metrics.Count -lt 13 -or [double]$row.Metrics[0] -ne 0) { continue }
-        $unscored = @($row.Metrics[1..12] | Where-Object { $null -eq $_ -or ($_ -is [string] -and [string]::IsNullOrWhiteSpace($_)) })
-        if ($unscored.Count -gt 0) {
-            $entity = ConvertTo-GssSourceEntityKey $row.Ownership $row.Restaurant
-            throw "The workbook model cannot display blank scores safely for zero-response row $entity, week $($row.Week.ToString('yyyy-MM-dd')). The source is unscored; publishing it could display false zero scores. The last good report is preserved."
-        }
+        $entity = ConvertTo-GssSourceEntityKey $row.Ownership $row.Restaurant
+        throw "The workbook model cannot report scores safely for zero-response row $entity, week $($row.Week.ToString('yyyy-MM-dd')). Zero responses cannot establish a measured score, including a vendor-supplied numeric zero. The last good report is preserved."
     }
 }
 

@@ -151,11 +151,6 @@ function Select-GssSourceContent {
     return $Sources | Sort-Object { $_.File.FullName.ToLowerInvariant() }, { $_.File.FullName } | Select-Object -First 1
 }
 
-function Test-GssIntentionalHistoryGap {
-    param([datetime]$WeekEnding)
-    return $WeekEnding.Date -gt [datetime]'2025-07-06' -and $WeekEnding.Date -lt [datetime]'2025-10-05'
-}
-
 function Assert-GssWorkbookScoreCompatibility {
     param([AllowEmptyCollection()][object[]]$Rows = @())
     foreach ($row in $Rows) {
@@ -181,18 +176,17 @@ function Get-GssRequiredSourceWeek {
     $required[$week.ToString('yyyy-MM-dd')] = 'CurrentWeek'
     $required[$week.AddDays(-364).ToString('yyyy-MM-dd')] = 'PriorYearWeek'
     $previous = $week.AddDays(-7)
-    if ($previous -notin $existing -and -not (Test-GssIntentionalHistoryGap $previous)) {
+    if ($previous -notin $existing) {
         $required[$previous.ToString('yyyy-MM-dd')] = 'CatchUpWeek'
     }
     if ($existing.Count -gt 0) {
         $lastExisting = $existing[-1]
         for ($cursor = $lastExisting.AddDays(7); $cursor -le $week; $cursor = $cursor.AddDays(7)) {
-            if (Test-GssIntentionalHistoryGap $cursor) { continue }
             if (-not $required.ContainsKey($cursor.ToString('yyyy-MM-dd'))) {
                 $required[$cursor.ToString('yyyy-MM-dd')] = 'CatchUpWeek'
             }
             $priorYear = $cursor.AddDays(-364)
-            if ($priorYear -notin $existing -and -not (Test-GssIntentionalHistoryGap $priorYear) -and -not $required.ContainsKey($priorYear.ToString('yyyy-MM-dd'))) {
+            if ($priorYear -notin $existing -and -not $required.ContainsKey($priorYear.ToString('yyyy-MM-dd'))) {
                 $required[$priorYear.ToString('yyyy-MM-dd')] = 'CatchUpPriorYearWeek'
             }
         }

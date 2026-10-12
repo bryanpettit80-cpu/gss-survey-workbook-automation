@@ -11,7 +11,7 @@ builder and expected business values rather than private workbook samples.
 | --- | --- |
 | `scripts/` | Runtime, setup, analysis, Excel validation, and recovery |
 | `tests/` | Behavioral tests and synthetic fixture definitions |
-| `tools/` | Repository validation runners |
+| `tools/` | Repository validation and release tools |
 | `config/` | Reporting policy and static-analysis configuration |
 | `templates/` | Installed launcher and operator guides |
 | `release/` | Version and installation/release metadata |
@@ -63,10 +63,13 @@ local-backup failure, independent-backup retry, and recovery under another root.
 Review PDF labels, visible values, page breaks, and clipping. File-byte equality
 is useful for verifying copied artifacts, not for proving business equivalence.
 
-The established missing-history interval between July 6 and October 5, 2025 is
-retained as a compatibility rule. Tests must not fabricate weekly observations
-in that interval. A real second-computer run remains an additional acceptance
-check; changing a test root on the same computer does not establish it.
+Validate every required reporting period against the available sources and
+workbook rows. No calendar interval, including July through September 2025, is
+exempt from completeness checks. Synthetic fixtures may cover those dates;
+missing observations must remain missing rather than being invented.
+A real second-computer run remains a separate acceptance check; changing a test
+root on the same computer does not establish it. Record that evidence separately
+using the [deferred-update criteria](future-updates.md#second-computer-verification).
 
 ## Installation and release controls
 
@@ -80,12 +83,29 @@ Publish a versioned program-only archive and concise release notes describing
 behavior, validation, and any unverified platform coverage. Keep installation
 instructions aligned with the published artifact.
 
+Review `git status --short` and stage each intended changed or new file by its
+exact path (for example, `git add -- docs/development.md`). Do not stage the entire
+worktree or whole directories: untracked operational files may be present there.
+The manifest generator inventories tracked files, including newly staged paths.
+Review the staged file list and diff before regenerating it:
+
+```powershell
+git diff --cached --name-only
+git diff --cached
+.\tools\New-GSS-ReleaseManifest.ps1 -Version '<next version>'
+git add release/release-manifest.json
+```
+
+Review the staged paths so unrelated local work or business data never enters
+the program archive. Validate the regenerated
+manifest and record the actual publication and installation outcomes separately.
+
 Existing legacy backup verification helpers may still need their historical
 release evidence when inspecting old snapshots. Preserve those original records;
 do not rewrite them to manufacture compatibility or current verification.
 `Invoke-GSS-ReleaseBackup.ps1` and the commissioned backup format are historical
-tools for the pre-1.2 release contract. They do not create a new 1.2 release backup.
-New releases use the program-only archive; normal report recovery uses the
+tools for the pre-1.2 release contract. They do not create a current release backup.
+Current releases use the program-only archive; normal report recovery uses the
 versioned run snapshots described in [operations](operations.md).
 Verify a new snapshot from the program folder:
 
@@ -93,10 +113,16 @@ Verify a new snapshot from the program folder:
 .\scripts\Invoke-GSS-DriveBackup.ps1 -Operation VerifyRun -RunSnapshotPath '<snapshot-folder>\run-snapshot.json'
 ```
 
-The manifest records each artifact's original relative path. Restoring an entire data folder from
-that format remains a reviewed manual operation; the quarterly full-folder
-restore drill applies to the legacy format. `Resume` handles current transaction
-rollback and independent backup retry.
+The manifest records each included artifact's original relative path. It covers
+a selected run inventory, not every file in the GSS folder. `VerifyRun` checks
+the stored bytes; it does not restore files or establish full-folder coverage.
+Restoring manifest-listed files to another folder remains a reviewed manual
+operation. `Resume-GSS-PendingFinalize.ps1` handles current transaction rollback
+and independent backup retry. `Invoke-GSS-QuarterlyRestoreDrill.ps1` exercises the
+legacy commissioned snapshot format, not `gss-run-snapshot/v1`.
+See [deferred snapshot restoration](future-updates.md#current-format-snapshot-restoration)
+for the tooling, coverage checks, and drill required before making broader
+recovery claims.
 
 ## Local cleanup and rollback
 
@@ -113,3 +139,5 @@ refactor. A future path/schema migration must be tested with that consumer.
 
 See [operations](operations.md) for operator actions and
 [future integration](automation-interface.md) for the coordinator boundary.
+[Deferred updates](future-updates.md) retain the unimplemented zero-response and
+snapshot-restoration work with acceptance criteria.

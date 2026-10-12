@@ -21,9 +21,10 @@ a valid local report. If the local recovery snapshot failed, follow the recovery
 message before another update. A Drive desktop copy check does not prove that
 remote cloud upload has finished.
 
-A population report with zero responses and blank scores is not currently
-supported by the workbook model. The update stops and preserves the previous
-good report instead of displaying misleading zero scores.
+A population row with zero responses stops publication, whether its scores are
+blank or numeric. This includes historical rows. Zero responses cannot establish
+a measured rate, so the previous good report is preserved. A zero-percent score
+with a positive response count remains valid.
 
 DRAFT PACKAGE BLOCKED means draft prerequisites are missing. It does not by
 itself mean the workbook update failed. Packages contain personal guest data
@@ -41,7 +42,10 @@ message. Do not delete a transaction marker to force another update.
 
 Setup and recovery instructions:
 GSS Survey Workbook Automation\docs\operations.md
+Known limitations and planned acceptance checks:
+GSS Survey Workbook Automation\docs\future-updates.md
 
 Use the main workbook and source/report folders for everyday work. Logs, tests,
 backups, state, and packages are internal files under _automation_runs.
-Scheduled reporting and automatic email sending remain disabled.
+Updates are manually launched. No GSS schedule is enabled, and automatic email
+sending remains disabled.

@@ -164,7 +164,6 @@ Assert-Equal $guardrails.ProtectAllWorksheets $true 'Worksheet protection plan'
 Assert-Equal $guardrails.LockScope 'AllCells' 'Worksheet lock scope'
 Assert-Equal ($guardrails.UnlockedCells -join ',') 'Exec_Dashboard!C3,Exec_Dashboard!F3' 'Only dashboard selectors unlocked'
 Assert-Equal $guardrails.ValidationShowError $true 'Validation errors enabled'
-Assert-Equal $guardrails.IntentionalGapIsBlocker $false 'Intentional 2025 gap is informational'
 
 $qaPlan = @(Get-GssQaCheckPlan 5 14 5096)
 Assert-Equal $qaPlan.Count 7 'QA check count'
@@ -172,9 +171,12 @@ Assert-True (($qaPlan | Where-Object Row -eq 7).Formula -like '*UPPER*Entities*T
 Assert-True (($qaPlan | Where-Object Row -eq 7).Formula.Contains('="1"')) 'Active entity numeric 1 normalization'
 Assert-True (($qaPlan | Where-Object Row -eq 11).Formula.Contains('="1"')) 'Dashboard selector numeric 1 normalization'
 Assert-True (($qaPlan | Where-Object Row -eq 7).Formula -like '*MMULT*') 'Current-period blank metric detection'
-Assert-True (($qaPlan | Where-Object Row -eq 8).Formula -like '*$B$3-7>DATE(2025,7,6)*$B$3-7<DATE(2025,10,5)*') 'Prior-week intentional gap exemption'
-Assert-True (($qaPlan | Where-Object Row -eq 8).DetailFormula -like '*Intentional 2025 history gap*') 'Prior-week intentional gap detail'
-Assert-True (-not (($qaPlan | Where-Object Row -eq 7).Formula -like '*DATE(2025,7,6)*')) 'Current week still requires complete data'
+$currentPeriodQa = $qaPlan | Where-Object Row -eq 7
+foreach ($period in @(@{ Row = 8; Week = '$B$3-7' }, @{ Row = 9; Week = '$B$3-364' })) {
+    $periodQa = $qaPlan | Where-Object Row -eq $period.Row
+    Assert-Equal ($periodQa.Formula.Replace($period.Week, '$B$3')) $currentPeriodQa.Formula 'Every comparison period requires the same entity and metric completeness'
+    Assert-Equal ($periodQa.DetailFormula.Replace($period.Week, '$B$3')) $currentPeriodQa.DetailFormula 'Every comparison period reports actual entity and metric completeness'
+}
 Assert-True (($qaPlan | Where-Object Row -eq 12).Formula -like '*>=8*') 'Capacity reserves two weekly loads'
 
 $capacityAtLimit = Get-GssRawDataCapacityPlan 5088 8 5096

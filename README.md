@@ -10,6 +10,9 @@ backup has its own status, so a Drive outage does not make a valid local report 
 
 This repository contains program source and synthetic tests. Survey workbooks,
 guest data, reports, credentials, logs, and backups are kept outside Git.
+Use the [current published release](https://github.com/bryanpettit80-cpu/gss-survey-workbook-automation/releases/latest).
+The release manifest records the installed version; historical receipts retain
+the version that created them.
 
 ## What it produces
 
@@ -47,7 +50,8 @@ ordinary runtime dependencies.
 
 Use only one computer at a time. Finish the previous run and Dropbox
 synchronization before changing computers. See [setup and recovery](docs/operations.md)
-for configurable paths, dependencies, and corrective actions.
+for configurable paths, dependencies, and corrective actions. Reporting is
+manually launched; no GSS schedule is enabled.
 
 ## How inputs are handled
 
@@ -64,7 +68,8 @@ draft package without preventing a valid aggregate report.
 Every zero-response population row currently stops workbook publication, whether
 its scores are blank or numeric. Zero responses cannot establish a measured rate,
 including a vendor-supplied zero percent. The existing model does not safely
-present these rows as unscored, so the previous good report is preserved.
+present these rows as unscored, so the previous good report is preserved. The
+[deferred updates](docs/future-updates.md) define the work needed to support them.
 
 The main workbook's filename can be configured. Rolling sources are recognized
 by their content, not by requiring a permanent original filename. File hashes
@@ -120,7 +125,9 @@ requires its report backup to finish before publishing a draft package.
 ## Development and future automation
 
 See [development and validation](docs/development.md) for repository organization,
-tests, release preparation, and rollback.
+tests, release preparation, and rollback. [Deferred updates](docs/future-updates.md)
+record the zero-response model, current-format snapshot restoration, and separate
+second-computer verification requirements.
 
 Weekly scheduling and shared-coordinator integration are **not enabled**. The
 [future interface specification](docs/automation-interface.md) keeps reporting

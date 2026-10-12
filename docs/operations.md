@@ -43,6 +43,7 @@ Save vendor population reports in `02 Weekly Rolling Source Workbooks` and detai
 exports in `03 Uploaded Survey Workbooks`. Close the main workbook in Excel and
 double-click **Run GSS Update After Upload.cmd**. Launching authorizes a normal
 validated update; there is no additional `APPLY` prompt.
+Reporting is manually launched. No GSS schedule is enabled in the current setup.
 
 Read the final message and `Last GSS Result.txt`. The program checks a staged
 copy, preserves the previous good report, and verifies publication. Missing or
@@ -57,7 +58,8 @@ unchanged for content identification, but the existing workbook model cannot
 present these rows safely as unscored. The message identifies the entity and
 reporting week, and the last good report is preserved. A workbook-model change is
 required before these results can be published safely. A zero-percent score with
-a positive response count remains valid.
+a positive response count remains valid. The [deferred model update](future-updates.md#zero-response-results)
+records the required behavior and validation.
 
 The default main workbook is `GSS Score Trends - Main.xlsx`. If it is renamed,
 the program can recognize a unique score-trends workbook directly inside
@@ -140,6 +142,11 @@ Original legacy receipts remain unchanged; new recovery records describe any
 continuation. Old backup inspection tools remain available for their historical
 snapshot format.
 
+Current run snapshots preserve only their manifest-listed files. Verifying one
+does not establish a backup of the entire GSS folder, and restoring the previous
+report is not a full-folder restore. A current-format restore command and drill
+remain [deferred work](future-updates.md#current-format-snapshot-restoration).
+
 ## Use another computer
 
 Finish the current run, close Excel, and let Dropbox synchronize before switching.
@@ -150,6 +157,20 @@ for ordinary reporting.
 
 Run on only one computer at a time. The local lock prevents overlapping processes
 on one computer; it cannot make Dropbox a cross-computer lock.
+Actual operation on a second computer remains unverified until the
+[separate handoff check](future-updates.md#second-computer-verification) is completed.
+
+## Disabled scheduled tasks
+
+The normal workflow is the manual launcher. The obsolete
+`GSS Survey Main Workbook Weekly Update` task can be deleted after its definition
+is saved for rollback and the exact task is approved for removal. Keeping it
+disabled is also safe; it is not needed for manual reporting.
+
+Keep `GSS AOL Draft Writer` disabled if its draft-consumer role may be used in a
+future coordinator workflow. Retaining it does not activate drafting or sending.
+Review its command, package compatibility, and activation scope before enabling
+it. The documentation cleanup does not delete or enable either task.
 
 ## Internal files and mail boundaries
 
@@ -164,4 +185,5 @@ historical packages are not rewritten. Management messages remain drafts, and
 automatic sending and weekly scheduling remain disabled.
 
 See [future integration](automation-interface.md) for the proposed shared
-coordinator and [development](development.md) for validation and release work.
+coordinator, [deferred updates](future-updates.md) for known model and recovery
+limitations, and [development](development.md) for validation and release work.

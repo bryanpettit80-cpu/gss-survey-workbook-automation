@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$Folder,
     [string]$MainWorkbookName = 'GSS Score Trends - Main.xlsx',
@@ -349,20 +349,15 @@ function Get-GssQaCheckPlan {
     }
 
     $periods = @(
-        [pscustomobject]@{ Row = 7; Name = 'Current rolling-window entity and metric completeness'; Week = '$B$3'; AllowIntentionalGap = $false },
-        [pscustomobject]@{ Row = 8; Name = 'Previous rolling-window entity and metric completeness'; Week = '$B$3-7'; AllowIntentionalGap = $true },
-        [pscustomobject]@{ Row = 9; Name = 'Prior-year rolling-window entity and metric completeness'; Week = '$B$3-364'; AllowIntentionalGap = $false }
+        [pscustomobject]@{ Row = 7; Name = 'Current rolling-window entity and metric completeness'; Week = '$B$3' },
+        [pscustomobject]@{ Row = 8; Name = 'Previous rolling-window entity and metric completeness'; Week = '$B$3-7' },
+        [pscustomobject]@{ Row = 9; Name = 'Prior-year rolling-window entity and metric completeness'; Week = '$B$3-364' }
     )
     foreach ($period in $periods) {
         $rowCheck = $entityRows.Replace('${WEEK}', $period.Week)
         $blankCheck = $blankMetrics.Replace('${WEEK}', $period.Week)
         $formula = '=IF(AND(${ROW_CHECK}=${ACTIVE_COUNT},${BLANK_CHECK}=0),"READY","ATTENTION")'.Replace('${ROW_CHECK}', $rowCheck).Replace('${ACTIVE_COUNT}', $activeCount).Replace('${BLANK_CHECK}', $blankCheck)
         $detailFormula = '=${ROW_CHECK}&" of "&${ACTIVE_COUNT}&" active entities; "&${BLANK_CHECK}&" blank required metric value(s)"'.Replace('${ROW_CHECK}', $rowCheck).Replace('${ACTIVE_COUNT}', $activeCount).Replace('${BLANK_CHECK}', $blankCheck)
-        if ($period.AllowIntentionalGap) {
-            $intentionalGap = 'AND(${WEEK}>DATE(2025,7,6),${WEEK}<DATE(2025,10,5))'.Replace('${WEEK}', $period.Week)
-            $formula = '=IF(${INTENTIONAL_GAP},"READY",IF(AND(${ROW_CHECK}=${ACTIVE_COUNT},${BLANK_CHECK}=0),"READY","ATTENTION"))'.Replace('${INTENTIONAL_GAP}', $intentionalGap).Replace('${ROW_CHECK}', $rowCheck).Replace('${ACTIVE_COUNT}', $activeCount).Replace('${BLANK_CHECK}', $blankCheck)
-            $detailFormula = '=IF(${INTENTIONAL_GAP},"Intentional 2025 history gap",${ROW_CHECK}&" of "&${ACTIVE_COUNT}&" active entities; "&${BLANK_CHECK}&" blank required metric value(s)")'.Replace('${INTENTIONAL_GAP}', $intentionalGap).Replace('${ROW_CHECK}', $rowCheck).Replace('${ACTIVE_COUNT}', $activeCount).Replace('${BLANK_CHECK}', $blankCheck)
-        }
         $checks += [pscustomobject]@{
             Row = $period.Row
             Name = $period.Name
@@ -425,7 +420,6 @@ function Get-GssGuardrailPlan {
         LockScope = 'AllCells'
         UnlockedCells = @('Exec_Dashboard!C3', 'Exec_Dashboard!F3')
         ValidationShowError = $true
-        IntentionalGapIsBlocker = $false
     }
 }
 
@@ -1004,7 +998,7 @@ function Set-GssReadmeContent {
         Set-CellValue $worksheet 14 1 '3) Exec_Dashboard: use the Entity and Metric dropdowns to drill into one story.'
         Set-CellValue $worksheet 15 1 '4) Drivers_Detail: review every metric for the entity selected on Exec_Dashboard.'
         Set-CellValue $worksheet 18 1 '• Previous rolling-window view (legacy tab name: Quick_Read_WoW): positive change versus the previous rolling window means directional improvement. A blank is surfaced by QA Checks when required source data is missing.'
-        Set-CellValue $worksheet 19 1 '• Quick_Read_YoY: compares the reporting-date rolling result with the rolling result ending 364 days earlier. The confirmed 2025 history break is informational, not an error.'
+        Set-CellValue $worksheet 19 1 '• Quick_Read_YoY: compares the reporting-date rolling result with the rolling result ending 364 days earlier. Required prior-year data must be complete.'
         Set-CellValue $worksheet 20 1 '• Exec_Dashboard: selector-driven view. The same selections drive Drivers_Detail and the movers table.'
         Set-CellValue $worksheet 21 1 '• QA Checks: the visible READY/ATTENTION gate checks row keys, period completeness, headers, selectors, and remaining capacity.'
         Set-CellValue $worksheet 22 1 'Metric definitions:'
@@ -1014,7 +1008,7 @@ function Set-GssReadmeContent {
         Set-CellValue $worksheet 26 1 'Data hygiene rules (checked automatically):'
         Set-CellValue $worksheet 27 1 '• Weekly comment ratings: 5=Excellent, 4=Very Good, 3=Good, 2=Fair, 1=Poor; steak answers use Y/N.'
         Set-CellValue $worksheet 28 1 '• Alert Guests GR (Guest Relations already contacted) and NC (no contact requested) are excluded from individual outreach suggestions. Restaurant Manager Follow Up remains a manual notes field.'
-        Set-CellValue $worksheet 29 1 '• The break between the 7/6/2025 and 10/5/2025 data points is intentional and does not block READY status.'
+        Set-CellValue $worksheet 29 1 '• Every required reporting period must contain complete data for all active entities. Missing periods block READY status.'
         Set-CellValue $worksheet 31 1 '• ATTENTION status: stop using the reports and share the newest file from _automation_runs\logs with the workbook maintainer.'
         Set-CellValue $worksheet 32 1 '• Dropdown rejects a choice: select an active entity or a metric shown in the dropdown list.'
         Set-CellValue $worksheet 34 1 '• Current model capacity is Raw_Data rows 2:5096. QA Checks warns before fewer than two weekly loads (8 rows) remain.'
@@ -1173,8 +1167,8 @@ function Update-GssQaSheet {
         Set-CellValue $qaWs 3 1 '13-week rolling through'
         Set-CellFormula $qaWs 3 2 "=MAX('Raw_Data'!`$B`$2:`$B`$$gssRawDataLastFormulaRow)"
         $qaWs.Cells.Item(3, 2).NumberFormat = 'm/d/yyyy'
-        Set-CellValue $qaWs 4 1 'Confirmed history note'
-        Set-CellValue $qaWs 4 2 'The break between the 7/6/2025 and 10/5/2025 data points is intentional and is not a blocker.'
+        Set-CellValue $qaWs 4 1 'Comparison coverage'
+        Set-CellValue $qaWs 4 2 'Current, previous, and prior-year rolling windows must each contain complete data for all active entities.'
         $qaWs.Range('B4:C4').Merge() | Out-Null
         Set-CellValue $qaWs 5 1 'Check'
         Set-CellValue $qaWs 5 2 'Status'
@@ -1829,7 +1823,6 @@ function Test-GssPersistedWorkbook {
         $rawRows = @(Read-GssRawDataRow $rawWs)
         $expectedContent = if ($ExpectedSourceEvidence.Count -gt 0) { $ExpectedSourceEvidence } else {
             @($CurrentWeek, $PriorYearWeek, $CurrentWeek.AddDays(-7)) |
-                Where-Object { -not (Test-GssIntentionalHistoryGap $_) } |
                 ForEach-Object { [pscustomobject]@{ WeekEnding = $_.ToString('yyyy-MM-dd'); PeriodStart = $_.AddDays(-90).ToString('yyyy-MM-dd'); SemanticSha256 = $null } }
         }
         foreach ($source in @($expectedContent)) {

@@ -1,0 +1,2 @@
+# Bash setup must keep Unix line endings when checked out from Windows.
+*.sh text eol=lf

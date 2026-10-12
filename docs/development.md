@@ -28,6 +28,11 @@ Use Windows PowerShell 5.1 for compatibility with the deployed Excel application
 Development checks use Pester 5.8.0 and PSScriptAnalyzer 1.25.0. Runtime users do
 not need these modules or Git.
 
+Run commands from the repository root. Install the pinned modules once with
+`./tools/Initialize-GSS-Development.ps1`; use `-CheckOnly` to verify them without
+installing anything. The initializer uses the current user's module directory
+and does not change reporting configuration.
+
 ```powershell
 .\tools\Test-GSS-PowerShellSyntax.ps1
 .\tools\Test-GSS-PSScriptAnalyzer.ps1
@@ -38,6 +43,13 @@ not need these modules or Git.
 .\tests\Test-GSS-DriveBackup.ps1
 .\tests\Test-GSS-HistoricalRecovery.ps1
 ```
+
+CI keeps the complete Windows PowerShell job named `powershell`. Pull requests,
+pushes to `main`, version tags, and manual dispatch run validation. Feature
+branches are checked through their PR instead of running the same suite for
+both the branch push and its PR. The `cloud-development` job separately runs the
+portable suite on Ubuntu 24.04. A passing Linux job does not establish Codex
+account access or environment publication.
 
 When the separate AOL consumer source is available, run the package suite with
 `-AolSourceRoot 'D:\Projects\aol-to-gmail-sync\src'` to exercise its parser against
@@ -70,6 +82,78 @@ missing observations must remain missing rather than being invented.
 A real second-computer run remains a separate acceptance check; changing a test
 root on the same computer does not establish it. Record that evidence separately
 using the [deferred-update criteria](future-updates.md#second-computer-verification).
+
+## Codex Cloud development
+
+Use Cloud for source changes and synthetic checks. Desktop Excel COM automation,
+workbook recalculation/PDF rendering, Windows task scheduling, local protected
+credentials, and Dropbox/Drive reporting remain Windows operations. The Cloud
+suite does not run the operator launcher, copy operational data, create mail
+drafts, or send messages. There is no server to start and no business credential
+required.
+
+The development bootstrap supports Ubuntu 22.04, 24.04, and 26.04 on x64; CI
+exercises 24.04. It installs PowerShell 7.6.6 from Microsoft's official release
+with a pinned SHA-256, then Pester 5.8.0 and PSScriptAnalyzer 1.25.0. Use it only in
+the disposable development environment; it may upgrade an older PowerShell
+package but refuses to downgrade a newer one. Root or passwordless `sudo` is needed when the
+pinned package is absent. See the [official Ubuntu installation guide](https://learn.microsoft.com/en-us/powershell/scripting/install/install-ubuntu)
+and [pinned release](https://github.com/PowerShell/PowerShell/releases/tag/v7.6.6).
+
+From the repository root:
+
+```bash
+bash ./tools/Setup-GSS-Cloud.sh
+pwsh -NoProfile -File ./tools/Test-GSS-Cloud.ps1
+```
+
+If a suitable PowerShell 7.2+ is already available and a runtime installation is
+not wanted, run `pwsh -NoProfile -File ./tools/Initialize-GSS-Development.ps1`,
+then the portable test command. Record the actual PowerShell version; this is
+not the pinned bootstrap configuration.
+
+The portable suite runs syntax and static analysis over all PowerShell source,
+then reporting, accepted source-choice, workbook-discovery, and analytics
+checks. On Linux, analytics explicitly excludes its single Windows Dropbox-path assertion; all pure analytics assertions still run. Windows mutex subprocess, transaction, backup, email-package,
+historical-recovery, and desktop Excel suites remain outside that Linux scope.
+Use the complete Windows commands above before releasing changes that affect
+those paths. Do not convert excluded checks into passing results.
+
+Inspect existing environments before creating one. The
+[current Cloud environment workflow](https://learn.chatgpt.com/docs/environments/cloud-environments)
+uses a prepared, published environment for new tasks; the
+[legacy workflow](https://learn.chatgpt.com/docs/environments/cloud-environment)
+still serves Code Review and GitHub/Linear integrations. A legacy repository
+association does not prove that a current published environment exists.
+
+For this repository, prefer a private, single-repository development environment
+unless sharing has been explicitly approved. Keep guest data, Dropbox mounts,
+mail credentials, and live backup paths out of its prepared filesystem. Use the
+bootstrap as the install command and the portable test command as the readiness
+check. No environment variables or secrets are required by the synthetic tests.
+Do not copy a developer's local credentials into Cloud.
+
+Setup needs Ubuntu package mirrors, `github.com` and
+`release-assets.githubusercontent.com` for PowerShell, and `www.powershellgallery.com`
+plus its package download hosts for the pinned modules. Confirm redirects and
+actual allowed hosts during setup. Keep network access limited to those needs;
+do not assume the package-manager preset includes PowerShell Gallery.
+
+Review setup results before saving and publishing/republishing. Start a fresh
+task from that published environment and record:
+
+- Environment name and identifier, repository association, access scope, and
+  publication state.
+- `pwd`, `git rev-parse HEAD`, and `git status --short`, confirming the intended
+  repository/revision without unrelated changes.
+- PowerShell/Pester/PSScriptAnalyzer versions and the portable command's actual
+  exit status, pass count, and any failures or excluded coverage.
+- Whether setup used cached state, what network access was verified, and which
+  Windows-only checks still need a local run.
+
+Saving configuration or passing local/Linux CI tests is not a fresh Cloud-task
+result. If account access is unavailable, keep environment identity, publication,
+and fresh-task validation explicitly unverified.
 
 ## Installation and release controls
 

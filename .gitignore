@@ -29,7 +29,9 @@ release/local-excel-validation-receipt.json
 .idea/
 Thumbs.db
 .DS_Store
-.env.local
+.env
+.env.*
+!.env.example
 *.tmp
 *.bak
 

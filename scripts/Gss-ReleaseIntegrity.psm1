@@ -8,6 +8,7 @@ $script:ReleaseExtensions = @(
     '.ps1',
     '.psd1',
     '.psm1',
+    '.sh',
     '.py',
     '.lock',
     '.txt',
@@ -29,6 +30,7 @@ $script:ExecutableExtensions = @(
     '.psm1',
     '.py',
     '.scr',
+    '.sh',
     '.vbs',
     '.wsf',
     '.wsh'

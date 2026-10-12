@@ -14,6 +14,11 @@ Use the [current published release](https://github.com/bryanpettit80-cpu/gss-sur
 The release manifest records the installed version; historical receipts retain
 the version that created them.
 
+Restaurant operators use the Windows launcher. Maintainers use this public
+source repository and synthetic tests; the operational workbook and survey data
+are private and are not included in a GitHub download. Local reporting is in
+use. Linux checks support development only and cannot run the Excel report.
+
 ## What it produces
 
 - The updated score-trends Excel workbook, including dashboard, comparisons,
@@ -26,8 +31,10 @@ the version that created them.
 
 ## Setup and weekly use
 
-Use Windows, Windows PowerShell 5.1 or later, and Microsoft Excel desktop. Download
-the program and the required operational files. Online-only cloud placeholders
+Use Windows, Windows PowerShell 5.1, and Microsoft Excel desktop. Download
+the program release and obtain the established main workbook, sources, and
+internal state from the authorized GSS operational folder. A fresh source-code
+checkout alone cannot create an operational installation. Online-only cloud placeholders
 must be downloaded before reporting. Git and development test modules are not
 ordinary runtime dependencies.
 
@@ -111,6 +118,14 @@ requires its report backup to finish before publishing a draft package.
 
 ## Folder guide
 
+GitHub `main` is the source of truth for reviewed program changes, and a tagged
+release identifies an installable version. The Dropbox GSS folder is the
+operational source of truth for workbooks, source exports, reports, and durable
+run state. Its installed program is a deployed copy, not a separate project.
+Develop in an isolated checkout; updating GitHub does not by itself deploy a
+release or update an issued report. Backups and archives are recovery evidence,
+not alternative current inputs.
+
 | Folder | Contents |
 | --- | --- |
 | `01 Main Workbook` | Main workbook and its established archive |
@@ -128,6 +143,23 @@ See [development and validation](docs/development.md) for repository organizatio
 tests, release preparation, and rollback. [Deferred updates](docs/future-updates.md)
 record the zero-response model, current-format snapshot restoration, and separate
 second-computer verification requirements.
+
+On Windows, install the pinned development modules and follow the complete
+[validation commands](docs/development.md#validation). In an Ubuntu x64
+development environment, the repository provides:
+
+```bash
+bash ./tools/Setup-GSS-Cloud.sh
+pwsh -NoProfile -File ./tools/Test-GSS-Cloud.ps1
+```
+
+The portable checks cover parsing, static analysis, reporting rules, source
+choices, workbook discovery, and analytics with synthetic fixtures. Windows
+transaction/recovery tests and desktop Excel remain separate. The
+[Cloud setup and verification procedure](docs/development.md#codex-cloud-development)
+distinguishes a tested Linux toolchain from a published, freshly validated Codex
+Cloud environment. No production data or mail credentials are needed for these
+checks.
 
 Weekly scheduling and shared-coordinator integration are **not enabled**. The
 [future interface specification](docs/automation-interface.md) keeps reporting

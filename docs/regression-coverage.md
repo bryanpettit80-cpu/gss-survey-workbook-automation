@@ -15,6 +15,7 @@ not define whether two vendor workbooks mean the same thing.
 | Different versions of one reporting period | Ask for a specific revision; retain the prior report until chosen | Reporting and desktop Excel scenarios |
 | Previously accepted correction appears again | Reuse its content decision; an unknown revision needs a new choice | Source-choice and desktop Excel scenarios |
 | Missing entity, duplicate entity, incorrect period, invalid count or percentage | Block publication with a reason | Logic and reporting suites |
+| Missing required observation during July through September 2025 | Apply normal completeness checks; no date-based exception | Required-period and workbook QA regressions |
 | Zero-response row with blank or numeric scores, including vendor numeric zeros | Preserve source values and content identity; stop workbook publication because no measured rate can be established; preserve the previous report | Reporting compatibility-gate regressions for blank and numeric metrics; zero-response workbook rendering is explicitly unsupported |
 | Excel error inspection itself fails | Fail validation rather than report zero errors | Reporting unit suite |
 | Interruption before, during, or after workbook/PDF promotion | Recover from the journal, or stop on unrelated changes | Transactions and operations suites |
@@ -43,3 +44,6 @@ Inspect both generated comparison PDFs for correct periods, both restaurants,
 visible values and signs, readable labels, and clipping. A second physical
 computer remains a separate acceptance test. A successful local DriveFS copy
 does not establish completed remote cloud synchronization.
+The [deferred-update criteria](future-updates.md) specify the unimplemented
+zero-response rendering and current-format full-restore coverage; passing the
+existing suites does not establish those capabilities.

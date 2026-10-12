@@ -14,7 +14,7 @@ if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
     $RepoRoot = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
 }
 
-Import-Module (Join-Path (Split-Path -Parent $PSCommandPath) 'Gss-ReleaseIntegrity.psm1') -Force
+Import-Module (Join-Path (Split-Path -Parent (Split-Path -Parent $PSCommandPath)) 'scripts\Gss-ReleaseIntegrity.psm1') -Force
 
 $arguments = @{
     RepoRoot = $RepoRoot

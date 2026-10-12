@@ -57,5 +57,8 @@ Notifications may say that a report is complete while its independent backup is
 pending. A draft must remain withheld when its own required evidence is missing.
 Never label local DriveFS verification as confirmed remote upload.
 
-Activation is a later task. Keep all existing GSS scheduled tasks disabled during
-the reporting refactor and repository cleanup.
+Activation is a later task. Current reporting is manually launched, and no GSS
+schedule is enabled. The obsolete weekly-update task is a removal candidate;
+the AOL draft-writer task can remain disabled for possible future use. See the
+[task guidance](operations.md#disabled-scheduled-tasks). Neither task's presence
+authorizes activation, and a future coordinator must not create a second writer.

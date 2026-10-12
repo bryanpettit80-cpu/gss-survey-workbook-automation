@@ -1,9 +1,9 @@
 ﻿{
     "schema_version":  1,
-    "release_version":  "1.2.0",
-    "release_tag":  "v1.2.0",
+    "release_version":  "1.2.1",
+    "release_tag":  "v1.2.1",
     "commit_binding":  "exact_release_tag",
-    "generated_at_utc":  "2026-10-12T02:03:04.2256516Z",
+    "generated_at_utc":  "2026-10-12T03:01:23.4155999Z",
     "classification":  "PROGRAM SOURCE ONLY - NO GSS WORKBOOKS, REPORTS, OR CUSTOMER DATA",
     "runtime_contract":  {
                              "require_clean_tree":  false,
@@ -20,7 +20,7 @@
                                   "release_checkout_clean":  true,
                                   "release_tag_matches_commit":  true
                               },
-    "archive_name":  "gss-survey-workbook-automation-v1.2.0.zip",
+    "archive_name":  "gss-survey-workbook-automation-v1.2.1.zip",
     "files":  [
                   {
                       "path":  ".github/dependabot.yml",
@@ -61,36 +61,43 @@
                       "path":  "docs/automation-interface.md",
                       "role":  "documentation",
                       "hash_mode":  "utf8_lf",
-                      "canonical_size_bytes":  3286,
-                      "sha256":  "6cbd6085369a6040e51fa5dd111290c41f04da517600d4b0e196afe201a2b690"
+                      "canonical_size_bytes":  3554,
+                      "sha256":  "4bc3c33fa0d07f48a2ef00e9ffca02b8c477fdffb7d1e129c1a8c6d606cf0a6c"
                   },
                   {
                       "path":  "docs/development.md",
                       "role":  "documentation",
                       "hash_mode":  "utf8_lf",
-                      "canonical_size_bytes":  5905,
-                      "sha256":  "ca0222b085f0a0784e62b8730f34137ae88e8bd6f7e0f00e42a62a7cd907c0fb"
+                      "canonical_size_bytes":  7231,
+                      "sha256":  "d901164c2fbef2df6db5f3d0794e34a0688849d9b1f910a4792f51d9b55fa239"
+                  },
+                  {
+                      "path":  "docs/future-updates.md",
+                      "role":  "documentation",
+                      "hash_mode":  "utf8_lf",
+                      "canonical_size_bytes":  5706,
+                      "sha256":  "d8d9386237bfb5976039f3e393ae0a218c10d7a34f408037a7dab2e8ddc091d8"
                   },
                   {
                       "path":  "docs/operations.md",
                       "role":  "documentation",
                       "hash_mode":  "utf8_lf",
-                      "canonical_size_bytes":  8507,
-                      "sha256":  "3de41669f25315a2f961044a51e9977adddd3eed4f00bbe2f1e6a880059de9e0"
+                      "canonical_size_bytes":  9878,
+                      "sha256":  "816a58d488ce87b62085194e3780226423aaa3da552b856e17248ba2a03818d9"
                   },
                   {
                       "path":  "docs/regression-coverage.md",
                       "role":  "documentation",
                       "hash_mode":  "utf8_lf",
-                      "canonical_size_bytes":  4120,
-                      "sha256":  "a8792434f2479645ec06f6082a75e75a76b2cf54bf1e7eec0f81f2d3e39a921b"
+                      "canonical_size_bytes":  4503,
+                      "sha256":  "04f199f7c6075406570be279a2af4fe8806da1722cbaf8e4e8d45bc66946e35c"
                   },
                   {
                       "path":  "README.md",
                       "role":  "documentation",
                       "hash_mode":  "utf8_lf",
-                      "canonical_size_bytes":  6701,
-                      "sha256":  "1d8cc2caeeb3a3d032ab9dce910d55b75bfff356618038cc4d2d9d272267ccb4"
+                      "canonical_size_bytes":  7248,
+                      "sha256":  "b682068d63fe8248dd5e6f55567f8c5b8d92497dd5b1645b70f26254b2819f27"
                   },
                   {
                       "path":  "scripts/Analyze-GSS-Run.ps1",
@@ -145,8 +152,8 @@
                       "path":  "scripts/Gss-Reporting.ps1",
                       "role":  "runtime",
                       "hash_mode":  "utf8_lf",
-                      "canonical_size_bytes":  12341,
-                      "sha256":  "8ddc9a8d4cb75255fe125fdc3c0c74d7c3342d8cd605179b035a8536cfe3fa17"
+                      "canonical_size_bytes":  11987,
+                      "sha256":  "ad2b62f74bdcda7060fce0c3a2a4af31a699daa3909db459bf96c6d60ba1a7bc"
                   },
                   {
                       "path":  "scripts/Gss-SourceChoices.ps1",
@@ -198,13 +205,6 @@
                       "sha256":  "fdf0145235639949417b8d9be06cf4d4f5f50c994307fee4d8e5e8b2bec41445"
                   },
                   {
-                      "path":  "scripts/New-GSS-ReleaseManifest.ps1",
-                      "role":  "runtime",
-                      "hash_mode":  "utf8_lf",
-                      "canonical_size_bytes":  707,
-                      "sha256":  "d5f8188bd4bf05acc16c2ce0e87467eff7ce32826c0068a86d7f88e482c71a99"
-                  },
-                  {
                       "path":  "scripts/Resume-GSS-PendingFinalize.ps1",
                       "role":  "runtime",
                       "hash_mode":  "utf8_lf",
@@ -236,8 +236,8 @@
                       "path":  "scripts/Update-GSS-MainWorkbook.ps1",
                       "role":  "runtime",
                       "hash_mode":  "utf8_lf",
-                      "canonical_size_bytes":  139859,
-                      "sha256":  "4500d92ebc0d166f9a56b2a021f194272e98030de3bd238b60defe1cbaa5f4d0"
+                      "canonical_size_bytes":  138839,
+                      "sha256":  "b96dd2283b58856b4c5f3341520729833421f136a65d0df854741ffbbf0fff1a"
                   },
                   {
                       "path":  "templates/00 ABOUT THIS FOLDER.txt",
@@ -257,8 +257,8 @@
                       "path":  "templates/00 START HERE - GSS Survey Updates.txt",
                       "role":  "operator-template",
                       "hash_mode":  "utf8_lf",
-                      "canonical_size_bytes":  2266,
-                      "sha256":  "4142ba41ea45553099d30ef68707b8696a05be7aa90b217328e4b1c21b107b58"
+                      "canonical_size_bytes":  2486,
+                      "sha256":  "5548922b52734683b9f84d2e801fa2ca5a51ba953900936c039b14ef7dfdfd34"
                   },
                   {
                       "path":  "templates/Run GSS Update After Upload.cmd",
@@ -299,8 +299,8 @@
                       "path":  "tests/Gss.Reporting.Tests.ps1",
                       "role":  "validation",
                       "hash_mode":  "utf8_lf",
-                      "canonical_size_bytes":  14523,
-                      "sha256":  "5b09d145e3dfdeccf74b31538069eb2baca41f7836e5587083884bdac47f0489"
+                      "canonical_size_bytes":  15664,
+                      "sha256":  "b9723e044d407b5806b6678c8fa8403750d4e89781f9733355943420eb29ec52"
                   },
                   {
                       "path":  "tests/Gss.SourceChoices.Tests.ps1",
@@ -348,8 +348,8 @@
                       "path":  "tests/Test-GSS-Logic.ps1",
                       "role":  "validation",
                       "hash_mode":  "utf8_lf",
-                      "canonical_size_bytes":  15280,
-                      "sha256":  "6a279b9d45297484ea277b0afe69d99651afb82178b938071decf736d9ce5111"
+                      "canonical_size_bytes":  15307,
+                      "sha256":  "78b307aa9719e40a6790e17ccdcbbb52e4ca794fa743b2d3bd0256d794ef905e"
                   },
                   {
                       "path":  "tests/Test-GSS-ReportingIntegration.ps1",
@@ -357,6 +357,13 @@
                       "hash_mode":  "utf8_lf",
                       "canonical_size_bytes":  13524,
                       "sha256":  "b2dec0c5ec00834369a095172470ab9fb34448217d29bbb3426a1b2d062a040d"
+                  },
+                  {
+                      "path":  "tools/New-GSS-ReleaseManifest.ps1",
+                      "role":  "validation",
+                      "hash_mode":  "utf8_lf",
+                      "canonical_size_bytes":  736,
+                      "sha256":  "daa313db8230b0ae10dbfb4509700bf88cd096d526f3463e9283a7ed8e24ec4c"
                   },
                   {
                       "path":  "tools/Test-GSS-Pester.ps1",

@@ -2,7 +2,14 @@ name: validation
 
 on:
   push:
+    branches: [main]
+    tags: ['v*']
   pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: validation-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -10,13 +17,12 @@ permissions:
 jobs:
   powershell:
     runs-on: windows-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install pinned PowerShell validation modules
         shell: powershell
-        run: |
-          Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Scope CurrentUser -Force -AllowClobber
-          Install-Module Pester -RequiredVersion 5.8.0 -Scope CurrentUser -Force -AllowClobber -SkipPublisherCheck
+        run: .\tools\Initialize-GSS-Development.ps1
       - name: Parse PowerShell scripts
         shell: powershell
         run: .\tools\Test-GSS-PowerShellSyntax.ps1
@@ -44,3 +50,15 @@ jobs:
       - name: Verify release manifest file hashes
         shell: powershell
         run: .\scripts\Test-GSS-ReleaseIntegrity.ps1 -SkipTagCheck
+
+  cloud-development:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Check Linux setup syntax
+        run: bash -n ./tools/Setup-GSS-Cloud.sh
+      - name: Install pinned Cloud development dependencies
+        run: bash ./tools/Setup-GSS-Cloud.sh
+      - name: Run portable synthetic development checks
+        run: pwsh -NoProfile -File ./tools/Test-GSS-Cloud.ps1

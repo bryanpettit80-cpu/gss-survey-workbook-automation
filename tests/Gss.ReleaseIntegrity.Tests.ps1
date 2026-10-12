@@ -28,6 +28,7 @@ Describe 'GSS release integrity module' {
     It 'selects program and policy files but excludes data and the manifest itself' {
         (Test-GssReleaseTrackedPath -Path 'scripts/Update-GSS-MainWorkbook.ps1') | Should -BeTrue
         (Test-GssReleaseTrackedPath -Path 'scripts/future_analytics.py') | Should -BeTrue
+        (Test-GssReleaseTrackedPath -Path 'tools/Setup-GSS-Cloud.sh') | Should -BeTrue
         (Test-GssReleaseTrackedPath -Path 'requirements-future-analytics.lock') | Should -BeTrue
         (Test-GssReleaseTrackedPath -Path 'config/analysis-policy.json') | Should -BeTrue
         (Test-GssReleaseTrackedPath -Path 'release/release-manifest.json') | Should -BeFalse

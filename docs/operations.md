@@ -2,7 +2,7 @@
 
 ## Set up a Windows computer
 
-1. Install Microsoft Excel desktop and use Windows PowerShell 5.1 or later.
+1. Install Microsoft Excel desktop and use Windows PowerShell 5.1.
 2. Download the GSS operational folders. Ensure the workbooks are available
    offline, not only cloud placeholders. Sign in to Dropbox/Drive through their
    normal desktop applications when those services are used.
@@ -160,17 +160,18 @@ on one computer; it cannot make Dropbox a cross-computer lock.
 Actual operation on a second computer remains unverified until the
 [separate handoff check](future-updates.md#second-computer-verification) is completed.
 
-## Disabled scheduled tasks
+## Scheduled tasks
 
 The normal workflow is the manual launcher. The obsolete
-`GSS Survey Main Workbook Weekly Update` task can be deleted after its definition
-is saved for rollback and the exact task is approved for removal. Keeping it
-disabled is also safe; it is not needed for manual reporting.
+`GSS Survey Main Workbook Weekly Update` task was removed from the maintained
+workstation after its XML definition was saved. Installation does not recreate
+it. An old copy on another computer is not required for manual reporting; review
+and preserve its definition before approving removal there.
 
 Keep `GSS AOL Draft Writer` disabled if its draft-consumer role may be used in a
 future coordinator workflow. Retaining it does not activate drafting or sending.
 Review its command, package compatibility, and activation scope before enabling
-it. The documentation cleanup does not delete or enable either task.
+it. Updating program files does not activate drafting or schedules.
 
 ## Internal files and mail boundaries
 

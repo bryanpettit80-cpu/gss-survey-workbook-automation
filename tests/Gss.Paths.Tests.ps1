@@ -72,4 +72,11 @@ Describe 'Main workbook discovery' {
     It 'keeps technical archives out of recursive business-input discovery' {
         Test-ExcludedGssPath (Join-Path $root '_automation_runs\archive\program-releases\old.xlsx') $root | Should -BeTrue
     }
+
+    It 'preserves exact exclusions, directory boundaries, and native path casing' {
+        Test-ExcludedGssPath (Join-Path $root '_automation_runs') $root | Should -BeTrue
+        Test-ExcludedGssPath (Join-Path $root '_automation_runs_backup\old.xlsx') $root | Should -BeFalse
+        $caseInsensitivePaths = [IO.Path]::DirectorySeparatorChar -eq '\'
+        Test-ExcludedGssPath (Join-Path $root '_AUTOMATION_RUNS\old.xlsx') $root | Should -Be $caseInsensitivePaths
+    }
 }

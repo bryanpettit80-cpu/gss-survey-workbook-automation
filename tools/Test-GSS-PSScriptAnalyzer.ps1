@@ -28,10 +28,13 @@ function ConvertTo-AnalyzerPortablePath {
     param([Parameter(Mandatory)][string]$Path)
 
     $fullPath = [System.IO.Path]::GetFullPath($Path)
-    if (-not $fullPath.StartsWith("$RepoRoot\", [System.StringComparison]::OrdinalIgnoreCase)) {
+    $separator = [IO.Path]::DirectorySeparatorChar
+    $rootPrefix = $RepoRoot.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar) + $separator
+    $comparison = if ($separator -eq '\') { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+    if (-not $fullPath.StartsWith($rootPrefix, $comparison)) {
         throw "Analyzer returned a path outside the repository: $Path"
     }
-    return $fullPath.Substring($RepoRoot.Length + 1).Replace('\', '/')
+    return $fullPath.Substring($rootPrefix.Length).Replace('\', '/')
 }
 
 function Get-AnalyzerFingerprint {

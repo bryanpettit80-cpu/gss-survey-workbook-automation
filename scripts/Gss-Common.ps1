@@ -30,16 +30,18 @@ function Convert-ToBool {
 function Test-ExcludedGssPath {
     param([string]$Path, [string]$FolderPath)
 
-    $resolvedPath = [System.IO.Path]::GetFullPath($Path).TrimEnd('\')
+    $separator = [System.IO.Path]::DirectorySeparatorChar
+    $comparison = if ($separator -eq '\') { [System.StringComparison]::OrdinalIgnoreCase } else { [System.StringComparison]::Ordinal }
+    $resolvedPath = [System.IO.Path]::GetFullPath($Path).TrimEnd($separator, [System.IO.Path]::AltDirectorySeparatorChar)
     $excludedFolders = @(
         (Join-Path $FolderPath 'GSS Survey Workbook Automation'),
         (Join-Path $FolderPath '_automation_runs')
     )
 
     foreach ($excludedFolder in $excludedFolders) {
-        $resolvedExcluded = [System.IO.Path]::GetFullPath($excludedFolder).TrimEnd('\')
-        if ($resolvedPath.Equals($resolvedExcluded, [System.StringComparison]::OrdinalIgnoreCase) -or
-            $resolvedPath.StartsWith("$resolvedExcluded\", [System.StringComparison]::OrdinalIgnoreCase)) {
+        $resolvedExcluded = [System.IO.Path]::GetFullPath($excludedFolder).TrimEnd($separator, [System.IO.Path]::AltDirectorySeparatorChar)
+        if ($resolvedPath.Equals($resolvedExcluded, $comparison) -or
+            $resolvedPath.StartsWith("$resolvedExcluded$separator", $comparison)) {
             return $true
         }
     }

@@ -163,8 +163,13 @@ $healthyCapacityRunLog | Add-Member -NotePropertyName WorstCaseWeeklyLoadsRemain
 $healthyCapacityQa = Get-GssRunQa $healthyCapacityRunLog 'C:\GSS Surveys' 'C:\missing.xlsx' $rawRows $metrics $headers $detail $current $priorYear $true 'READY'
 Assert-True (@($healthyCapacityQa.Warnings | Where-Object { $_ -like 'Workbook capacity is below the redesign trigger*' }).Count -eq 0) 'Capacity at 104 weekly loads does not trigger redesign warning'
 
-$pathRunLog = [pscustomobject]@{ TargetWorkbook = 'C:\GSS Surveys\_automation_runs\test-output\guarded-copy.xlsx' }
-Assert-Equal (Resolve-GssAnalysisWorkbookPath $pathRunLog 'C:\GSS Surveys' 'main.xlsx') 'C:\GSS Surveys\_automation_runs\test-output\guarded-copy.xlsx' 'Analyzer uses logged copy-test workbook'
+if ([IO.Path]::DirectorySeparatorChar -eq '\') {
+    $pathRunLog = [pscustomobject]@{ TargetWorkbook = 'C:\GSS Surveys\_automation_runs\test-output\guarded-copy.xlsx' }
+    Assert-Equal (Resolve-GssAnalysisWorkbookPath $pathRunLog 'C:\GSS Surveys' 'main.xlsx') 'C:\GSS Surveys\_automation_runs\test-output\guarded-copy.xlsx' 'Analyzer uses logged copy-test workbook'
+}
+else {
+    Write-Output 'Excluded on this platform: the Windows Dropbox-root workbook-path assertion. All pure analytics assertions still run.'
+}
 
 function Get-BoundaryMetricDetail {
     param(

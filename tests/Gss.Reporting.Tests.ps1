@@ -152,12 +152,29 @@ Describe 'Chronological catch-up' {
         @($plan | ForEach-Object { $_.WeekEnding.ToString('yyyy-MM-dd') }) -join ',' | Should -Be '2025-10-05,2026-09-27,2026-10-04'
     }
 
-    It 'keeps the declared 2025 history gap as a compatibility exception' {
+    It 'requires all twelve July through September 2025 snapshots during catch-up' {
         $plan = @(Get-GssRequiredSourceWeek ([datetime]'2025-10-05') @([datetime]'2025-07-06'))
-        @($plan | Where-Object { Test-GssIntentionalHistoryGap $_.WeekEnding }).Count | Should -Be 0
+        $expectedDates = @('2025-07-13', '2025-07-20', '2025-07-27', '2025-08-03', '2025-08-10', '2025-08-17', '2025-08-24', '2025-08-31', '2025-09-07', '2025-09-14', '2025-09-21', '2025-09-28')
+        $actualDates = @($plan | Where-Object Role -eq 'CatchUpWeek' | ForEach-Object { $_.WeekEnding.ToString('yyyy-MM-dd') })
+        $actualDates -join ',' | Should -Be ($expectedDates -join ',')
         @($plan | Where-Object Role -eq 'CurrentWeek').Count | Should -Be 1
-        $catchup = @(Get-GssRequiredSourceWeek ([datetime]'2026-10-04') @([datetime]'2026-09-20'))
-        @($catchup | Where-Object { $_.WeekEnding -eq [datetime]'2025-09-28' }).Count | Should -Be 0
+        @($plan | Where-Object Role -eq 'CatchUpPriorYearWeek').Count | Should -Be 12
+        $plan.Count | Should -Be 26
+    }
+
+    It 'requires the previous September 2025 snapshot even when the selected report already exists' {
+        $plan = @(Get-GssRequiredSourceWeek ([datetime]'2025-10-05') @([datetime]'2025-10-05', [datetime]'2024-10-06'))
+        $previous = @($plan | Where-Object Role -eq 'CatchUpWeek')
+        $previous.Count | Should -Be 1
+        $previous[0].WeekEnding | Should -Be ([datetime]'2025-09-28')
+    }
+
+    It 'requires the missing September 2025 comparison when catching up a 2026 report' {
+        $plan = @(Get-GssRequiredSourceWeek ([datetime]'2026-10-04') @([datetime]'2026-09-20'))
+        @($plan | ForEach-Object { $_.WeekEnding.ToString('yyyy-MM-dd') }) -join ',' | Should -Be '2025-09-28,2025-10-05,2026-09-27,2026-10-04'
+        $prior = @($plan | Where-Object Role -eq 'CatchUpPriorYearWeek')
+        $prior.Count | Should -Be 1
+        $prior[0].WeekEnding | Should -Be ([datetime]'2025-09-28')
     }
 
     It 'includes an explicitly selected historical correction and does not regress a newer report' {

@@ -34,6 +34,14 @@ Describe 'Main workbook discovery' {
         Resolve-MainWorkbookPath $root 'GSS Score Trends - Main.xlsx' | Should -Be $renamed
     }
 
+    It 'uses normal discovery for an omitted name and never returns a directory' {
+        $renamed = Join-Path $main 'Guest Survey Trends.xlsx'
+        New-TestMainWorkbook -Path $renamed
+        Resolve-MainWorkbookPath $root '' | Should -Be $renamed
+        New-Item -ItemType Directory -Path (Join-Path $main 'Wrong.xlsx') | Out-Null
+        { Resolve-MainWorkbookPath $root 'Wrong.xlsx' } | Should -Throw '*Main workbook not found*'
+    }
+
     It 'requires a choice between multiple renamed main workbooks' {
         New-TestMainWorkbook -Path (Join-Path $main 'First.xlsx')
         New-TestMainWorkbook -Path (Join-Path $main 'Second.xlsx')
@@ -51,6 +59,14 @@ Describe 'Main workbook discovery' {
     It 'does not mistake an unrelated Excel file for the main report' {
         New-TestMainWorkbook -Path (Join-Path $main 'Notes.xlsx') -Sheets @('Notes')
         { Resolve-MainWorkbookPath $root 'GSS Score Trends - Main.xlsx' } | Should -Throw '*Main workbook not found*'
+    }
+
+    It 'does not search other archives when the entire main-workbook folder is absent' {
+        $legacyRoot = Join-Path $TestDrive ('legacy-' + [guid]::NewGuid().ToString('N'))
+        $archive = Join-Path $legacyRoot '05 Reference Materials\Archive'
+        New-Item -ItemType Directory -Path $archive -Force | Out-Null
+        New-TestMainWorkbook -Path (Join-Path $archive 'GSS Score Trends - Main.xlsx')
+        { Resolve-MainWorkbookPath $legacyRoot 'GSS Score Trends - Main.xlsx' } | Should -Throw '*Archived copies are not selected*'
     }
 
     It 'keeps technical archives out of recursive business-input discovery' {

@@ -17,7 +17,6 @@ $repoRoot = Split-Path -Parent $scriptRoot
 
 $xlCellTypeFormulas = -4123
 $xlCellTypeConstants = 2
-$xlErrors = 16
 
 function Assert-GssIntegration {
     param([bool]$Condition, [string]$Message)
@@ -28,23 +27,7 @@ function Assert-GssIntegration {
 
 function Get-GssErrorCellCount {
     param([object]$Worksheet, [int]$CellType)
-
-    $usedRange = $null
-    $errorCells = $null
-    try {
-        $usedRange = $Worksheet.UsedRange
-        try {
-            $errorCells = $usedRange.SpecialCells($CellType, $xlErrors)
-            return [int]$errorCells.Count
-        }
-        catch {
-            return 0
-        }
-    }
-    finally {
-        Release-ComObject $errorCells
-        Release-ComObject $usedRange
-    }
+    return Get-GssExcelErrorCellCount -Worksheet $Worksheet -CellType $CellType
 }
 
 function Assert-GssLockedRectangle {

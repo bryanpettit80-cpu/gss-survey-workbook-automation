@@ -94,10 +94,11 @@ function Test-GssMainWorkbookStructure {
 function Resolve-MainWorkbookPath {
     param([string]$FolderPath, [string]$WorkbookName)
 
+    if ([string]::IsNullOrWhiteSpace($WorkbookName)) { $WorkbookName = 'GSS Score Trends - Main.xlsx' }
     $mainWorkbookFolder = Resolve-GssChildFolder $FolderPath '01 Main Workbook'
     if ($mainWorkbookFolder) {
         $preferredPath = Join-Path $mainWorkbookFolder $WorkbookName
-        if (Test-Path -LiteralPath $preferredPath) {
+        if (Test-Path -LiteralPath $preferredPath -PathType Leaf) {
             return (Resolve-Path -LiteralPath $preferredPath).Path
         }
 
@@ -113,21 +114,11 @@ function Resolve-MainWorkbookPath {
     }
 
     $directPath = Join-Path $FolderPath $WorkbookName
-    if (Test-Path -LiteralPath $directPath) {
+    if (Test-Path -LiteralPath $directPath -PathType Leaf) {
         return (Resolve-Path -LiteralPath $directPath).Path
     }
 
-    Write-Warning "Main workbook was not found in '01 Main Workbook'. Falling back to a recursive compatibility search under $FolderPath."
-    $matches = @(Get-GssFiles $FolderPath $WorkbookName)
-    if ($matches.Count -eq 1) {
-        return $matches[0].FullName
-    }
-    if ($matches.Count -gt 1) {
-        $paths = ($matches | ForEach-Object { $_.FullName }) -join '; '
-        throw "Multiple main workbook matches were found. Move old copies out of the GSS Surveys folder or pass -MainWorkbookName. Matches: $paths"
-    }
-
-    throw "Main workbook not found under ${FolderPath}: $WorkbookName"
+    throw "Main workbook not found directly under '$FolderPath' or in '01 Main Workbook': $WorkbookName. Archived copies are not selected automatically."
 }
 
 function ConvertTo-GssDropboxRelativePath {

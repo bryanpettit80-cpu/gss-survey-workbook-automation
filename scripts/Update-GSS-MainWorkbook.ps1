@@ -11,13 +11,17 @@ param(
     [switch]$MutexAlreadyHeld,
     [string]$ProgramRelease = 'unreleased',
     [string]$DrivePreparedManifestPath,
-    [string]$ExpectedDrivePreparedManifestSha256
+    [string]$ExpectedDrivePreparedManifestSha256,
+    [string]$ReportingWeekEnding,
+    [string[]]$CorrectionSourcePath = @()
 )
 
 $ErrorActionPreference = 'Stop'
 
 $scriptRoot = Split-Path -Parent $PSCommandPath
 . (Join-Path $scriptRoot 'Gss-Common.ps1')
+. (Join-Path $scriptRoot 'Gss-Reporting.ps1')
+. (Join-Path $scriptRoot 'Gss-SourceChoices.ps1')
 . (Join-Path $scriptRoot 'Gss-DriveBackup.ps1')
 $script:GssProgramRepoRoot = Split-Path -Parent $scriptRoot
 
@@ -25,6 +29,7 @@ $xlUp = -4162
 $xlToLeft = -4159
 $xlPasteFormats = -4122
 $xlCalculationAutomatic = -4105
+$xlCalculationManual = -4135
 $xlTypePDF = 0
 $xlPortrait = 1
 $xlLandscape = 2
@@ -129,7 +134,9 @@ function Get-GssPreparedRunFingerprint {
         [Parameter(Mandatory)][string]$PriorYearSourceSha256,
         [Parameter(Mandatory)][string]$StagedWorkbookSha256,
         [Parameter(Mandatory)][string]$StagedPdfSha256,
-        [string]$ProgramRelease = 'unreleased'
+        [string]$ProgramRelease = 'unreleased',
+        [string]$SourceSetSha256,
+        [string]$SourceChoiceSetSha256
     )
 
     $parts = @(
@@ -144,6 +151,8 @@ function Get-GssPreparedRunFingerprint {
         $StagedPdfSha256.Trim().ToLowerInvariant(),
         $ProgramRelease.Trim().ToLowerInvariant()
     )
+    if (-not [string]::IsNullOrWhiteSpace($SourceSetSha256)) { $parts += $SourceSetSha256.Trim().ToLowerInvariant() }
+    if (-not [string]::IsNullOrWhiteSpace($SourceChoiceSetSha256)) { $parts += $SourceChoiceSetSha256.Trim().ToLowerInvariant() }
     return Get-GssTextSha256 ($parts -join "`n")
 }
 
@@ -159,7 +168,102 @@ function Get-GssFingerprintFromPreparedRun {
         -PriorYearSourceSha256 ([string]$PreparedRun.PriorYearSourceSha256) `
         -StagedWorkbookSha256 ([string]$PreparedRun.StagedWorkbookSha256) `
         -StagedPdfSha256 ([string]$PreparedRun.StagedPdfSha256) `
-        -ProgramRelease $(if ($PreparedRun.ProgramRelease) { [string]$PreparedRun.ProgramRelease } else { 'unreleased' })
+        -ProgramRelease $(if ($PreparedRun.ProgramRelease) { [string]$PreparedRun.ProgramRelease } else { 'unreleased' }) `
+        -SourceSetSha256 ([string]$PreparedRun.SourceSetSha256) `
+        -SourceChoiceSetSha256 ([string]$PreparedRun.SourceChoiceSetSha256)
+}
+
+function Get-GssSourceChoiceFingerprint {
+    param([AllowEmptyCollection()][object[]]$Choices = @())
+    $material = @($Choices | Sort-Object WeekEnding | ForEach-Object {
+        @($_.WeekEnding, $_.SelectedSemanticSha256, (@($_.KnownSemanticSha256 | Sort-Object -Unique) -join ',')) -join '|'
+    }) -join "`n"
+    return Get-GssTextSha256 $material
+}
+
+function Get-GssCommittedSourceChoice {
+    param([Parameter(Mandatory)][string]$LogDirectory)
+    $receipts = @()
+    foreach ($file in @(Get-ChildItem -LiteralPath $LogDirectory -Filter '*.json' -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '_(apply|source_choices)\.json$' })) {
+        try {
+            $receipt = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json
+            if ($receipt.TransactionStatus -ne 'Committed' -or -not $receipt.AcceptedSourceChoices) { continue }
+            if ($file.Name -like '*_source_choices.json' -and ($receipt.Mode -ne 'SourceChoiceOnly' -or $receipt.Status -ne 'Accepted')) { continue }
+            if ((Get-GssSourceChoiceFingerprint @($receipt.AcceptedSourceChoices)) -ne [string]$receipt.SourceChoiceSetSha256) { continue }
+            if ((Get-GssFingerprintFromPreparedRun $receipt) -ne [string]$receipt.RunFingerprint) { continue }
+            $receipts += $receipt
+        }
+        catch { Write-Verbose "Ignoring unreadable correction evidence in $($file.Name): $($_.Exception.Message)" }
+    }
+    foreach ($receipt in @($receipts | Sort-Object { [datetime]$_.TimestampUtc } -Descending)) {
+        foreach ($choice in @($receipt.AcceptedSourceChoices)) {
+            $matchedEvidence = @($receipt.SourceEvidence | Where-Object { $_.WeekEnding -eq $choice.WeekEnding -and $_.SemanticSha256 -eq $choice.SelectedSemanticSha256 })
+            if ($matchedEvidence.Count -eq 1) { $choice }
+        }
+    }
+}
+
+function Write-GssAcceptedSourceChoiceReceipt {
+    param(
+        [Parameter(Mandatory)][object]$PreparedRun,
+        [Parameter(Mandatory)][object]$ExistingRun,
+        [Parameter(Mandatory)][string]$FolderPath,
+        [Parameter(Mandatory)][string]$LogDirectory
+    )
+    if (-not $PreparedRun.AcceptedSourceChoices) { return $null }
+    if ($PreparedRun.Mode -ne 'CopyTestOnly' -or $PreparedRun.TransactionStatus -ne 'Prepared' -or
+        -not [bool]$PreparedRun.NoBusinessChanges -or [int]$PreparedRun.RowsAppended -ne 0 -or [int]$PreparedRun.RowsCorrected -ne 0 -or
+        $PreparedRun.PostSaveValidation.Status -ne 'Ready' -or $ExistingRun.TransactionStatus -ne 'Committed') {
+        throw 'Source-choice-only evidence requires a validated unchanged workbook and a committed existing report.'
+    }
+    if ((Get-GssFingerprintFromPreparedRun $PreparedRun) -ne [string]$PreparedRun.RunFingerprint) { throw 'Source-choice preparation fingerprint verification failed.' }
+    Assert-GssSourceEvidence -Run $PreparedRun -FolderPath $FolderPath
+    $mainPath = Resolve-GssDropboxPath -Path ([string]$ExistingRun.TargetWorkbookRelativePath) -FolderPath $FolderPath -RequireFile
+    $mainHash = Get-GssSha256 $mainPath
+    if ($mainHash -ne [string]$PreparedRun.StartingWorkbookSha256 -or $mainHash -ne [string]$ExistingRun.PromotedWorkbookSha256) {
+        throw 'The existing report workbook changed before recording the source choice.'
+    }
+    $receipt = $PreparedRun | Select-Object *
+    $receiptFields = @{
+        Mode = 'SourceChoiceOnly'; Status = 'Accepted'; TransactionStatus = 'Committed'
+        TimestampUtc = [datetime]::UtcNow.ToString('o'); ExistingReportRunId = [string]$ExistingRun.RunId
+        NoWorkbookOrPdfChange = $true; DecisionBasis = 'ValidatedUnchangedWorkbookAndExistingCommittedReport'
+    }
+    foreach ($name in $receiptFields.Keys) { $receipt | Add-Member -NotePropertyName $name -NotePropertyValue $receiptFields[$name] -Force }
+    $path = Join-Path $LogDirectory ("gss_choice_$($PreparedRun.RunId)_source_choices.json")
+    $receipt | Add-Member -NotePropertyName LogPath -NotePropertyValue $path -Force
+    Write-GssAtomicJson -Path $path -InputObject $receipt
+    return $path
+}
+
+function Get-GssSourceEvidenceFingerprint {
+    param([Parameter(Mandatory)][object[]]$Evidence)
+
+    $material = @($Evidence | Sort-Object WeekEnding, RelativePath | ForEach-Object {
+        @($_.WeekEnding, $_.PeriodStart, $_.RelativePath, $_.Sha256, $_.SemanticSha256) -join '|'
+    }) -join "`n"
+    return Get-GssTextSha256 $material
+}
+
+function Assert-GssSourceEvidence {
+    param([Parameter(Mandatory)][object]$Run, [Parameter(Mandatory)][string]$FolderPath)
+
+    if (-not $Run.SourceEvidence) {
+        if ([int]$Run.ReceiptSchemaVersion -ge 2) { throw 'Prepared source-set evidence is missing.' }
+        return
+    }
+    if ($Run.SourceChoiceSetSha256 -and (Get-GssSourceChoiceFingerprint @($Run.AcceptedSourceChoices)) -ne [string]$Run.SourceChoiceSetSha256) {
+        throw 'Prepared source-choice evidence changed. Prepare a fresh run.'
+    }
+    if ((Get-GssSourceEvidenceFingerprint @($Run.SourceEvidence)) -ne [string]$Run.SourceSetSha256) {
+        throw 'Prepared source-set evidence changed. Prepare a fresh run.'
+    }
+    foreach ($source in @($Run.SourceEvidence)) {
+        $path = Resolve-GssDropboxPath -Path $source.RelativePath -FolderPath $FolderPath -RequireFile
+        if ((Get-GssSha256 $path) -ne [string]$source.Sha256) {
+            throw "Rolling source changed during this transaction: $($source.RelativePath). Prepare a fresh run."
+        }
+    }
 }
 
 function Get-CellString {
@@ -181,12 +285,18 @@ function Set-CellValue {
         if ($Value -is [bool]) {
             $Value = if ($Value) { 'TRUE' } else { 'FALSE' }
         }
+        elseif ($Value -is [ValueType] -and $Value -isnot [datetime]) {
+            # Excel Value2 accepts numbers as COM doubles. PowerShell can retain
+            # boxed integer/decimal wrappers from pipeline fixture or cell data.
+            $Value = [double]$Value
+        }
 
         try {
             $cell.Value2 = $Value
         }
         catch [System.InvalidCastException] {
-            $cell.Value = $Value
+            try { $cell.Value = $Value }
+            catch { throw "Excel rejected cell ($Row,$Column) value type $($Value.GetType().FullName): $($_.Exception.Message)" }
         }
     }
     finally {
@@ -228,7 +338,7 @@ function Get-GssQaCheckPlan {
     $activeFlagPredicate = '((UPPER(${ACTIVE_RANGE}&"")="TRUE")+(UPPER(${ACTIVE_RANGE}&"")="YES")+(UPPER(${ACTIVE_RANGE}&"")="1")>0)'.Replace('${ACTIVE_RANGE}', $activeEntityRange)
     $activeCount = 'SUMPRODUCT(--${ACTIVE_FLAG})'.Replace('${ACTIVE_FLAG}', $activeFlagPredicate)
     $entityRows = 'SUMPRODUCT(--${ACTIVE_FLAG},--(COUNTIFS(''Raw_Data''!$R$2:$R${RAW_LAST},''Entities''!$D$2:$D${ENTITY_LAST},''Raw_Data''!$B$2:$B${RAW_LAST},${WEEK})=1))'.Replace('${ACTIVE_FLAG}', $activeFlagPredicate).Replace('${ENTITY_LAST}', [string]$EntityLastRow).Replace('${RAW_LAST}', [string]$RawDataLastRow)
-    $blankMetrics = 'SUMPRODUCT(--(''Raw_Data''!$B$2:$B${RAW_LAST}=${WEEK}),MMULT(--(''Raw_Data''!$E$2:$Q${RAW_LAST}=""),TRANSPOSE(COLUMN(''Raw_Data''!$E$1:$Q$1)^0)))'.Replace('${RAW_LAST}', [string]$RawDataLastRow)
+    $blankMetrics = 'SUMPRODUCT(--(''Raw_Data''!$B$2:$B${RAW_LAST}=${WEEK}),--(''Raw_Data''!$E$2:$E${RAW_LAST}=""))+SUMPRODUCT(--(''Raw_Data''!$B$2:$B${RAW_LAST}=${WEEK}),--(''Raw_Data''!$E$2:$E${RAW_LAST}>0),MMULT(--(''Raw_Data''!$F$2:$Q${RAW_LAST}=""),TRANSPOSE(COLUMN(''Raw_Data''!$F$1:$Q$1)^0)))'.Replace('${RAW_LAST}', [string]$RawDataLastRow)
 
     $checks = @()
     $checks += [pscustomobject]@{
@@ -320,22 +430,24 @@ function Get-GssGuardrailPlan {
 }
 
 function Get-HeaderMap {
-    param([object]$Worksheet, [int]$HeaderRow)
+    param([object]$Worksheet, [int]$HeaderRow, [switch]$AllowDuplicateHeaders)
 
     $lastCol = $Worksheet.Cells.Item($HeaderRow, $Worksheet.Columns.Count).End($xlToLeft).Column
     $map = @{}
     for ($col = 1; $col -le $lastCol; $col++) {
         $key = Normalize-Header (Get-CellString $Worksheet $HeaderRow $col)
-        if ($key) { $map[$key] = $col }
+        if ($key) {
+            if ($map.ContainsKey($key) -and -not $AllowDuplicateHeaders) { throw "Duplicate header '$key' at row $HeaderRow, columns $($map[$key]) and $col." }
+            $map[$key] = $col
+        }
     }
     return $map
 }
 
 function Get-NormalizedSourceName {
     param([System.IO.FileInfo]$File)
-    $baseName = [System.IO.Path]::GetFileNameWithoutExtension($File.Name)
-    $baseName = [regex]::Replace($baseName, '\s+FY\d{2,4}$', '')
-    return "$baseName.xlsx"
+    # Filename is provenance only. Reporting identity is the parsed period and content.
+    return $File.Name
 }
 
 function Get-RollingSources {
@@ -343,15 +455,15 @@ function Get-RollingSources {
 
     $sourceFolder = Resolve-GssChildFolder $FolderPath '02 Weekly Rolling Source Workbooks'
     $searchRoot = if ($sourceFolder) { $sourceFolder } else { $FolderPath }
-    $candidates = @(Get-GssFiles $searchRoot 'Sorensen FW*.xlsx' |
-        Where-Object { $_.Name -notmatch '(?i)CLEANED|Tidy|YY Trends' } |
-        Sort-Object LastWriteTime -Descending)
+    $candidates = @(Get-GssFiles $searchRoot '*.xlsx' |
+        Where-Object { $_.Name -notlike '~$*' } |
+        Sort-Object FullName)
 
     if ($candidates.Count -eq 0 -and $sourceFolder) {
         Write-Warning "No rolling Sorensen source workbooks were found in '02 Weekly Rolling Source Workbooks'. Falling back to a recursive compatibility search under $FolderPath."
-        $candidates = @(Get-GssFiles $FolderPath 'Sorensen FW*.xlsx' |
-            Where-Object { $_.Name -notmatch '(?i)CLEANED|Tidy|YY Trends' } |
-            Sort-Object LastWriteTime -Descending)
+        $candidates = @(Get-GssFiles $FolderPath '*.xlsx' |
+            Where-Object { $_.Name -notlike '~$*' } |
+            Sort-Object FullName)
     }
 
     $sources = @()
@@ -365,9 +477,8 @@ function Get-RollingSources {
 
             $headerRow = $null
             for ($row = 1; $row -le 10; $row++) {
-                $restaurantHeader = Normalize-Header (Get-CellString $sourceWs $row 1)
-                $ownershipHeader = Normalize-Header (Get-CellString $sourceWs $row 2)
-                if ($restaurantHeader -eq 'restaurant' -and $ownershipHeader -eq 'ownership') {
+                $rowHeaders = Get-HeaderMap $sourceWs $row -AllowDuplicateHeaders
+                if ($rowHeaders.ContainsKey('restaurant') -and $rowHeaders.ContainsKey('ownership')) {
                     $headerRow = $row
                     break
                 }
@@ -378,14 +489,13 @@ function Get-RollingSources {
             }
 
             if ($a1 -match 'Date Range:\s*(?<start>\d{1,2}/\d{1,2}/\d{4})\s+to\s+(?<end>\d{1,2}/\d{1,2}/\d{4})') {
-                $endDate = [datetime]::Parse(
-                    $Matches.end,
-                    [Globalization.CultureInfo]::InvariantCulture
-                ).Date
+                $startDate = ConvertTo-GssHeaderDate $Matches.start
+                $endDate = ConvertTo-GssHeaderDate $Matches.end
 
                 $sources += [pscustomobject]@{
                     File = $candidate
                     WeekEnding = $endDate
+                    PeriodStart = $startDate
                     SourceFileName = Get-NormalizedSourceName $candidate
                     HeaderRow = $headerRow
                 }
@@ -411,18 +521,17 @@ function Select-RollingSourceByWeek {
         [datetime]$WeekEnding
     )
 
-    return $Sources |
-        Where-Object { $_.WeekEnding.Date -eq $WeekEnding.Date } |
-        Sort-Object @{ Expression = { $_.File.LastWriteTime }; Descending = $true } |
-        Select-Object -First 1
+    $weekCandidates = @($Sources | Where-Object { $_.WeekEnding.Date -eq $WeekEnding.Date })
+    if ($weekCandidates.Count -eq 0) { return $null }
+    return Select-GssSourceContent -Sources $weekCandidates
 }
 
 function Select-LatestRollingSource {
     param([object[]]$Sources)
 
-    return $Sources |
-        Sort-Object @{ Expression = { $_.WeekEnding }; Descending = $true }, @{ Expression = { $_.File.LastWriteTime }; Descending = $true } |
-        Select-Object -First 1
+    if ($Sources.Count -eq 0) { return $null }
+    $latestWeek = ($Sources | Sort-Object WeekEnding -Descending | Select-Object -First 1).WeekEnding
+    return Select-RollingSourceByWeek -Sources $Sources -WeekEnding $latestWeek
 }
 
 function Get-GssEntitySetValidation {
@@ -480,23 +589,7 @@ function Get-SourceRows {
         [string]$SourceFileName
     )
 
-    $requiredSourceHeaders = @(
-        'Restaurant',
-        'Ownership',
-        'Count',
-        'Overall Experience',
-        'Service',
-        'Culinary',
-        'Value',
-        'Pace of Meal',
-        'Steak Cooked Properly (Y)',
-        'Mgr Asked About Exp (Y)',
-        'Overall Dissat (lower is better)',
-        'Service Dissat (lower is better)',
-        'Culinary Dissat (lower is better)',
-        'Value Dissat (lower is better)',
-        'Pace Of Meal Dissat (lower is better)'
-    )
+    $requiredSourceHeaders = @(Get-GssSourceHeader)
 
     foreach ($header in $requiredSourceHeaders) {
         $key = Normalize-Header $header
@@ -531,7 +624,7 @@ function Get-SourceRows {
             Week = $WeekEnding
             Restaurant = if ([string]::IsNullOrWhiteSpace($restaurant)) { $null } else { $restaurant }
             Ownership = $ownership
-            Metrics = $metricValues
+            Metrics = (ConvertTo-GssMetricValue -Values $metricValues -Context "$SourceFileName row $row")
         }
     }
 
@@ -551,17 +644,32 @@ function Get-SourceRowsFromFile {
 
     $sourceWb = $null
     $sourceWs = $null
+    $beforeHash = Get-GssSha256 $Source.File.FullName
     try {
+        $null = Get-GssReportingPeriod -PeriodStart $Source.PeriodStart -PeriodEnd $Source.WeekEnding -Context $Source.File.Name
         $sourceWb = $Excel.Workbooks.Open($Source.File.FullName, 0, $true)
         $sourceWs = $sourceWb.Worksheets.Item(1)
+        $title = Get-CellString $sourceWs 1 1
+        if ($title -notmatch 'Date Range:\s*(?<start>\d{1,2}/\d{1,2}/\d{4})\s+to\s+(?<end>\d{1,2}/\d{1,2}/\d{4})' -or
+            (ConvertTo-GssHeaderDate $Matches.start) -ne $Source.PeriodStart -or
+            (ConvertTo-GssHeaderDate $Matches.end) -ne $Source.WeekEnding) {
+            throw 'A rolling source reporting period changed during preparation. Run again after uploads finish.'
+        }
         $sourceHeaders = Get-HeaderMap $sourceWs $Source.HeaderRow
-        return Get-SourceRows $sourceWs $sourceHeaders $Source.HeaderRow $Source.WeekEnding $Source.SourceFileName
+        $rows = @(Get-SourceRows $sourceWs $sourceHeaders $Source.HeaderRow $Source.WeekEnding $Source.SourceFileName)
     }
     finally {
         if ($sourceWb) { $sourceWb.Close($false) }
         Release-ComObject $sourceWs
         Release-ComObject $sourceWb
     }
+    if ((Get-GssSha256 $Source.File.FullName) -ne $beforeHash) {
+        throw 'A rolling source changed while it was read. Run again after uploads finish.'
+    }
+    $Source | Add-Member -NotePropertyName Sha256 -NotePropertyValue $beforeHash -Force
+    $Source | Add-Member -NotePropertyName Rows -NotePropertyValue $rows -Force
+    $Source | Add-Member -NotePropertyName SemanticSha256 -NotePropertyValue (Get-GssSourceSemanticHash $rows $Source.PeriodStart $Source.WeekEnding) -Force
+    return $rows
 }
 
 function Get-WeekRowCount {
@@ -576,6 +684,68 @@ function Get-WeekRowCount {
         }
     }
     return $count
+}
+
+function Read-GssRawDataRow {
+    param([Parameter(Mandatory)][object]$Worksheet)
+
+    $headers = Get-HeaderMap $Worksheet 1
+    foreach ($name in (@('Week', 'SourceFile') + @(Get-GssSourceHeader))) {
+        if (-not $headers.ContainsKey((Normalize-Header $name))) { throw "Raw_Data is missing required header '$name'." }
+    }
+    $weekColumn = $headers[(Normalize-Header 'Week')]
+    $lastRow = $Worksheet.Cells.Item($Worksheet.Rows.Count, $weekColumn).End($xlUp).Row
+    $metricHeaders = @(Get-GssSourceHeader)[2..14]
+    for ($row = 2; $row -le $lastRow; $row++) {
+        $value = $Worksheet.Cells.Item($row, $weekColumn).Value2
+        if ($null -eq $value -or ($value -is [string] -and [string]::IsNullOrWhiteSpace($value))) { continue }
+        $week = Convert-ExcelDate $value
+        $metrics = @()
+        foreach ($metricHeader in $metricHeaders) {
+            $metrics += $Worksheet.Cells.Item($row, $headers[(Normalize-Header $metricHeader)]).Value2
+        }
+        [pscustomobject]@{
+            Row = $row
+            Week = $week
+            SourceFile = Get-CellString $Worksheet $row $headers[(Normalize-Header 'SourceFile')]
+            Ownership = Get-CellString $Worksheet $row $headers[(Normalize-Header 'Ownership')]
+            Restaurant = Get-CellString $Worksheet $row $headers[(Normalize-Header 'Restaurant')]
+            Metrics = $metrics
+        }
+    }
+}
+
+function Set-GssRawDataWeek {
+    [System.Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Edits only the caller-owned staged workbook; persistence and verified live promotion are controlled by the transaction entrypoint.')]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][object]$Worksheet, [Parameter(Mandatory)][object[]]$Rows)
+
+    if ($Rows.Count -ne 4) { throw 'A corrected reporting week must contain exactly four validated entity rows.' }
+    $week = $Rows[0].Week
+    $allRows = @(Read-GssRawDataRow $Worksheet)
+    $existing = @($allRows | Where-Object { $_.Week.Date -eq $week.Date } | Sort-Object Row)
+    # Never delete worksheet rows for corrections: Excel would rewrite formula
+    # references elsewhere in the workbook and permanently shrink modeled ranges.
+    if ($existing.Count -eq 4) {
+        $targetRows = @($existing | ForEach-Object { $_.Row })
+        $replacementRows = $Rows
+    }
+    else {
+        $replacementRows = @(@($allRows | Where-Object { $_.Week.Date -ne $week.Date }) + $Rows | Sort-Object Week, Ownership, Restaurant)
+        $lastRow = $Worksheet.Cells.Item($Worksheet.Rows.Count, 1).End($xlUp).Row
+        $Worksheet.Range("A2:S$([math]::Max($lastRow, $replacementRows.Count + 1))").ClearContents() | Out-Null
+        $targetRows = @(2..($replacementRows.Count + 1))
+    }
+    for ($index = 0; $index -lt $replacementRows.Count; $index++) {
+        $sourceRow = $replacementRows[$index]
+        $targetRow = $targetRows[$index]
+        $values = @($sourceRow.SourceFile, $sourceRow.Week.ToOADate(), $sourceRow.Restaurant, $sourceRow.Ownership) + $sourceRow.Metrics
+        for ($col = 0; $col -lt 17; $col++) { Set-CellValue $Worksheet $targetRow ($col + 1) $values[$col] }
+        $Worksheet.Cells.Item($targetRow, 2).NumberFormat = 'm/d/yyyy'
+        $Worksheet.Cells.Item($targetRow, 18).Formula = '=D' + $targetRow + '&"|"&IF(C' + $targetRow + '="","(TOTAL)",TRIM(C' + $targetRow + '))'
+        $Worksheet.Cells.Item($targetRow, 19).Formula = '=R' + $targetRow + '&"|"&TEXT(B' + $targetRow + ',"yyyymmdd")'
+    }
+    return $Rows.Count
 }
 
 function Get-GssWeekEntitySet {
@@ -672,7 +842,15 @@ function Add-RawDataRows {
     $endInsertRow = $insertRow + $rowCount - 1
 
     if ($insertRow -le $lastRawRow) {
-        $RawDataWorksheet.Range("A$insertRow`:A$endInsertRow").EntireRow.Insert() | Out-Null
+        # Move values inside the fixed model. Inserting worksheet rows rewrites
+        # dashboard range starts and can exclude the newly inserted older week.
+        $shiftedFirstRow = $insertRow + $rowCount
+        $shiftedLastRow = $lastRawRow + $rowCount
+        $existingValues = $RawDataWorksheet.Range("A$insertRow`:Q$lastRawRow").Value2
+        $RawDataWorksheet.Range("A$shiftedFirstRow`:Q$shiftedLastRow").Value2 = $existingValues
+        $RawDataWorksheet.Range("B$shiftedFirstRow`:B$shiftedLastRow").NumberFormat = 'm/d/yyyy'
+        $RawDataWorksheet.Range("R$shiftedFirstRow`:R$shiftedLastRow").FormulaR1C1 = '=RC[-14]&"|"&IF(RC[-15]="","(TOTAL)",TRIM(RC[-15]))'
+        $RawDataWorksheet.Range("S$shiftedFirstRow`:S$shiftedLastRow").FormulaR1C1 = '=RC[-1]&"|"&TEXT(RC[-17],"yyyymmdd")'
     }
 
     $templateRow = if ($insertRow -gt 2) { $insertRow - 1 } else { $endInsertRow + 1 }
@@ -818,7 +996,7 @@ function Set-GssReadmeContent {
         $worksheet = $Workbook.Worksheets.Item('README')
         Set-CellValue $worksheet 5 1 '1) Save the newest Sorensen rolling survey workbook in 02 Weekly Rolling Source Workbooks.'
         Set-CellValue $worksheet 6 1 '2) Close this workbook, then double-click Run GSS Update After Upload.cmd in the GSS Surveys folder.'
-        Set-CellValue $worksheet 7 1 '3) Wait for the copy-test to finish. Type APPLY only when the copy-test passes and you want to update the live workbook.'
+        Set-CellValue $worksheet 7 1 '3) The program validates a staged report and backs up the previous report before updating. Choose a revision only if it finds conflicting or corrected inputs.'
         Set-CellValue $worksheet 8 1 '4) Reopen this workbook and check QA Checks. Use the reports when the overall status is READY.'
         Set-CellValue $worksheet 9 1 'The automation recalculates the workbook, refreshes the email PDF, protects formulas, and creates a backup before live changes. Do not paste into Raw_Data manually.'
         Set-CellValue $worksheet 12 1 '1) Previous rolling-window view (legacy tab name: Quick_Read_WoW): compare each 13-week rolling result with the previous rolling window across all active entities.'
@@ -1508,7 +1686,24 @@ function Get-GssExcelErrorCellCount {
             return [int]$errorCells.Count
         }
         catch {
-            return 0
+            # Excel reports "no cells found" with a generic COM error, which is
+            # also used for real automation failures. Independently count errors
+            # instead of treating every inspection failure as a clean workbook.
+            $address = [string]$usedRange.Address($false, $false)
+            $formulaPredicate = if ($CellType -eq $xlCellTypeFormulas) {
+                "--ISFORMULA($address)"
+            }
+            elseif ($CellType -eq $xlCellTypeConstants) {
+                "--(ISFORMULA($address)=FALSE)"
+            }
+            else { throw "Unsupported Excel error inspection cell type: $CellType" }
+            $count = $Worksheet.Evaluate("SUMPRODUCT(--ISERROR($address),$formulaPredicate)")
+            if ($null -eq $count -or $count -is [System.Runtime.InteropServices.ErrorWrapper] -or
+                [double]::IsNaN([double]$count) -or [double]::IsInfinity([double]$count) -or
+                [double]$count -lt 0 -or [double]$count -ne [math]::Truncate([double]$count)) {
+                throw 'Excel could not independently verify the workbook error count.'
+            }
+            return [int]$count
         }
     }
     finally {
@@ -1522,10 +1717,12 @@ function Test-GssPersistedWorkbook {
         [Parameter(Mandatory)][string]$WorkbookPath,
         [Parameter(Mandatory)][datetime]$CurrentWeek,
         [Parameter(Mandatory)][datetime]$PriorYearWeek,
-        [Parameter(Mandatory)][string]$CurrentSourceFileName,
-        [Parameter(Mandatory)][string]$PriorYearSourceFileName
+        [string]$CurrentSourceFileName,
+        [string]$PriorYearSourceFileName,
+        [object[]]$ExpectedSourceEvidence = @()
     )
 
+    $ExpectedSourceEvidence = @($ExpectedSourceEvidence | Where-Object { $null -ne $_ })
     $excel = $null
     $workbook = $null
     $rawWs = $null
@@ -1575,8 +1772,7 @@ function Test-GssPersistedWorkbook {
             }
         }
         catch {
-            # Excel raises on some versions when no link collection exists.
-            $externalLinks = @()
+            throw "Excel could not inspect external workbook links: $($_.Exception.Message)"
         }
         if ($externalLinks.Count -gt 0) {
             throw "Persisted workbook contains external formula link(s): $($externalLinks -join ', ')"
@@ -1626,9 +1822,23 @@ function Test-GssPersistedWorkbook {
                     }
                 }
             }
-            $invalidSourceNames = @($sourceNames | Where-Object { $_ -cne $expected.SourceFile } | Sort-Object -Unique)
-            if ($invalidSourceNames.Count -gt 0 -or $sourceNames.Count -ne $gssExpectedEntityKeys.Count) {
-                throw "Persisted $($expected.Role) week does not preserve the expected source filename '$($expected.SourceFile)'."
+            # SourceFile remains useful provenance but renaming an input does not
+            # invalidate an already imported, semantically identical report.
+        }
+
+        $rawRows = @(Read-GssRawDataRow $rawWs)
+        $expectedContent = if ($ExpectedSourceEvidence.Count -gt 0) { $ExpectedSourceEvidence } else {
+            @($CurrentWeek, $PriorYearWeek, $CurrentWeek.AddDays(-7)) |
+                Where-Object { -not (Test-GssIntentionalHistoryGap $_) } |
+                ForEach-Object { [pscustomobject]@{ WeekEnding = $_.ToString('yyyy-MM-dd'); PeriodStart = $_.AddDays(-90).ToString('yyyy-MM-dd'); SemanticSha256 = $null } }
+        }
+        foreach ($source in @($expectedContent)) {
+            $week = [datetime]::ParseExact([string]$source.WeekEnding, 'yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture)
+            $periodRows = @($rawRows | Where-Object { $_.Week.Date -eq $week.Date })
+            $null = Assert-GssExactEntitySet -ActualKeys @($periodRows | ForEach-Object { ConvertTo-GssSourceEntityKey $_.Ownership $_.Restaurant }) -Context "Persisted reporting week $($source.WeekEnding)"
+            $semanticHash = Get-GssSourceSemanticHash $periodRows ([datetime]$source.PeriodStart) $week
+            if ($source.SemanticSha256 -and $semanticHash -ne [string]$source.SemanticSha256) {
+                throw "Persisted reporting values differ from the validated source for $($source.WeekEnding)."
             }
         }
 
@@ -1644,7 +1854,8 @@ function Test-GssPersistedWorkbook {
             CurrentWeekEnding = $CurrentWeek.ToString('yyyy-MM-dd')
             PriorYearWeekEnding = $PriorYearWeek.ToString('yyyy-MM-dd')
             EntitySetVerified = $true
-            SourceDateAndFileVerified = $true
+            SourcePeriodAndContentVerified = $true
+            SourceFilenameIsProvenanceOnly = $true
             LastRawDataRow = $lastRawRow
             RemainingModeledRows = $capacity.AvailableRows
             WorstCaseRowsPerWeeklyLoad = $gssExpectedEntityKeys.Count
@@ -1682,83 +1893,125 @@ function Resolve-GssTransactionLogPath {
     return $resolved
 }
 
+function Repair-GssInterruptedTransaction {
+    param(
+        [Parameter(Mandatory)][object]$Run,
+        [Parameter(Mandatory)][string]$FolderPath
+    )
+
+    $schema = if ($Run.ReceiptSchemaVersion) { [int]$Run.ReceiptSchemaVersion } else { 1 }
+    if ($schema -notin @(1, 2)) { throw "Unsupported local transaction receipt schema: $schema" }
+    $workbookPath = Resolve-GssDropboxPath -Path ([string]$Run.TargetWorkbookRelativePath) -FolderPath $FolderPath -RequireFile
+    $backupPath = Resolve-GssDropboxPath -Path ([string]$Run.BackupWorkbookRelativePath) -FolderPath $FolderPath -RequireFile
+    $startingHash = ([string]$Run.StartingWorkbookSha256).ToLowerInvariant()
+    $promotedHash = ([string]$Run.PromotedWorkbookSha256).ToLowerInvariant()
+    if ($startingHash -notmatch '^[a-f0-9]{64}$' -or $promotedHash -notmatch '^[a-f0-9]{64}$') {
+        throw 'The transaction receipt does not contain valid old and new workbook hashes.'
+    }
+    if ((Get-GssSha256 $backupPath) -ne $startingHash) { throw 'The previous workbook backup failed verification.' }
+    $currentHash = Get-GssSha256 $workbookPath
+    if ($currentHash -ne $startingHash -and $currentHash -ne $promotedHash) {
+        throw 'Recovery stopped because the live workbook contains a newer or unrelated change.'
+    }
+    $restoreWorkbook = $currentHash -eq $promotedHash -and $currentHash -ne $startingHash
+
+    $pdfPath = $null
+    $pdfBackupPath = $null
+    $pdfAction = 'Unchanged'
+    $currentPdfHash = $null
+    $startingPdfHash = [string]$Run.StartingPdfSha256
+    if ($Run.EmailComparisonPdfRelativePath) {
+        $pdfPath = Resolve-GssDropboxPath -Path ([string]$Run.EmailComparisonPdfRelativePath) -FolderPath $FolderPath
+        if ($Run.PdfBackupRelativePath) {
+            $pdfBackupPath = Resolve-GssDropboxPath -Path ([string]$Run.PdfBackupRelativePath) -FolderPath $FolderPath -RequireFile
+            $backupHash = Get-GssSha256 $pdfBackupPath
+            $recordedBackupHash = [string]$Run.PdfBackupSha256
+            if ([string]::IsNullOrWhiteSpace($recordedBackupHash)) {
+                $recordedBackupHash = [string](@($Run.TransactionArtifacts | Where-Object Role -eq 'run_owned_pre_apply_pdf_backup' | Select-Object -First 1).Sha256)
+            }
+            if ($recordedBackupHash -and $backupHash -ne $recordedBackupHash) { throw 'The previous PDF backup failed verification.' }
+            if ($startingPdfHash -and $backupHash -ne $startingPdfHash) { throw 'The PDF backup does not match the previous report.' }
+            $startingPdfHash = $backupHash
+        }
+        if (Test-Path -LiteralPath $pdfPath -PathType Leaf) {
+            $currentPdfHash = Get-GssSha256 $pdfPath
+            if ($startingPdfHash -and $currentPdfHash -eq $startingPdfHash) {
+                $pdfAction = 'Unchanged'
+            }
+            elseif ($currentPdfHash -eq [string]$Run.PromotedPdfSha256) {
+                if ([bool]$Run.PdfExistedBefore) {
+                    if (-not $pdfBackupPath) { throw 'Recovery needs the previous PDF backup, but it is missing.' }
+                    $pdfAction = 'RestoreBackup'
+                }
+                else { $pdfAction = 'RemoveRunOwnedFile' }
+            }
+            else { throw 'Recovery stopped because the report PDF contains a newer or unrelated change.' }
+        }
+        elseif ([bool]$Run.PdfExistedBefore) {
+            throw 'Recovery stopped because the previous report PDF is missing. Restore it explicitly from the verified backup.'
+        }
+    }
+
+    # Check both targets and both backups before changing either. A retry can
+    # finish a partially completed rollback without overwriting unrelated work.
+    $candidates = @()
+    $changed = $false
+    $workbookRollback = 'Unchanged'
+    $pdfRollback = 'Unchanged'
+    try {
+        if ($restoreWorkbook) {
+            $candidate = Join-Path (Split-Path -Parent $workbookPath) ('.rollback-{0}-{1}' -f [string]$Run.RunId, [IO.Path]::GetFileName($workbookPath))
+            Copy-Item -LiteralPath $backupPath -Destination $candidate -Force
+            $candidates += $candidate
+            if ((Get-GssSha256 $candidate) -ne $startingHash) { throw 'Workbook restore copy verification failed.' }
+            if ((Get-GssSha256 $workbookPath) -ne $currentHash) { throw 'The live workbook changed during recovery.' }
+            if ($pdfPath -and $currentPdfHash -and (Get-GssSha256 $pdfPath) -ne $currentPdfHash) { throw 'The PDF changed during recovery.' }
+            [IO.File]::Replace($candidate, $workbookPath, [System.Management.Automation.Language.NullString]::Value, $true)
+            $changed = $true
+            $workbookRollback = 'RestoredBackup'
+        }
+        if ($pdfAction -eq 'RestoreBackup') {
+            $candidate = Join-Path (Split-Path -Parent $pdfPath) ('.rollback-{0}-{1}' -f [string]$Run.RunId, [IO.Path]::GetFileName($pdfPath))
+            Copy-Item -LiteralPath $pdfBackupPath -Destination $candidate -Force
+            $candidates += $candidate
+            if ((Get-GssSha256 $candidate) -ne $startingPdfHash) { throw 'PDF restore copy verification failed.' }
+            if ((Get-GssSha256 $pdfPath) -ne $currentPdfHash) { throw 'The PDF changed during recovery.' }
+            [IO.File]::Replace($candidate, $pdfPath, [System.Management.Automation.Language.NullString]::Value, $true)
+            $changed = $true
+            $pdfRollback = 'RestoredBackup'
+        }
+        elseif ($pdfAction -eq 'RemoveRunOwnedFile') {
+            if ((Get-GssSha256 $pdfPath) -ne $currentPdfHash) { throw 'The PDF changed during recovery.' }
+            Remove-Item -LiteralPath $pdfPath -Force
+            $changed = $true
+            $pdfRollback = 'RemovedRunOwnedFile'
+        }
+        if ((Get-GssSha256 $workbookPath) -ne $startingHash) { throw 'Workbook recovery verification failed.' }
+        if ($startingPdfHash -and $pdfPath -and (Get-GssSha256 $pdfPath) -ne $startingPdfHash) { throw 'PDF recovery verification failed.' }
+        return [pscustomobject]@{
+            Status = if ($changed) { 'RolledBack' } else { 'Unchanged' }
+            RunId = [string]$Run.RunId
+            WorkbookPath = $workbookPath
+            RestoredWorkbookSha256 = $startingHash
+            WorkbookRollback = $workbookRollback
+            PdfRollback = $pdfRollback
+            TimestampUtc = [datetime]::UtcNow.ToString('o')
+        }
+    }
+    finally {
+        foreach ($candidate in $candidates) {
+            if (Test-Path -LiteralPath $candidate -PathType Leaf) { Remove-Item -LiteralPath $candidate -Force }
+        }
+    }
+}
+
 function Restore-GssPromotedTransaction {
     param(
         [Parameter(Mandatory)][object]$Run,
         [Parameter(Mandatory)][string]$FolderPath
     )
 
-    $workbookPath = Resolve-GssDropboxPath -Path ([string]$Run.TargetWorkbookRelativePath) -FolderPath $FolderPath -RequireFile
-    $backupPath = Resolve-GssDropboxPath -Path ([string]$Run.BackupWorkbookRelativePath) -FolderPath $FolderPath -RequireFile
-    $currentHash = Get-GssSha256 $workbookPath
-    if ($currentHash -ne ([string]$Run.PromotedWorkbookSha256).ToLowerInvariant()) {
-        throw "Rollback blocked because the live workbook changed after this run. Expected promoted hash $($Run.PromotedWorkbookSha256); current hash $currentHash."
-    }
-
-    $workbookDirectory = Split-Path -Parent $workbookPath
-    $restoreCandidate = Join-Path $workbookDirectory ('.rollback-{0}-{1}' -f ([string]$Run.RunId), [System.IO.Path]::GetFileName($workbookPath))
-    $displacedWorkbook = Join-Path $workbookDirectory ('.rollback-displaced-{0}-{1}' -f ([string]$Run.RunId), [System.IO.Path]::GetFileName($workbookPath))
-    Copy-Item -LiteralPath $backupPath -Destination $restoreCandidate -Force
-    try {
-        if ((Get-GssSha256 $restoreCandidate) -ne ([string]$Run.StartingWorkbookSha256).ToLowerInvariant()) {
-            throw 'Rollback backup hash does not match the run starting workbook hash.'
-        }
-        [System.IO.File]::Replace($restoreCandidate, $workbookPath, $displacedWorkbook, $true)
-    }
-    finally {
-        foreach ($temporaryPath in @($restoreCandidate, $displacedWorkbook)) {
-            if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) {
-                Remove-Item -LiteralPath $temporaryPath -Force
-            }
-        }
-    }
-
-    $pdfRollback = 'NotRequired'
-    if ($Run.EmailComparisonPdfRelativePath) {
-        $pdfPath = Resolve-GssDropboxPath -Path ([string]$Run.EmailComparisonPdfRelativePath) -FolderPath $FolderPath
-        if (Test-Path -LiteralPath $pdfPath -PathType Leaf) {
-            $currentPdfHash = Get-GssSha256 $pdfPath
-            if ($currentPdfHash -eq ([string]$Run.PromotedPdfSha256).ToLowerInvariant()) {
-                if ($Run.PdfBackupRelativePath) {
-                    $pdfBackupPath = Resolve-GssDropboxPath -Path ([string]$Run.PdfBackupRelativePath) -FolderPath $FolderPath -RequireFile
-                    $pdfRestoreCandidate = Join-Path (Split-Path -Parent $pdfPath) ('.rollback-{0}-{1}' -f ([string]$Run.RunId), [System.IO.Path]::GetFileName($pdfPath))
-                    $displacedPdf = Join-Path (Split-Path -Parent $pdfPath) ('.rollback-displaced-{0}-{1}' -f ([string]$Run.RunId), [System.IO.Path]::GetFileName($pdfPath))
-                    Copy-Item -LiteralPath $pdfBackupPath -Destination $pdfRestoreCandidate -Force
-                    try {
-                        [System.IO.File]::Replace($pdfRestoreCandidate, $pdfPath, $displacedPdf, $true)
-                    }
-                    finally {
-                        foreach ($temporaryPath in @($pdfRestoreCandidate, $displacedPdf)) {
-                            if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) {
-                                Remove-Item -LiteralPath $temporaryPath -Force
-                            }
-                        }
-                    }
-                    $pdfRollback = 'RestoredBackup'
-                }
-                elseif (-not [bool]$Run.PdfExistedBefore) {
-                    Remove-Item -LiteralPath $pdfPath -Force
-                    $pdfRollback = 'RemovedRunOwnedFile'
-                }
-            }
-            else {
-                $pdfRollback = 'ConflictSkipped'
-            }
-        }
-    }
-
-    $restoredHash = Get-GssSha256 $workbookPath
-    if ($restoredHash -ne ([string]$Run.StartingWorkbookSha256).ToLowerInvariant()) {
-        throw "Rollback verification failed. Expected $($Run.StartingWorkbookSha256); restored $restoredHash."
-    }
-    return [pscustomobject]@{
-        Status = 'RolledBack'
-        RunId = [string]$Run.RunId
-        WorkbookPath = $workbookPath
-        RestoredWorkbookSha256 = $restoredHash
-        PdfRollback = $pdfRollback
-        TimestampUtc = [datetime]::UtcNow.ToString('o')
-    }
+    return Repair-GssInterruptedTransaction -Run $Run -FolderPath $FolderPath
 }
 
 function Invoke-GssPreparedRunPromotion {
@@ -1769,16 +2022,12 @@ function Invoke-GssPreparedRunPromotion {
         [Parameter(Mandatory)][string]$MainWorkbookPath,
         [Parameter(Mandatory)][string]$BackupDirectory,
         [Parameter(Mandatory)][string]$LogDirectory,
-        [Parameter(Mandatory)][string]$PreparedDriveManifestPath,
-        [Parameter(Mandatory)][string]$PreparedDriveManifestSha256
+        [string]$PreparedDriveManifestPath,
+        [string]$PreparedDriveManifestSha256
     )
 
     if ([string]::IsNullOrWhiteSpace($ExpectedFingerprint)) {
         throw 'Live promotion requires the exact reviewed copy-test fingerprint.'
-    }
-    if ([string]::IsNullOrWhiteSpace($PreparedDriveManifestPath) -or
-        [string]::IsNullOrWhiteSpace($PreparedDriveManifestSha256)) {
-        throw 'Live promotion requires the hash-verified Drive prepared manifest.'
     }
     if ([string]$PreparedRun.Mode -ne 'CopyTestOnly' -or [string]$PreparedRun.TransactionStatus -ne 'Prepared') {
         throw 'Live promotion requires a Prepared copy-test run.'
@@ -1787,23 +2036,23 @@ function Invoke-GssPreparedRunPromotion {
         throw "Prepared run belongs to host '$($PreparedRun.HostName)', not this workstation '$([Environment]::MachineName)'."
     }
 
-    $driveContext = Get-GssDriveBackupRootContext
-    $resolvedDriveManifestPath = (Resolve-Path -LiteralPath $PreparedDriveManifestPath).Path
-    $expectedDriveManifestPath = [System.IO.Path]::GetFullPath(
-        (Join-Path $driveContext.RootPath (".partial-{0}\prepared-manifest.json" -f ([string]$PreparedRun.RunId)))
-    )
-    if (-not $resolvedDriveManifestPath.Equals($expectedDriveManifestPath, [System.StringComparison]::OrdinalIgnoreCase)) {
-        throw 'Drive prepared manifest is outside the exact commissioned private Drive run directory.'
-    }
-    $actualDriveManifestSha256 = Get-GssSha256 $resolvedDriveManifestPath
-    if ($actualDriveManifestSha256 -ne $PreparedDriveManifestSha256.Trim().ToLowerInvariant()) {
-        throw 'Drive prepared manifest hash changed before live promotion.'
-    }
-    $driveManifest = Get-Content -LiteralPath $resolvedDriveManifestPath -Raw | ConvertFrom-Json
-    if ([string]$driveManifest.status -ne 'Prepared' -or
-        [string]$driveManifest.run_id -ne [string]$PreparedRun.RunId -or
-        [string]$driveManifest.fingerprint -ne [string]$PreparedRun.RunFingerprint) {
-        throw 'Drive prepared manifest is not bound to the exact reviewed transaction.'
+    $resolvedDriveManifestPath = $null
+    $actualDriveManifestSha256 = $null
+    if ($PreparedDriveManifestPath -or $PreparedDriveManifestSha256) {
+        if (-not $PreparedDriveManifestPath -or -not $PreparedDriveManifestSha256) {
+            throw 'An optional Drive manifest must include both its path and SHA-256.'
+        }
+        $resolvedDriveManifestPath = (Resolve-Path -LiteralPath $PreparedDriveManifestPath).Path
+        $actualDriveManifestSha256 = Get-GssSha256 $resolvedDriveManifestPath
+        if ($actualDriveManifestSha256 -ne $PreparedDriveManifestSha256.Trim().ToLowerInvariant()) {
+            throw 'Drive prepared manifest hash changed before live promotion.'
+        }
+        $driveManifest = Get-Content -LiteralPath $resolvedDriveManifestPath -Raw | ConvertFrom-Json
+        if ([string]$driveManifest.status -ne 'Prepared' -or
+            [string]$driveManifest.run_id -ne [string]$PreparedRun.RunId -or
+            [string]$driveManifest.fingerprint -ne [string]$PreparedRun.RunFingerprint) {
+            throw 'Drive prepared manifest is not bound to this transaction.'
+        }
     }
 
     $calculatedFingerprint = Get-GssFingerprintFromPreparedRun $PreparedRun
@@ -1835,6 +2084,7 @@ function Invoke-GssPreparedRunPromotion {
             throw "Prepared transaction is stale because the $($check.Name) hash changed. Run a fresh copy-test."
         }
     }
+    Assert-GssSourceEvidence -Run $PreparedRun -FolderPath $FolderPath
 
     $currentWeek = [datetime]::ParseExact([string]$PreparedRun.CurrentWeekEnding, 'yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture)
     $priorYearWeek = [datetime]::ParseExact([string]$PreparedRun.PriorYearWeekEnding, 'yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture)
@@ -1855,7 +2105,8 @@ function Invoke-GssPreparedRunPromotion {
         -CurrentWeek $currentWeek `
         -PriorYearWeek $priorYearWeek `
         -CurrentSourceFileName $currentSourceFileNameInRawData `
-        -PriorYearSourceFileName $priorYearSourceFileNameInRawData
+        -PriorYearSourceFileName $priorYearSourceFileNameInRawData `
+        -ExpectedSourceEvidence @($PreparedRun.SourceEvidence)
 
     $runId = [string]$PreparedRun.RunId
     $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
@@ -1865,24 +2116,67 @@ function Invoke-GssPreparedRunPromotion {
     New-Item -ItemType Directory -Path $pdfDirectory, $BackupDirectory, $LogDirectory -Force | Out-Null
     $productionPdfPath = Join-Path $pdfDirectory ([System.IO.Path]::GetFileName($stagedPdfPath))
     $pdfCandidate = Join-Path $pdfDirectory ('.partial-{0}-{1}' -f $runId, [System.IO.Path]::GetFileName($productionPdfPath))
-    $base = [System.IO.Path]::GetFileNameWithoutExtension($MainWorkbookPath)
-    $backupPath = Join-Path $BackupDirectory "$base`_BACKUP_$timestamp`_$runId.xlsx"
+    $runFileKey = (Get-GssTextSha256 $runId).Substring(0, 12)
+    $backupPath = Join-Path $BackupDirectory ("main_{0}_{1}.xlsx" -f $timestamp, $runFileKey)
     $pdfExistedBefore = Test-Path -LiteralPath $productionPdfPath -PathType Leaf
+    $startingPdfSha256 = if ($pdfExistedBefore) { Get-GssSha256 $productionPdfPath } else { $null }
     $pdfBackupPath = if ($pdfExistedBefore) {
-        Join-Path $BackupDirectory ("{0}_BACKUP_{1}_{2}.pdf" -f [System.IO.Path]::GetFileNameWithoutExtension($productionPdfPath), $timestamp, $runId)
+        Join-Path $BackupDirectory ("report_{0}_{1}.pdf" -f $timestamp, $runFileKey)
     }
     else { $null }
     $workbookPromoted = $false
     $pdfPromoted = $false
     $promotionLogPath = Join-Path $LogDirectory "gss_update_$timestamp`_$runId`_apply.json"
+    $journal = $null
 
-    Copy-Item -LiteralPath $stagedWorkbookPath -Destination $workbookCandidate -Force
-    Copy-Item -LiteralPath $stagedPdfPath -Destination $pdfCandidate -Force
     try {
+        Copy-Item -LiteralPath $stagedWorkbookPath -Destination $workbookCandidate -Force
+        Copy-Item -LiteralPath $stagedPdfPath -Destination $pdfCandidate -Force
         if ((Get-GssSha256 $workbookCandidate) -ne $preflightEvidence.StagedWorkbookSha256 -or
             (Get-GssSha256 $pdfCandidate) -ne $preflightEvidence.StagedPdfSha256) {
             throw 'Promotion candidate copy verification failed.'
         }
+
+        [IO.File]::Copy($MainWorkbookPath, $backupPath, $false)
+        if ((Get-GssSha256 $backupPath) -ne $preflightEvidence.StartingWorkbookSha256) {
+            throw 'The previous workbook backup failed verification. No live change was made.'
+        }
+        if ($pdfExistedBefore) {
+            [IO.File]::Copy($productionPdfPath, $pdfBackupPath, $false)
+            if ((Get-GssSha256 $pdfBackupPath) -ne $startingPdfSha256) {
+                throw 'The previous PDF backup failed verification. No live change was made.'
+            }
+        }
+        $journal = $PreparedRun | Select-Object *
+        $journalFields = @{
+            ReceiptSchemaVersion = 2
+            TimestampUtc = [datetime]::UtcNow.ToString('o')
+            Mode = 'ApplyToMainWorkbook'
+            Status = 'PreparedForPromotion'
+            TransactionStatus = 'Promoting'
+            PreparedRunLogPath = [string]$PreparedRun.LogPath
+            TargetWorkbook = $MainWorkbookPath
+            TargetWorkbookRelativePath = ConvertTo-GssDropboxRelativePath $MainWorkbookPath $FolderPath
+            PromotedWorkbookSha256 = $preflightEvidence.StagedWorkbookSha256
+            BackupWorkbook = $backupPath
+            BackupWorkbookRelativePath = ConvertTo-GssDropboxRelativePath $backupPath $FolderPath
+            StagedWorkbookRelativePath = ConvertTo-GssDropboxRelativePath $stagedWorkbookPath $FolderPath
+            StagedPdfRelativePath = ConvertTo-GssDropboxRelativePath $stagedPdfPath $FolderPath
+            EmailComparisonPdf = $productionPdfPath
+            EmailComparisonPdfRelativePath = ConvertTo-GssDropboxRelativePath $productionPdfPath $FolderPath
+            PromotedPdfSha256 = $preflightEvidence.StagedPdfSha256
+            PdfExistedBefore = $pdfExistedBefore
+            StartingPdfSha256 = $startingPdfSha256
+            PdfBackupSha256 = $startingPdfSha256
+            PdfBackup = $pdfBackupPath
+            PdfBackupRelativePath = if ($pdfBackupPath) { ConvertTo-GssDropboxRelativePath $pdfBackupPath $FolderPath } else { $null }
+            LocalBackupStatus = 'Verified'
+            LogPath = $promotionLogPath
+        }
+        foreach ($name in $journalFields.Keys) { $journal | Add-Member -NotePropertyName $name -NotePropertyValue $journalFields[$name] -Force }
+        # A process interruption after either replacement leaves enough evidence
+        # to restore the previous report safely on this or another computer.
+        Write-GssAtomicJson -Path $promotionLogPath -InputObject $journal
 
         # This is the final optimistic-concurrency check immediately before the
         # only mutation of the live workbook.
@@ -1891,11 +2185,18 @@ function Invoke-GssPreparedRunPromotion {
             (Get-GssSha256 $priorYearSourcePath) -ne $preflightEvidence.PriorYearSourceSha256) {
             throw 'Live workbook or source evidence changed immediately before promotion. No live change was made.'
         }
+        Assert-GssSourceEvidence -Run $PreparedRun -FolderPath $FolderPath
+        if ($pdfExistedBefore) {
+            if ((Get-GssSha256 $productionPdfPath) -ne $startingPdfSha256) { throw 'The previous PDF changed before promotion. No live change was made.' }
+        }
+        elseif (Test-Path -LiteralPath $productionPdfPath -PathType Leaf) {
+            throw 'Another report PDF appeared before promotion. No live change was made.'
+        }
 
         if ([System.IO.Path]::GetPathRoot($workbookCandidate) -cne [System.IO.Path]::GetPathRoot($MainWorkbookPath)) {
             throw 'Atomic workbook replacement requires a same-volume staging candidate.'
         }
-        [System.IO.File]::Replace($workbookCandidate, $MainWorkbookPath, $backupPath, $true)
+        [System.IO.File]::Replace($workbookCandidate, $MainWorkbookPath, [System.Management.Automation.Language.NullString]::Value, $true)
         $workbookPromoted = $true
         $promotedWorkbookHash = Get-GssSha256 $MainWorkbookPath
         if ($promotedWorkbookHash -ne $preflightEvidence.StagedWorkbookSha256) {
@@ -1905,15 +2206,16 @@ function Invoke-GssPreparedRunPromotion {
             throw 'Run-owned atomic workbook backup does not equal the starting workbook hash.'
         }
 
-        $liveValidation = Test-GssPersistedWorkbook `
-            -WorkbookPath $MainWorkbookPath `
-            -CurrentWeek $currentWeek `
-            -PriorYearWeek $priorYearWeek `
-            -CurrentSourceFileName $currentSourceFileNameInRawData `
-            -PriorYearSourceFileName $priorYearSourceFileNameInRawData
+        $journal.Status = 'WorkbookPromoted'
+        $journal.TransactionStatus = 'WorkbookPromoted'
+        Write-GssAtomicJson -Path $promotionLogPath -InputObject $journal
+        $liveValidation = $stageValidation | Select-Object *
+        $liveValidation.WorkbookPath = $MainWorkbookPath
+        $liveValidation | Add-Member -NotePropertyName ValidationMethod -NotePropertyValue 'MatchesValidatedStagedWorkbook' -Force
 
         if ($pdfExistedBefore) {
-            [System.IO.File]::Replace($pdfCandidate, $productionPdfPath, $pdfBackupPath, $true)
+            if ((Get-GssSha256 $productionPdfPath) -ne $startingPdfSha256) { throw 'The previous PDF changed before its replacement.' }
+            [System.IO.File]::Replace($pdfCandidate, $productionPdfPath, [System.Management.Automation.Language.NullString]::Value, $true)
         }
         else {
             [System.IO.File]::Move($pdfCandidate, $productionPdfPath)
@@ -1923,6 +2225,9 @@ function Invoke-GssPreparedRunPromotion {
         if ($promotedPdfHash -ne $preflightEvidence.StagedPdfSha256) {
             throw 'Promoted PDF hash does not equal the reviewed staged PDF hash.'
         }
+        $journal.Status = 'PdfPromoted'
+        $journal.TransactionStatus = 'PdfPromoted'
+        Write-GssAtomicJson -Path $promotionLogPath -InputObject $journal
 
         $fileEvidence = @(
             [pscustomobject]@{
@@ -1952,7 +2257,7 @@ function Invoke-GssPreparedRunPromotion {
         )
 
         $summary = [pscustomobject]@{
-            ReceiptSchemaVersion = 1
+            ReceiptSchemaVersion = 2
             Timestamp = (Get-Date).ToString('s')
             TimestampUtc = [datetime]::UtcNow.ToString('o')
             RunId = $runId
@@ -1984,9 +2289,17 @@ function Invoke-GssPreparedRunPromotion {
             StartingWorkbookSha256 = $preflightEvidence.StartingWorkbookSha256
             CurrentSourceSha256 = $preflightEvidence.CurrentSourceSha256
             PriorYearSourceSha256 = $preflightEvidence.PriorYearSourceSha256
+            CurrentSourceSemanticSha256 = [string]$PreparedRun.CurrentSourceSemanticSha256
+            PriorYearSourceSemanticSha256 = [string]$PreparedRun.PriorYearSourceSemanticSha256
+            SourceSetSha256 = [string]$PreparedRun.SourceSetSha256
+            SourceEvidence = @($PreparedRun.SourceEvidence)
+            SourceChoiceSetSha256 = [string]$PreparedRun.SourceChoiceSetSha256
+            AcceptedSourceChoices = @($PreparedRun.AcceptedSourceChoices)
             StagedWorkbook = $stagedWorkbookPath
+            StagedWorkbookRelativePath = ConvertTo-GssDropboxRelativePath $stagedWorkbookPath $FolderPath
             StagedWorkbookSha256 = $preflightEvidence.StagedWorkbookSha256
             StagedPdf = $stagedPdfPath
+            StagedPdfRelativePath = ConvertTo-GssDropboxRelativePath $stagedPdfPath $FolderPath
             StagedPdfSha256 = $preflightEvidence.StagedPdfSha256
             TargetWorkbook = $MainWorkbookPath
             TargetWorkbookRelativePath = ConvertTo-GssDropboxRelativePath -Path $MainWorkbookPath -FolderPath $FolderPath
@@ -1997,6 +2310,8 @@ function Invoke-GssPreparedRunPromotion {
             EmailComparisonPdfRelativePath = ConvertTo-GssDropboxRelativePath -Path $productionPdfPath -FolderPath $FolderPath
             PromotedPdfSha256 = $promotedPdfHash
             PdfExistedBefore = $pdfExistedBefore
+            StartingPdfSha256 = $startingPdfSha256
+            PdfBackupSha256 = $startingPdfSha256
             PdfBackup = $pdfBackupPath
             PdfBackupRelativePath = if ($pdfBackupPath) { ConvertTo-GssDropboxRelativePath -Path $pdfBackupPath -FolderPath $FolderPath } else { $null }
             TransactionArtifacts = @(
@@ -2031,11 +2346,16 @@ function Invoke-GssPreparedRunPromotion {
             ReleaseArchives = @($PreparedRun.ReleaseArchives)
             FileEvidence = $fileEvidence
             RowsAppended = [int]$PreparedRun.RowsAppended
+            RowsCorrected = [int]$PreparedRun.RowsCorrected
+            BusinessDataChanged = [bool]$PreparedRun.BusinessDataChanged
+            NoBusinessChanges = [bool]$PreparedRun.NoBusinessChanges
             WeeksAppended = @($PreparedRun.WeeksAppended)
+            WeeksCorrected = @($PreparedRun.WeeksCorrected)
             WeeksSkipped = @($PreparedRun.WeeksSkipped)
             PreparedPostSaveValidation = $stageValidation
             LivePostSaveValidation = $liveValidation
             WorstCaseWeeklyLoadsRemaining = [int]$liveValidation.WorstCaseWeeklyLoadsRemaining
+            LocalBackupStatus = 'Verified'
             RollbackPolicy = 'OnlyIfLiveHashEqualsRunOwnedPromotedHash'
         }
         $summary | Add-Member -NotePropertyName LogPath -NotePropertyValue $promotionLogPath
@@ -2045,24 +2365,8 @@ function Invoke-GssPreparedRunPromotion {
     catch {
         $failureMessage = $_.Exception.Message
         $rollback = $null
-        if ($workbookPromoted) {
-            $rollbackInput = [pscustomobject]@{
-                RunId = $runId
-                TargetWorkbookRelativePath = ConvertTo-GssDropboxRelativePath -Path $MainWorkbookPath -FolderPath $FolderPath
-                BackupWorkbookRelativePath = ConvertTo-GssDropboxRelativePath -Path $backupPath -FolderPath $FolderPath
-                StartingWorkbookSha256 = $preflightEvidence.StartingWorkbookSha256
-                PromotedWorkbookSha256 = $preflightEvidence.StagedWorkbookSha256
-                EmailComparisonPdfRelativePath = ConvertTo-GssDropboxRelativePath -Path $productionPdfPath -FolderPath $FolderPath
-                PromotedPdfSha256 = $preflightEvidence.StagedPdfSha256
-                PdfExistedBefore = $pdfExistedBefore
-                PdfBackupRelativePath = if ($pdfBackupPath -and (Test-Path -LiteralPath $pdfBackupPath -PathType Leaf)) {
-                    ConvertTo-GssDropboxRelativePath -Path $pdfBackupPath -FolderPath $FolderPath
-                }
-                else { $null }
-            }
-            try {
-                $rollback = Restore-GssPromotedTransaction -Run $rollbackInput -FolderPath $FolderPath
-            }
+        if ($workbookPromoted -or $pdfPromoted) {
+            try { $rollback = Repair-GssInterruptedTransaction -Run $journal -FolderPath $FolderPath }
             catch {
                 $rollback = [pscustomobject]@{
                     Status = 'RollbackBlocked'
@@ -2071,20 +2375,24 @@ function Invoke-GssPreparedRunPromotion {
                 }
             }
         }
-        $failureReceipt = [pscustomobject]@{
-            ReceiptSchemaVersion = 1
+        $restored = $rollback -and $rollback.Status -in @('RolledBack', 'Unchanged')
+        $failureReceipt = if ($journal) { $journal | Select-Object * } else { $PreparedRun | Select-Object * }
+        $failureFields = @{
+            ReceiptSchemaVersion = 2
             TimestampUtc = [datetime]::UtcNow.ToString('o')
             RunId = $runId
             HostName = [Environment]::MachineName
             Mode = 'ApplyToMainWorkbook'
-            Status = if ($rollback -and $rollback.Status -eq 'RolledBack') { 'RolledBack' } elseif ($workbookPromoted) { 'RollbackBlocked' } else { 'Blocked' }
-            TransactionStatus = if ($rollback -and $rollback.Status -eq 'RolledBack') { 'Aborted' } elseif ($workbookPromoted) { 'Conflict' } else { 'Blocked' }
+            Status = if ($restored) { 'RolledBack' } elseif ($workbookPromoted -or $pdfPromoted) { 'RollbackBlocked' } else { 'Blocked' }
+            TransactionStatus = if ($restored) { 'Aborted' } elseif ($workbookPromoted -or $pdfPromoted) { 'Conflict' } else { 'Blocked' }
             Error = $failureMessage
             RunFingerprint = $calculatedFingerprint
             WorkbookWasPromoted = $workbookPromoted
             PdfWasPromoted = $pdfPromoted
             Rollback = $rollback
+            LogPath = $promotionLogPath
         }
+        foreach ($name in $failureFields.Keys) { $failureReceipt | Add-Member -NotePropertyName $name -NotePropertyValue $failureFields[$name] -Force }
         Write-GssAtomicJson -Path $promotionLogPath -InputObject $failureReceipt
         throw "$failureMessage Transaction receipt: $promotionLogPath"
     }
@@ -2108,7 +2416,7 @@ function Write-RunSummary {
     Write-Host ('  Guardrails applied: {0}' -f $Summary.GuardrailsApplied)
     Write-Host ('  13-week rolling through: {0}' -f $Summary.CurrentWeekEnding)
     Write-Host ('  Prior-year rolling through: {0}' -f $Summary.PriorYearWeekEnding)
-    Write-Host ('  Rows appended: {0}' -f $Summary.RowsAppended)
+    Write-Host ('  Rows appended: {0}; rows corrected: {1}' -f $Summary.RowsAppended, [int]$Summary.RowsCorrected)
     Write-Host ('  Current source: {0}' -f $Summary.CurrentSourceWorkbook)
     Write-Host ('  Prior-year source: {0}' -f $Summary.PriorYearSourceWorkbook)
     Write-Host ('  Target workbook: {0}' -f $Summary.TargetWorkbook)
@@ -2123,7 +2431,7 @@ function Write-RunSummary {
 function Invoke-GssWorkbookUpdate {
     param(
         [string]$FolderPath,
-        [string]$WorkbookName,
+        [string]$WorkbookName = 'GSS Score Trends - Main.xlsx',
         [switch]$ApplyMode,
         [switch]$ReturnObject,
         [string]$RunIdentifier,
@@ -2133,7 +2441,9 @@ function Invoke-GssWorkbookUpdate {
         [switch]$CallerOwnsMutex,
         [string]$ReleaseIdentifier = 'unreleased',
         [string]$PreparedDriveManifestPath,
-        [string]$PreparedDriveManifestSha256
+        [string]$PreparedDriveManifestSha256,
+        [string]$ReportingWeek,
+        [string[]]$CorrectionSourcePaths = @()
     )
 
     if ([string]::IsNullOrWhiteSpace($FolderPath)) {
@@ -2193,15 +2503,8 @@ function Invoke-GssWorkbookUpdate {
             if ($ApplyMode -or -not [string]::IsNullOrWhiteSpace($PreparedLogPath)) {
                 throw 'Rollback cannot be combined with prepare or apply parameters.'
             }
-            $runtimeRelease = & (Join-Path $scriptRoot 'Test-GSS-ReleaseIntegrity.ps1') -RepoRoot $script:GssProgramRepoRoot
-            if ([string]$ReleaseIdentifier -cne [string]$runtimeRelease.ReleaseTag) {
-                throw "Rollback release '$ReleaseIdentifier' does not match the exact approved release '$($runtimeRelease.ReleaseTag)'."
-            }
             $resolvedRollbackLog = Resolve-GssTransactionLogPath -Path $RollbackLogPath -AutomationDirectory $automationDir
             $rollbackRun = Get-Content -LiteralPath $resolvedRollbackLog -Raw | ConvertFrom-Json
-            if ([string]$rollbackRun.ProgramRelease -cne [string]$runtimeRelease.ReleaseTag) {
-                throw "Rollback run release '$($rollbackRun.ProgramRelease)' does not match the exact approved release '$($runtimeRelease.ReleaseTag)'."
-            }
             $rollback = Restore-GssPromotedTransaction -Run $rollbackRun -FolderPath $FolderPath
             $rollbackReceiptPath = Join-Path $logDir "gss_rollback_$timestamp`_$($rollback.RunId).json"
             $rollback | Add-Member -NotePropertyName LogPath -NotePropertyValue $rollbackReceiptPath
@@ -2215,15 +2518,8 @@ function Invoke-GssWorkbookUpdate {
             if ([string]::IsNullOrWhiteSpace($PreparedLogPath)) {
                 throw 'Direct live mutation is disabled. Supply the reviewed PreparedRunLogPath and fingerprint from a copy-test.'
             }
-            $runtimeRelease = & (Join-Path $scriptRoot 'Test-GSS-ReleaseIntegrity.ps1') -RepoRoot $script:GssProgramRepoRoot
-            if ([string]$ReleaseIdentifier -cne [string]$runtimeRelease.ReleaseTag) {
-                throw "Apply release '$ReleaseIdentifier' does not match the exact approved release '$($runtimeRelease.ReleaseTag)'."
-            }
             $resolvedPreparedLog = Resolve-GssTransactionLogPath -Path $PreparedLogPath -AutomationDirectory $automationDir
             $preparedRun = Get-Content -LiteralPath $resolvedPreparedLog -Raw | ConvertFrom-Json
-            if ([string]$preparedRun.ProgramRelease -cne [string]$runtimeRelease.ReleaseTag) {
-                throw "Prepared run release '$($preparedRun.ProgramRelease)' does not match the exact approved release '$($runtimeRelease.ReleaseTag)'."
-            }
             $summary = Invoke-GssPreparedRunPromotion `
                 -PreparedRun $preparedRun `
                 -ExpectedFingerprint $ReviewedFingerprint `
@@ -2260,28 +2556,23 @@ function Invoke-GssWorkbookUpdate {
         }
 
         $allSources = @(Get-RollingSources $excel $FolderPath)
-        $latestSource = Select-LatestRollingSource $allSources
-        if ($null -eq $latestSource) {
-            throw "No latest rolling Sorensen source workbook could be selected from $FolderPath."
+        $reportingDate = if ([string]::IsNullOrWhiteSpace($ReportingWeek)) {
+            ($allSources | Sort-Object WeekEnding -Descending | Select-Object -First 1).WeekEnding
         }
-
-        $priorYearWeek = $latestSource.WeekEnding.AddDays(-364)
-        $priorYearSource = Select-RollingSourceByWeek $allSources $priorYearWeek
-        if ($null -eq $priorYearSource) {
-            throw "No matching prior-year source workbook found for week ending $($priorYearWeek.ToString('yyyy-MM-dd'))."
+        else {
+            try { [datetime]::ParseExact($ReportingWeek, 'yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture) }
+            catch { throw 'ReportingWeekEnding must be an ISO date such as 2026-10-04.' }
         }
-
-        $requestedSources = @($priorYearSource, $latestSource) |
-            Sort-Object WeekEnding |
-            ForEach-Object {
-                [pscustomobject]@{
-                    Role = if ($_.WeekEnding.Date -eq $latestSource.WeekEnding.Date) { 'CurrentWeek' } else { 'PriorYearWeek' }
-                    Source = $_
-                }
-            }
-
-        $currentSourceSha256 = Get-GssSha256 $latestSource.File.FullName
-        $priorYearSourceSha256 = Get-GssSha256 $priorYearSource.File.FullName
+        $null = Get-GssReportingPeriod -PeriodStart $reportingDate.AddDays(-90) -PeriodEnd $reportingDate -Context 'Requested reporting week'
+        $approvedSourcePaths = @($CorrectionSourcePaths | ForEach-Object {
+            Resolve-GssDropboxPath -Path $_ -FolderPath $FolderPath -RequireFile
+        } | Select-Object -Unique)
+        $correctionSources = @()
+        foreach ($path in $approvedSourcePaths) {
+            $pathCandidates = @($allSources | Where-Object { $_.File.FullName -eq $path })
+            if ($pathCandidates.Count -ne 1) { throw "Correction source is not a recognized rolling report: $path" }
+            $correctionSources += $pathCandidates[0]
+        }
         Copy-Item -LiteralPath $mainPath -Destination $targetPath -Force
         if ((Get-GssSha256 $targetPath) -ne $startingWorkbookSha256) {
             throw 'Staged workbook copy does not match the starting live workbook hash.'
@@ -2294,75 +2585,115 @@ function Invoke-GssWorkbookUpdate {
 
         $rawWs = $targetWb.Worksheets.Item('Raw_Data')
 
-        $status = 'Prepared'
-        $rowsAppended = 0
-        $weeksAppended = @()
-        $weeksSkipped = @()
-        $sourceWork = @()
-        $preparedRowsByRole = @{}
-
-        # Parse and validate both sources before deciding whether any week can
-        # be skipped. A partial uploaded source is never silently ignored.
-        foreach ($requested in $requestedSources) {
-            $preparedRowsByRole[$requested.Role] = @(Get-SourceRowsFromFile $excel $requested.Source)
+        $existingRows = @(Read-GssRawDataRow $rawWs)
+        if (@($existingRows | Where-Object { $_.Week -gt $reportingDate }).Count -gt 0) {
+            throw 'The main workbook already contains a later reporting week. Run that latest week and choose the older correction source instead.'
         }
-
-        foreach ($requested in $requestedSources) {
-            $source = $requested.Source
-            $existingKeys = @(Get-GssWeekEntitySet $rawWs $source.WeekEnding)
-            if ($existingKeys.Count -gt 0) {
-                $existingEntitySet = Assert-GssExactEntitySet `
-                    -ActualKeys $existingKeys `
-                    -Context "Existing Raw_Data week $($source.WeekEnding.ToString('yyyy-MM-dd'))"
-                $weeksSkipped += [pscustomobject]@{
-                    Role = $requested.Role
-                    WeekEnding = $source.WeekEnding.ToString('yyyy-MM-dd')
-                    ExistingRows = $existingEntitySet.ActualCount
-                    SourceWorkbook = $source.File.FullName
+        $completeExistingWeeks = @()
+        foreach ($group in @($existingRows | Group-Object { $_.Week.ToString('yyyy-MM-dd') })) {
+            $keys = @($group.Group | ForEach-Object { ConvertTo-GssSourceEntityKey $_.Ownership $_.Restaurant })
+            $valid = (Get-GssEntitySetValidation $keys).IsValid
+            if ($valid) {
+                foreach ($row in $group.Group) {
+                    try { $null = ConvertTo-GssMetricValue $row.Metrics "Existing Raw_Data row $($row.Row)" }
+                    catch { $valid = $false; break }
                 }
-                continue
             }
-
-            $sourceWork += $requested
+            if ($valid) { $completeExistingWeeks += $group.Group[0].Week }
         }
-
-        $preparedSourceWork = @()
+        $requiredWeeks = @(Get-GssRequiredSourceWeek -ReportingWeek $reportingDate -ExistingWeeks $completeExistingWeeks -CorrectionWeeks @($correctionSources | ForEach-Object { $_.WeekEnding }))
+        $committedChoices = @(Get-GssCommittedSourceChoice -LogDirectory $logDir)
+        $acceptedSourceChoices = @()
+        $requestedSources = @()
+        foreach ($required in $requiredWeeks) {
+            $acceptedPath = $null
+            $candidates = @($allSources | Where-Object { $_.WeekEnding.Date -eq $required.WeekEnding.Date })
+            if ($candidates.Count -eq 0) {
+                throw "Missing rolling report for $($required.WeekEnding.ToString('yyyy-MM-dd')) ($($required.Role)). The previous good report was not changed."
+            }
+            foreach ($candidate in $candidates) { $null = @(Get-SourceRowsFromFile $excel $candidate) }
+            $selectionPaths = $approvedSourcePaths
+            $explicitWeekChoice = @($candidates | Where-Object { $_.File.FullName -in $approvedSourcePaths }).Count -gt 0
+            if (-not $explicitWeekChoice) {
+                $acceptedPath = Get-GssAcceptedSourceChoicePath -Sources $candidates -AcceptedChoices $committedChoices
+                if ($acceptedPath) { $selectionPaths = @($selectionPaths) + $acceptedPath }
+            }
+            $selected = Select-GssSourceContent -Sources $candidates -CorrectionSourcePaths $selectionPaths
+            if ($explicitWeekChoice -or $acceptedPath) {
+                $choice = New-GssSourceChoiceEvidence -Sources $candidates -SelectedSourcePath $selected.File.FullName
+                $earlierChoice = $committedChoices | Where-Object WeekEnding -eq $choice.WeekEnding | Select-Object -First 1
+                if ($earlierChoice) { $choice.KnownSemanticSha256 = @(@($choice.KnownSemanticSha256) + @($earlierChoice.KnownSemanticSha256) | Sort-Object -Unique) }
+                $acceptedSourceChoices += $choice
+            }
+            $requestedSources += [pscustomobject]@{ Role = $required.Role; Source = $selected }
+        }
+        $latestSource = ($requestedSources | Where-Object Role -eq 'CurrentWeek').Source
+        $priorYearSource = ($requestedSources | Where-Object Role -eq 'PriorYearWeek').Source
+        $priorYearWeek = $reportingDate.AddDays(-364)
+        $currentSourceSha256 = $latestSource.Sha256
+        $priorYearSourceSha256 = $priorYearSource.Sha256
+        $updatePlan = @(New-GssWeekUpdatePlan -SelectedSources $requestedSources -ExistingRows $existingRows -CorrectionSourcePaths $approvedSourcePaths)
+        $replacedWeeks = @($updatePlan | Where-Object Action -ne 'Unchanged' | ForEach-Object { $_.Source.WeekEnding.Date })
+        $projectedRows = @($existingRows | Where-Object { $_.Week.Date -notin $replacedWeeks })
+        foreach ($change in @($updatePlan | Where-Object Action -ne 'Unchanged')) { $projectedRows += @($change.Rows) }
+        Assert-GssWorkbookScoreCompatibility -Rows $projectedRows
+        $sourceEvidence = @($updatePlan | ForEach-Object {
+            [pscustomobject]@{
+                Role = $_.Role
+                WeekEnding = $_.Source.WeekEnding.ToString('yyyy-MM-dd')
+                PeriodStart = $_.Source.PeriodStart.ToString('yyyy-MM-dd')
+                RelativePath = ConvertTo-GssDropboxRelativePath -Path $_.Source.File.FullName -FolderPath $FolderPath
+                Sha256 = $_.Source.Sha256
+                SemanticSha256 = $_.Source.SemanticSha256
+            }
+        })
+        $sourceSetSha256 = Get-GssSourceEvidenceFingerprint $sourceEvidence
+        $sourceChoiceSetSha256 = if ($acceptedSourceChoices.Count -gt 0) { Get-GssSourceChoiceFingerprint $acceptedSourceChoices } else { $null }
         $rowsRequired = 0
-        foreach ($workItem in $sourceWork) {
-            $rowsForSource = @($preparedRowsByRole[$workItem.Role])
-            $preparedSourceWork += [pscustomobject]@{
-                WorkItem = $workItem
-                Rows = $rowsForSource
-            }
-            $rowsRequired += $rowsForSource.Count
+        foreach ($item in $updatePlan) {
+            if ($item.Action -eq 'Append') { $rowsRequired += $item.Rows.Count }
+            elseif ($item.Action -eq 'Correct') { $rowsRequired += [math]::Max(0, $item.Rows.Count - $item.ExistingRows) }
         }
-
-        if ($rowsRequired -gt 0) {
-            $lastRawDataRow = $rawWs.Cells.Item($rawWs.Rows.Count, 1).End($xlUp).Row
-            $capacityPlan = Assert-GssRawDataCapacity $lastRawDataRow $rowsRequired $gssRawDataLastFormulaRow
-        }
-
+        $lastRawDataRow = $rawWs.Cells.Item($rawWs.Rows.Count, 1).End($xlUp).Row
+        $capacityPlan = Assert-GssRawDataCapacity $lastRawDataRow $rowsRequired $gssRawDataLastFormulaRow
         Remove-GssWorkbookGuardrails $targetWb
+        # Validate all sources first, then batch staged cell edits. Recalculating
+        # the entire model after each repaired cell is both slow and unnecessary.
+        $excel.Calculation = $xlCalculationManual
 
-        if ($sourceWork.Count -eq 0) {
-            $status = 'PreparedAlreadyCurrentGuardrailsRefreshed'
-        }
-        else {
-            foreach ($prepared in $preparedSourceWork) {
-                $workItem = $prepared.WorkItem
-                $source = $workItem.Source
-                $rowsForSource = @($prepared.Rows)
-                $written = Add-RawDataRows $rawWs $rowsForSource
-                $rowsAppended += $written
-                $weeksAppended += [pscustomobject]@{
-                    Role = $workItem.Role
-                    WeekEnding = $source.WeekEnding.ToString('yyyy-MM-dd')
-                    SourceWorkbook = $source.File.FullName
-                    SourceFileNameInRawData = $source.SourceFileName
-                    RowsAppended = $written
+        $rowsAppended = 0
+        $rowsCorrected = 0
+        $weeksAppended = @()
+        $weeksCorrected = @()
+        $weeksSkipped = @()
+        foreach ($item in $updatePlan) {
+            $source = $item.Source
+            $record = [pscustomobject]@{
+                Role = $item.Role
+                WeekEnding = $source.WeekEnding.ToString('yyyy-MM-dd')
+                ExistingRows = $item.ExistingRows
+                SourceWorkbook = $source.File.FullName
+                SourceFileNameInRawData = $source.SourceFileName
+                SemanticSha256 = $source.SemanticSha256
+                PreviousSemanticSha256 = $item.PreviousSemanticSha256
+            }
+            switch ($item.Action) {
+                'Append' {
+                    $written = Add-RawDataRows $rawWs $item.Rows
+                    $rowsAppended += $written
+                    $record | Add-Member -NotePropertyName RowsAppended -NotePropertyValue $written
+                    $weeksAppended += $record
                 }
+                'Correct' {
+                    $written = Set-GssRawDataWeek $rawWs $item.Rows
+                    $rowsCorrected += $written
+                    $record | Add-Member -NotePropertyName RowsCorrected -NotePropertyValue $written
+                    $weeksCorrected += $record
+                }
+                default { $weeksSkipped += $record }
             }
         }
+        $status = if ($rowsAppended -eq 0 -and $rowsCorrected -eq 0) { 'PreparedAlreadyCurrent' } else { 'Prepared' }
 
         $configuration = Get-GssConfigurationCounts $targetWb
         Update-EmailComparisonData $targetWb $rawWs $latestSource
@@ -2371,6 +2702,7 @@ function Invoke-GssWorkbookUpdate {
         Set-GssWorkbookBanners $targetWb
         Set-GssEmailComparisonLayout $targetWb
         Set-GssWorkbookPrintLayouts $targetWb $configuration
+        $excel.Calculation = $xlCalculationAutomatic
         $excel.CalculateFullRebuild()
         $workbookStatus = Get-GssWorkbookStatus $targetWb
         Set-GssStatusStyles $targetWb $workbookStatus
@@ -2396,7 +2728,8 @@ function Invoke-GssWorkbookUpdate {
             -CurrentWeek $latestSource.WeekEnding `
             -PriorYearWeek $priorYearWeek `
             -CurrentSourceFileName $latestSource.SourceFileName `
-            -PriorYearSourceFileName $priorYearSource.SourceFileName
+            -PriorYearSourceFileName $priorYearSource.SourceFileName `
+            -ExpectedSourceEvidence $sourceEvidence
 
         $stagedWorkbookSha256 = Get-GssSha256 $targetPath
         $stagedPdfSha256 = Get-GssSha256 $emailComparisonPdfPath
@@ -2409,7 +2742,9 @@ function Invoke-GssWorkbookUpdate {
             -PriorYearSourceSha256 $priorYearSourceSha256 `
             -StagedWorkbookSha256 $stagedWorkbookSha256 `
             -StagedPdfSha256 $stagedPdfSha256 `
-            -ProgramRelease $ReleaseIdentifier
+            -ProgramRelease $ReleaseIdentifier `
+            -SourceSetSha256 $sourceSetSha256 `
+            -SourceChoiceSetSha256 $sourceChoiceSetSha256
 
         $fileEvidence = @(
             [pscustomobject]@{
@@ -2446,7 +2781,7 @@ function Invoke-GssWorkbookUpdate {
         }
 
         $summary = [pscustomobject]@{
-            ReceiptSchemaVersion = 1
+            ReceiptSchemaVersion = 2
             Timestamp = (Get-Date).ToString('s')
             TimestampUtc = [datetime]::UtcNow.ToString('o')
             RunId = $transactionId
@@ -2462,7 +2797,7 @@ function Invoke-GssWorkbookUpdate {
             CurrentWeekEnding = $latestSource.WeekEnding.ToString('yyyy-MM-dd')
             PriorYearWeekEnding = $priorYearWeek.ToString('yyyy-MM-dd')
             ReportingPeriodLabel = "13-week rolling through $($latestSource.WeekEnding.ToString('yyyy-MM-dd'))"
-            RollingPeriodStart = $latestSource.WeekEnding.AddDays(-90).ToString('yyyy-MM-dd')
+            RollingPeriodStart = $latestSource.PeriodStart.ToString('yyyy-MM-dd')
             RollingPeriodEnd = $latestSource.WeekEnding.ToString('yyyy-MM-dd')
             PreviousRollingWindowEnding = $latestSource.WeekEnding.AddDays(-7).ToString('yyyy-MM-dd')
             ComparisonLabel = 'change versus previous rolling window'
@@ -2470,10 +2805,16 @@ function Invoke-GssWorkbookUpdate {
             CurrentSourceRelativePath = ConvertTo-GssDropboxRelativePath -Path $latestSource.File.FullName -FolderPath $FolderPath
             CurrentSourceFileNameInRawData = $latestSource.SourceFileName
             CurrentSourceSha256 = $currentSourceSha256
+            CurrentSourceSemanticSha256 = $latestSource.SemanticSha256
             PriorYearSourceWorkbook = $priorYearSource.File.FullName
             PriorYearSourceRelativePath = ConvertTo-GssDropboxRelativePath -Path $priorYearSource.File.FullName -FolderPath $FolderPath
             PriorYearSourceFileNameInRawData = $priorYearSource.SourceFileName
             PriorYearSourceSha256 = $priorYearSourceSha256
+            PriorYearSourceSemanticSha256 = $priorYearSource.SemanticSha256
+            SourceSetSha256 = $sourceSetSha256
+            SourceEvidence = $sourceEvidence
+            SourceChoiceSetSha256 = $sourceChoiceSetSha256
+            AcceptedSourceChoices = $acceptedSourceChoices
             StartingWorkbook = $mainPath
             StartingWorkbookRelativePath = ConvertTo-GssDropboxRelativePath -Path $mainPath -FolderPath $FolderPath
             StartingWorkbookSha256 = $startingWorkbookSha256
@@ -2505,7 +2846,11 @@ function Invoke-GssWorkbookUpdate {
             ReleaseArchives = $releaseArchives
             FileEvidence = $fileEvidence
             RowsAppended = $rowsAppended
+            RowsCorrected = $rowsCorrected
+            BusinessDataChanged = ($rowsAppended -gt 0 -or $rowsCorrected -gt 0)
+            NoBusinessChanges = ($rowsAppended -eq 0 -and $rowsCorrected -eq 0)
             WeeksAppended = $weeksAppended
+            WeeksCorrected = $weeksCorrected
             WeeksSkipped = $weeksSkipped
             PostSaveValidation = $postSaveValidation
             WorstCaseWeeklyLoadsRemaining = [int]$postSaveValidation.WorstCaseWeeklyLoadsRemaining
@@ -2523,7 +2868,7 @@ function Invoke-GssWorkbookUpdate {
         $failure = $_
         if (-not (Test-Path -LiteralPath $logPath -PathType Leaf)) {
             $failureReceipt = [pscustomobject]@{
-                ReceiptSchemaVersion = 1
+                ReceiptSchemaVersion = 2
                 TimestampUtc = [datetime]::UtcNow.ToString('o')
                 RunId = $transactionId
                 HostName = [Environment]::MachineName
@@ -2570,5 +2915,7 @@ if ($MyInvocation.InvocationName -ne '.') {
         -CallerOwnsMutex:$MutexAlreadyHeld `
         -ReleaseIdentifier $ProgramRelease `
         -PreparedDriveManifestPath $DrivePreparedManifestPath `
-        -PreparedDriveManifestSha256 $ExpectedDrivePreparedManifestSha256
+        -PreparedDriveManifestSha256 $ExpectedDrivePreparedManifestSha256 `
+        -ReportingWeek $ReportingWeekEnding `
+        -CorrectionSourcePaths $CorrectionSourcePath
 }

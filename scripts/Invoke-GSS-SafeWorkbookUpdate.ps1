@@ -138,7 +138,7 @@ try {
             if ([string]$resumed.TransactionStatus -eq 'LocalSnapshotPending') { throw "The report still needs a verified local recovery snapshot. $recoveryReason" }
         }
         # Backup-only pending work is independently retryable and never a write lock.
-        if (Test-Path -LiteralPath $activeRunPath) { Remove-Item -LiteralPath $activeRunPath -Force }
+        if (Test-Path -LiteralPath $activeRunPath) { Invoke-GssFileOperationRetry { Remove-Item -LiteralPath $activeRunPath -Force -ErrorAction Stop } }
     }
     $ownsMarker = $true
     Save-GssLauncherReceipt
@@ -177,11 +177,15 @@ try {
             } $updater $copyRun $existingReport $Folder
             if ($choiceReceiptPath) { $receipt.AcceptedSourceChoiceLogPath = Get-GssOperationRelativePath -Root $Folder -Path $choiceReceiptPath }
         }
-        try { [void](Update-GssDetailAssignment -Review $copyReview) } catch { $receipt.PackageError = $_.Exception.Message }
         # The new check has made no live write, so it must not hold a marker
         # against retrying the existing report's independent backup/package.
-        if (Test-Path -LiteralPath $activeRunPath) { Remove-Item -LiteralPath $activeRunPath -Force }
+        if (Test-Path -LiteralPath $activeRunPath) { Invoke-GssFileOperationRetry { Remove-Item -LiteralPath $activeRunPath -Force -ErrorAction Stop } }
         $ownsMarker = $false
+        $receipt.BackupStatus = 'Pending'
+        $receipt.PackageStatus = 'WaitingForRecovery'
+        Save-GssLauncherReceipt
+        Write-GssOperationSummary -Folder $Folder -Receipt ([pscustomobject]$receipt) -ResumeScript (Join-Path $scriptRoot 'Resume-GSS-PendingFinalize.ps1')
+        try { [void](Update-GssDetailAssignment -Review $copyReview) } catch { $receipt.PackageError = $_.Exception.Message }
         try {
             $resumed = & (Join-Path $scriptRoot 'Resume-GSS-PendingFinalize.ps1') -Folder $Folder -LiveRunLogPath $existingReport.LogPath -FreshPreparedRunLogPath $copyRun.LogPath -BackupFolder $BackupFolder -OutputObject
             $receipt.BackupStatus = $resumed.BackupStatus
@@ -221,11 +225,6 @@ try {
     Save-GssLauncherReceipt
 
     try {
-        if (Update-GssDetailAssignment -Review $liveReview) { $liveReview = Invoke-GssLauncherAnalysis -Run $liveRun }
-    }
-    catch { $receipt.PackageError = $_.Exception.Message }
-
-    try {
         $snapshotPath = New-GssRunSnapshot -Run $liveRun -Folder $Folder
         $receipt.LocalSnapshotPath = Get-GssOperationRelativePath -Root $Folder -Path $snapshotPath
         $receipt.LocalSnapshotStatus = 'Verified'
@@ -244,7 +243,19 @@ try {
         }
         catch { $receipt.BackupStatus = 'Pending'; $receipt.BackupError = $_.Exception.Message }
     }
+    # Finish durable report recovery before asking about optional draft evidence.
+    # Closing that prompt must not leave a completed report in ReportReady.
+    if ($receipt.LocalSnapshotStatus -eq 'Verified') { $receipt.TransactionStatus = 'Committed' }
+    $receipt.PackageStatus = if ($receipt.BackupStatus -eq 'Committed') { 'WaitingForInput' } else { 'WaitingForBackup' }
     Save-GssLauncherReceipt
+    Write-GssOperationSummary -Folder $Folder -Receipt ([pscustomobject]$receipt) -ResumeScript (Join-Path $scriptRoot 'Resume-GSS-PendingFinalize.ps1')
+    if ($receipt.LocalSnapshotStatus -eq 'Verified') {
+        Write-Information "REPORT READY - week ending $($liveRun.CurrentWeekEnding). Backup: $($receipt.BackupStatus). Checking optional draft details." -InformationAction Continue
+        try {
+            if (Update-GssDetailAssignment -Review $liveReview) { $liveReview = Invoke-GssLauncherAnalysis -Run $liveRun }
+        }
+        catch { $receipt.PackageError = $_.Exception.Message }
+    }
 
     try {
         if ($receipt.BackupStatus -eq 'Committed') {
@@ -313,7 +324,7 @@ finally {
             if ($ownsMarker -and $receipt.TransactionStatus -notin @('RecoveryRequired', 'RollbackAttempting', 'RollbackBlocked', 'Promoting', 'Validating', 'ReportReady', 'LocalSnapshotPending')) {
                 if (Test-Path -LiteralPath $activeRunPath) {
                     $active = Get-Content -LiteralPath $activeRunPath -Raw | ConvertFrom-Json
-                    if ([string]$active.RunId -eq $runId) { Remove-Item -LiteralPath $activeRunPath -Force }
+                    if ([string]$active.RunId -eq $runId) { Invoke-GssFileOperationRetry { Remove-Item -LiteralPath $activeRunPath -Force -ErrorAction Stop } }
                 }
             }
         }

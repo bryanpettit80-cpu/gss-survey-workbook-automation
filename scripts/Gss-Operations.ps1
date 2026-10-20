@@ -11,6 +11,58 @@ function Get-GssRuntimeInfo {
     [pscustomobject]@{ ReleaseTag = $version; HeadCommit = $null; Status = 'Runtime'; TransactionSchemaVersion = 2 }
 }
 
+function Invoke-GssFileOperationRetry {
+    param(
+        [Parameter(Mandatory)][scriptblock]$Operation,
+        [ValidateRange(1, 20)][int]$MaxAttempts = 8,
+        [ValidateRange(0, 1000)][int]$RetryDelayMilliseconds = 250,
+        [switch]$RetryDirectoryRenameAccessDenied
+    )
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        try { & $Operation; return }
+        catch {
+            # Static .NET calls wrap IOExceptions in MethodInvocationException.
+            # Ordinary file operations retry only Windows sharing/lock errors.
+            # Directory rename can report access denied for a child opened without
+            # delete sharing. Only snapshot promotion opts into that bounded retry;
+            # it never changes permissions or falls back to a non-atomic copy.
+            $exception = $_.Exception
+            $locked = $false
+            while ($null -ne $exception) {
+                if ($exception -is [IO.IOException] -and ($exception.HResult -in @(-2147024864, -2147024863) -or
+                    ($RetryDirectoryRenameAccessDenied -and $exception.HResult -eq -2147024891))) { $locked = $true; break }
+                $exception = $exception.InnerException
+            }
+            if (-not $locked -or $attempt -eq $MaxAttempts) { throw }
+            Start-Sleep -Milliseconds $RetryDelayMilliseconds
+        }
+    }
+}
+
+function Remove-GssOperationTemporaryPath {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Removes only a contained temporary artifact created by the enclosing transaction; never prompts during recovery.')]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$Parent, [switch]$Recurse)
+    try {
+        $parentPath = [IO.Path]::GetFullPath($Parent).TrimEnd('\', '/')
+        $temporaryPath = [IO.Path]::GetFullPath($Path)
+        if (-not [string]::Equals([IO.Path]::GetDirectoryName($temporaryPath), $parentPath, [StringComparison]::OrdinalIgnoreCase) -or
+            [IO.Path]::GetFileName($temporaryPath) -notmatch '^\.(json|previous|staging)-[a-f0-9]{32}$') {
+            throw "Refusing cleanup outside the transaction temporary directory: $Path"
+        }
+        if (-not (Test-Path -LiteralPath $temporaryPath)) { return }
+        if ($Recurse -and ((Get-Item -LiteralPath $temporaryPath -Force -ErrorAction Stop).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw "Refusing recursive cleanup of a temporary reparse point: $temporaryPath"
+        }
+        Invoke-GssFileOperationRetry { Remove-Item -LiteralPath $temporaryPath -Recurse:$Recurse -Force -ErrorAction Stop }
+    }
+    catch {
+        # Cleanup must neither hide the publication failure nor turn a successful
+        # atomic publication into a failed transaction. Keep the path for review.
+        Write-Warning "Temporary GSS artifact retained for review: $Path. $($_.Exception.Message)" -WarningAction Continue
+    }
+}
+
 function Write-GssOperationJson {
     param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][object]$Value)
     $directory = Split-Path -Parent $Path
@@ -18,13 +70,14 @@ function Write-GssOperationJson {
     $temporary = Join-Path $directory ('.json-' + [guid]::NewGuid().ToString('N'))
     $previous = Join-Path $directory ('.previous-' + [guid]::NewGuid().ToString('N'))
     try {
-        [IO.File]::WriteAllText($temporary, ($Value | ConvertTo-Json -Depth 30), (New-Object Text.UTF8Encoding($false)))
-        if (Test-Path -LiteralPath $Path -PathType Leaf) { [IO.File]::Replace($temporary, $Path, $previous, $true) }
-        else { [IO.File]::Move($temporary, $Path) }
+        $json = $Value | ConvertTo-Json -Depth 30
+        Invoke-GssFileOperationRetry { [IO.File]::WriteAllText($temporary, $json, (New-Object Text.UTF8Encoding($false))) }
+        if (Test-Path -LiteralPath $Path -PathType Leaf) { Invoke-GssFileOperationRetry { [IO.File]::Replace($temporary, $Path, $previous, $true) } }
+        else { Invoke-GssFileOperationRetry { [IO.File]::Move($temporary, $Path) } }
     }
     finally {
-        if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force }
-        if (Test-Path -LiteralPath $previous) { Remove-Item -LiteralPath $previous -Force }
+        Remove-GssOperationTemporaryPath -Path $temporary -Parent $directory
+        Remove-GssOperationTemporaryPath -Path $previous -Parent $directory
     }
 }
 
@@ -187,7 +240,7 @@ function Write-GssOperationSummary {
         $retryRunId = if ($Receipt.ReportRunId) { $Receipt.ReportRunId } else { $Receipt.RunId }
         $summary += ('Retry: powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{0}" -Folder "{1}" -RunId "{2}"' -f $ResumeScript, $Folder, $retryRunId) + "`r`n"
     }
-    [IO.File]::WriteAllText((Join-Path $Folder 'Last GSS Result.txt'), $summary, (New-Object Text.UTF8Encoding($false)))
+    Invoke-GssFileOperationRetry { [IO.File]::WriteAllText((Join-Path $Folder 'Last GSS Result.txt'), $summary, (New-Object Text.UTF8Encoding($false))) }
 }
 
 function Complete-GssUnstartedOperation {
@@ -236,7 +289,7 @@ function Complete-GssUnstartedOperation {
         $latestPath = Join-Path $state 'latest-result.json'
         $latest = if (Test-Path -LiteralPath $latestPath -PathType Leaf) { Get-Content -LiteralPath $latestPath -Raw | ConvertFrom-Json } else { $null }
         if ($null -eq $latest -or [string]$latest.RunId -eq $RunId -or [string]$latest.ReportRunId -eq $RunId) { Write-GssOperationSummary -Folder $Folder -Receipt $receipt -ResumeScript $ResumeScript }
-        if ($active) { Remove-Item -LiteralPath $activePath -Force }
+        if ($active) { Invoke-GssFileOperationRetry { Remove-Item -LiteralPath $activePath -Force -ErrorAction Stop } }
         return $receipt
     }
     finally { if ($ownsMutex) { $mutex.ReleaseMutex() }; $mutex.Dispose() }
@@ -332,10 +385,13 @@ function New-GssRunSnapshot {
         $manifest = [ordered]@{ schema_version = 'gss-run-snapshot/v1'; run_id = [string]$run.RunId; fingerprint = [string]$run.RunFingerprint; report_week = [string]$run.CurrentWeekEnding; program_version = [string]$run.ProgramRelease; created_utc = [datetime]::UtcNow.ToString('o'); files = $entries.ToArray() }
         Write-GssOperationJson -Path (Join-Path $staging 'run-snapshot.json') -Value $manifest
         [void](Test-GssRunSnapshot (Join-Path $staging 'run-snapshot.json'))
-        [IO.Directory]::Move($staging, $destination)
+        # Both resolved absolute paths must remain under this run-snapshot root.
+        [void](Get-GssOperationRelativePath -Root $parent -Path $staging)
+        [void](Get-GssOperationRelativePath -Root $parent -Path $destination)
+        Invoke-GssFileOperationRetry -Operation { [IO.Directory]::Move($staging, $destination) } -RetryDirectoryRenameAccessDenied -MaxAttempts 20 -RetryDelayMilliseconds 1000
         return $manifestPath
     }
-    finally { if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force } }
+    finally { Remove-GssOperationTemporaryPath -Path $staging -Parent $parent -Recurse }
 }
 
 function Sync-GssRunSnapshot {

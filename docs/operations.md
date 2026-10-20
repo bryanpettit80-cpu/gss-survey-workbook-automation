@@ -51,6 +51,13 @@ invalid aggregate inputs leave the existing report unchanged. A missing or
 unassigned detail export can leave draft preparation waiting while a valid
 aggregate report completes.
 
+For a new report, the local recovery snapshot and report status are saved before
+the optional guest-detail assignment prompt. An already-current check also clears
+its write marker before prompting. Press Enter to leave draft preparation for later.
+Closing that prompt does not undo the completed report or require report recovery.
+Brief file-sharing locks during recovery-state publication are retried automatically;
+persistent locks still leave the run pending with a reason and retry command.
+
 Every zero-response row stops publication when it would remain in the workbook,
 including historical rows and rows whose vendor scores are numeric zeros. Zero
 responses cannot establish a measured rate. The original vendor values remain

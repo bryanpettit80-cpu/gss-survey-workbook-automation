@@ -93,6 +93,24 @@ Describe 'Bounded Windows file-lock retries' {
         $state.Attempts | Should -Be 3
         Should -Invoke Start-Sleep -Times 2 -Exactly
     }
+
+    It 'bounds the explicit directory-rename access-denied retry and preserves permanent denial' {
+        $state = [pscustomobject]@{ Attempts = 0 }
+        Mock Start-Sleep {}
+        $failure = $null
+        try {
+            Invoke-GssFileOperationRetry -RetryDirectoryRenameAccessDenied -MaxAttempts 20 -RetryDelayMilliseconds 1000 -Operation {
+                $state.Attempts++
+                throw [Management.Automation.MethodInvocationException]::new('wrapped rename', [IO.IOException]::new('persistent rename denial', -2147024891))
+            }
+        }
+        catch { $failure = $_ }
+        $failure.Exception.Message | Should -Be 'wrapped rename'
+        $failure.Exception.InnerException.Message | Should -Be 'persistent rename denial'
+        $failure.Exception.InnerException.HResult | Should -Be -2147024891
+        $state.Attempts | Should -Be 20
+        Should -Invoke Start-Sleep -Times 19 -Exactly -ParameterFilter { $Milliseconds -eq 1000 }
+    }
 }
 
 Describe 'Atomic receipt publication and temporary cleanup' {
@@ -178,6 +196,26 @@ Describe 'Atomic receipt publication and temporary cleanup' {
 }
 
 Describe 'Recovery snapshot directory publication' {
+    It 'retries directory access denied caused by an actual child file without delete sharing' {
+        $root = Join-Path $TestDrive 'snapshot-child-lock'
+        $run = New-GssFileOperationFixture $root
+        Mock Test-GssRunSnapshot {
+            param($ManifestPath)
+            $checked = & $realSnapshotCheck -ManifestPath $ManifestPath
+            $child = Join-Path (Split-Path -Parent $ManifestPath) ([string]$checked.files[0].path)
+            $script:gssSnapshotChildLock = [IO.File]::Open($child, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+            return $checked
+        }
+        Mock Start-Sleep { $script:gssSnapshotChildLock.Dispose() }
+        try { $manifestPath = New-GssRunSnapshot -Run $run -Folder $root }
+        finally { if ($script:gssSnapshotChildLock) { $script:gssSnapshotChildLock.Dispose() } }
+        $manifest = & $realSnapshotCheck -ManifestPath $manifestPath
+        $manifest.run_id | Should -Be $run.RunId
+        @($manifest.files).Count | Should -Be 6
+        @(Get-ChildItem -LiteralPath (Split-Path -Parent (Split-Path -Parent $manifestPath)) -Force -Filter '.staging-*').Count | Should -Be 0
+        Should -Invoke Start-Sleep -Times 1 -Exactly -ParameterFilter { $Milliseconds -eq 1000 }
+    }
+
     It 'retries an actual directory sharing violation and publishes the verified snapshot' {
         $root = Join-Path $TestDrive 'snapshot-lock'
         $run = New-GssFileOperationFixture $root

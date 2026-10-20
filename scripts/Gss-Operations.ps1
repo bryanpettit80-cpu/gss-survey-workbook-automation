@@ -15,18 +15,22 @@ function Invoke-GssFileOperationRetry {
     param(
         [Parameter(Mandatory)][scriptblock]$Operation,
         [ValidateRange(1, 20)][int]$MaxAttempts = 8,
-        [ValidateRange(0, 1000)][int]$RetryDelayMilliseconds = 250
+        [ValidateRange(0, 1000)][int]$RetryDelayMilliseconds = 250,
+        [switch]$RetryDirectoryRenameAccessDenied
     )
     for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
         try { & $Operation; return }
         catch {
             # Static .NET calls wrap IOExceptions in MethodInvocationException.
-            # Retry only Windows sharing/lock violations, never permission,
-            # missing-file, disk-space, hash, or other validation failures.
+            # Ordinary file operations retry only Windows sharing/lock errors.
+            # Directory rename can report access denied for a child opened without
+            # delete sharing. Only snapshot promotion opts into that bounded retry;
+            # it never changes permissions or falls back to a non-atomic copy.
             $exception = $_.Exception
             $locked = $false
             while ($null -ne $exception) {
-                if ($exception -is [IO.IOException] -and $exception.HResult -in @(-2147024864, -2147024863)) { $locked = $true; break }
+                if ($exception -is [IO.IOException] -and ($exception.HResult -in @(-2147024864, -2147024863) -or
+                    ($RetryDirectoryRenameAccessDenied -and $exception.HResult -eq -2147024891))) { $locked = $true; break }
                 $exception = $exception.InnerException
             }
             if (-not $locked -or $attempt -eq $MaxAttempts) { throw }
@@ -384,7 +388,7 @@ function New-GssRunSnapshot {
         # Both resolved absolute paths must remain under this run-snapshot root.
         [void](Get-GssOperationRelativePath -Root $parent -Path $staging)
         [void](Get-GssOperationRelativePath -Root $parent -Path $destination)
-        Invoke-GssFileOperationRetry { [IO.Directory]::Move($staging, $destination) }
+        Invoke-GssFileOperationRetry -Operation { [IO.Directory]::Move($staging, $destination) } -RetryDirectoryRenameAccessDenied -MaxAttempts 20 -RetryDelayMilliseconds 1000
         return $manifestPath
     }
     finally { Remove-GssOperationTemporaryPath -Path $staging -Parent $parent -Recurse }

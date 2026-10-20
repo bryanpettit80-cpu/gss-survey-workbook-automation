@@ -3,7 +3,7 @@
     "release_version":  "1.2.3",
     "release_tag":  "v1.2.3",
     "commit_binding":  "exact_release_tag",
-    "generated_at_utc":  "2026-10-20T02:12:30.6159491Z",
+    "generated_at_utc":  "2026-10-20T02:20:58.1575699Z",
     "classification":  "PROGRAM SOURCE ONLY - NO GSS WORKBOOKS, REPORTS, OR CUSTOMER DATA",
     "runtime_contract":  {
                              "require_clean_tree":  false,
@@ -138,8 +138,8 @@
                       "path":  "scripts/Gss-Operations.ps1",
                       "role":  "runtime",
                       "hash_mode":  "utf8_lf",
-                      "canonical_size_bytes":  32820,
-                      "sha256":  "47056ae70d3e7db0c870afcd6fbd36b6a962f52594b78d049ce4036041537438"
+                      "canonical_size_bytes":  33236,
+                      "sha256":  "720999e5887c2f9b7942a05baa20bdb51e3c864cf0e4c555897a1ed51c525cad"
                   },
                   {
                       "path":  "scripts/Gss-ReleaseIntegrity.psm1",
@@ -271,8 +271,8 @@
                       "path":  "tests/Gss.FileOperations.Tests.ps1",
                       "role":  "validation",
                       "hash_mode":  "utf8_lf",
-                      "canonical_size_bytes":  12067,
-                      "sha256":  "6837d13fa0daa942c00c8b7f808543210a926d772f60480e6e4f047e51c7f278"
+                      "canonical_size_bytes":  14309,
+                      "sha256":  "702079c8891582b87853dd6b522bb1f5bc828c7400d3225243c6376a011a6611"
                   },
                   {
                       "path":  "tests/Gss.Operations.Tests.ps1",

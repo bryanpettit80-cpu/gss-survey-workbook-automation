@@ -129,7 +129,7 @@ if ($PublishEmailPackage) { 'published' | Set-Content -LiteralPath (Join-Path $F
 [pscustomobject]@{
     WorkbookStatus = if ($fault -eq 'invalid' -and $run.Mode -eq 'ApplyToMainWorkbook') { 'Blocked' } else { 'Ready' }
     MarkdownPath = Join-Path $Folder '_automation_runs\qa\review.md'
-    DetailReadiness = if ($fault -eq 'noop-details') { [pscustomobject]@{ Status = 'RequiresAssignment'; Candidates = @([pscustomobject]@{ Path = 'fixture.xlsx'; RelativePath = 'fixture.xlsx'; ContentSha256 = ('1' * 64); ResponseCount = 10; VisitDateStart = '2026-10-01'; VisitDateEnd = '2026-10-04' }) } } else { $null }
+    DetailReadiness = if ($fault -in @('noop-details', 'details', 'snapshot-fail')) { [pscustomobject]@{ Status = 'RequiresAssignment'; Candidates = @([pscustomobject]@{ Path = 'fixture.xlsx'; RelativePath = 'fixture.xlsx'; ContentSha256 = ('1' * 64); ResponseCount = 10; VisitDateStart = '2026-10-01'; VisitDateEnd = '2026-10-04' }) } } else { $null }
     EmailReadiness = 'WaitingForInput'
     EmailPackage = $null
     Qa = [pscustomobject]@{ EmailBlockers = @('No guest-detail fixture') }
@@ -237,6 +237,38 @@ Describe 'Portable, independent reporting recovery' {
         $result.Recovery.Status | Should -Be 'AbortedBeforePublication'
         $result.ReportStatus | Should -Be 'PreviousReportUnchanged'
         (Test-Path -LiteralPath (Join-Path $root '_automation_runs\state\active-transaction.json')) | Should -BeFalse
+    }
+
+    It 'retries a transient lock when clearing a recovered operation marker' {
+        $root = Join-Path $TestDrive 'locked-recovery-marker'
+        $id = [guid]::NewGuid().ToString('D')
+        $activePath = Join-Path $root '_automation_runs\state\active-transaction.json'
+        Write-GssOperationJson -Path $activePath -Value @{ ReceiptSchemaVersion = 2; RunId = $id; TransactionStatus = 'Preparing' }
+        Mock Remove-Item {
+            param($LiteralPath)
+            $markerPath = [string](@($LiteralPath)[0])
+            $countPath = $markerPath + '.attempts'
+            $attempt = if ([IO.File]::Exists($countPath)) { 1 + [int][IO.File]::ReadAllText($countPath) } else { 1 }
+            [IO.File]::WriteAllText($countPath, [string]$attempt)
+            if ($attempt -eq 1) { throw [IO.IOException]::new('temporary marker lock', -2147024864) }
+            [IO.File]::Delete($markerPath)
+        } -ParameterFilter { $LiteralPath -eq $activePath }
+        Mock Start-Sleep {}
+        $result = & (Join-Path $operationsRepo 'scripts\Resume-GSS-PendingFinalize.ps1') -Folder $root -RunId $id -OutputObject
+        $result.ReportStatus | Should -Be 'PreviousReportUnchanged'
+        [int][IO.File]::ReadAllText($activePath + '.attempts') | Should -Be 2
+        Test-Path -LiteralPath $activePath | Should -BeFalse
+    }
+
+    It 'retains a persistently locked recovery marker and reports failure' {
+        $root = Join-Path $TestDrive 'persistent-marker-lock'
+        $id = [guid]::NewGuid().ToString('D')
+        $activePath = Join-Path $root '_automation_runs\state\active-transaction.json'
+        Write-GssOperationJson -Path $activePath -Value @{ ReceiptSchemaVersion = 2; RunId = $id; TransactionStatus = 'Preparing' }
+        Mock Remove-Item { throw [IO.IOException]::new('persistent marker lock', -2147024864) } -ParameterFilter { $LiteralPath -eq $activePath }
+        Mock Start-Sleep {}
+        { & (Join-Path $operationsRepo 'scripts\Resume-GSS-PendingFinalize.ps1') -Folder $root -RunId $id -OutputObject } | Should -Throw '*persistent marker lock*'
+        Test-Path -LiteralPath $activePath | Should -BeTrue
     }
 
     It 'checks starting workbook and PDF before closing a promotion with a missing journal' {
@@ -444,13 +476,54 @@ Describe 'Launcher transaction outcomes' {
         (Get-Content -LiteralPath (Join-Path $sandbox.Data 'Last GSS Result.txt') -Raw) | Should -Not -Match 'Recovery input no longer matches'
     }
 
+    It 'finishes report recovery and displays its status before an optional detail prompt' {
+        $sandbox = New-GssLauncherSandbox -Root (Join-Path $TestDrive 'report-before-details') -Fault 'details'
+        $backup = Join-Path $TestDrive 'report-before-details-backup'
+        [void][IO.Directory]::CreateDirectory($backup)
+        Mock Read-Host {
+            $status = Get-Content -LiteralPath (Join-Path $sandbox.Data '_automation_runs\state\latest-result.json') -Raw | ConvertFrom-Json
+            $status.TransactionStatus | Should -Be 'Committed'
+            $status.ReportStatus | Should -Be 'Ready'
+            $status.BackupStatus | Should -Be 'Committed'
+            $status.LocalSnapshotStatus | Should -Be 'Verified'
+            (Test-GssRunSnapshot (Join-Path $sandbox.Data $status.LocalSnapshotPath)).run_id | Should -Be $status.RunId
+            (Get-Content -LiteralPath (Join-Path $sandbox.Data 'Last GSS Result.txt') -Raw) | Should -Match 'Report backup: Committed'
+            # Observe the durable state at the prompt, before launcher finally runs.
+            [IO.File]::WriteAllText((Join-Path $sandbox.Data '.fixture\prompt-verified.txt'), 'verified')
+            throw 'Simulated closed detail prompt'
+        }
+        $result = & $sandbox.Launcher -Folder $sandbox.Data -BackupFolder $backup -OutputObject
+        Should -Invoke Read-Host -Exactly 1
+        (Get-Content -LiteralPath (Join-Path $sandbox.Data '.fixture\prompt-verified.txt') -Raw) | Should -Be 'verified'
+        $result.TransactionStatus | Should -Be 'Committed'
+        $result.PackageError | Should -Be 'Simulated closed detail prompt'
+        (Test-Path -LiteralPath (Join-Path $sandbox.Data '_automation_runs\state\active-transaction.json')) | Should -BeFalse
+    }
+
+    It 'does not ask for optional detail when mandatory local recovery is incomplete' {
+        $sandbox = New-GssLauncherSandbox -Root (Join-Path $TestDrive 'no-details-before-recovery') -Fault 'snapshot-fail'
+        Mock Read-Host { throw 'Unexpected optional prompt' }
+        $result = & $sandbox.Launcher -Folder $sandbox.Data -BackupFolder (Join-Path $TestDrive 'offline-details') -OutputObject
+        $result.TransactionStatus | Should -Be 'LocalSnapshotPending'
+        $result.LocalSnapshotStatus | Should -Be 'Failed'
+        Should -Invoke Read-Host -Exactly 0
+    }
+
     It 'offers a late detail assignment even when the report itself is already current' {
         $sandbox = New-GssLauncherSandbox -Root (Join-Path $TestDrive 'late-detail-assignment')
         $first = & $sandbox.Launcher -Folder $sandbox.Data -BackupFolder (Join-Path $TestDrive 'detail-offline') -NonInteractive -OutputObject
         [IO.File]::WriteAllText((Join-Path $sandbox.Data '.fixture\fault.txt'), 'noop-details')
-        Mock Read-Host { '1' }
+        Mock Read-Host {
+            (Test-Path -LiteralPath (Join-Path $sandbox.Data '_automation_runs\state\active-transaction.json')) | Should -BeFalse
+            $status = Get-Content -LiteralPath (Join-Path $sandbox.Data '_automation_runs\state\latest-result.json') -Raw | ConvertFrom-Json
+            $status.ReportStatus | Should -Be 'AlreadyCurrent'
+            $status.ReportRunId | Should -Be $first.RunId
+            [IO.File]::WriteAllText((Join-Path $sandbox.Data '.fixture\no-op-prompt-verified.txt'), 'verified')
+            '1'
+        }
         $second = & $sandbox.Launcher -Folder $sandbox.Data -BackupFolder (Join-Path $TestDrive 'detail-offline') -OutputObject
         $second.ReportRunId | Should -Be $first.RunId
+        (Get-Content -LiteralPath (Join-Path $sandbox.Data '.fixture\no-op-prompt-verified.txt') -Raw) | Should -Be 'verified'
         (Get-Content -LiteralPath (Join-Path $sandbox.Data '.fixture\assigned-week.txt') -Raw) | Should -Be '2026-10-04'
     }
 

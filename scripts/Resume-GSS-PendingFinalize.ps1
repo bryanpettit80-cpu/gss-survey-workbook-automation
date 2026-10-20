@@ -106,7 +106,7 @@ try {
         Save-GssResumeResult
         if (Test-Path -LiteralPath $activePath) {
             $active = Get-Content -LiteralPath $activePath -Raw | ConvertFrom-Json
-            if ([string]$active.RunId -eq $RunId) { Remove-Item -LiteralPath $activePath -Force }
+            if ([string]$active.RunId -eq $RunId) { Invoke-GssFileOperationRetry { Remove-Item -LiteralPath $activePath -Force -ErrorAction Stop } }
         }
         $message = if ($recovery.Status -eq 'NoLiveWriteObserved') { 'The failed update did not replace the report. Launch the normal update to prepare a fresh report.' } else { 'The previous good report has been verified or restored. Launch the normal update to prepare a fresh report.' }
         Write-Information $message -InformationAction Continue
@@ -194,7 +194,7 @@ try {
         if (Test-Path -LiteralPath $activePath) {
             $active = Get-Content -LiteralPath $activePath -Raw | ConvertFrom-Json
             if ([string]$active.RunId -eq $RunId) {
-                if ([string]$receipt.LocalSnapshotStatus -eq 'Verified' -or -not $currentReportMatches) { Remove-Item -LiteralPath $activePath -Force }
+                if ([string]$receipt.LocalSnapshotStatus -eq 'Verified' -or -not $currentReportMatches) { Invoke-GssFileOperationRetry { Remove-Item -LiteralPath $activePath -Force -ErrorAction Stop } }
                 else { Write-GssOperationJson -Path $activePath -Value $receipt }
             }
         }

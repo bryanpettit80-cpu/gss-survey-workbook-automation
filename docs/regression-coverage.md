@@ -20,6 +20,8 @@ not define whether two vendor workbooks mean the same thing.
 | Excel error inspection itself fails | Fail validation rather than report zero errors | Reporting unit suite |
 | Interruption before, during, or after workbook/PDF promotion | Recover from the journal, or stop on unrelated changes | Transactions and operations suites |
 | Local recovery snapshot fails | Retain recovery state before allowing another publication | Operations suite |
+| Temporary sharing lock on recovery JSON or snapshot publication | Retry briefly; retain atomic publication and fail on persistent locks | File-operations suite |
+| Optional detail prompt is closed or left unanswered | Complete the recovery snapshot and durable report status before the prompt | Operations suite |
 | Independent backup is unavailable | Keep the valid report; expose pending backup and permit retry | Operations suite |
 | Partial copy, repeated retry, or corrupted committed backup | Resume safe copies; remain idempotent; reject corruption | Operations and legacy backup suites |
 | Another data root or extracted program without Git/history | Resolve relative evidence; validate installation without Git | Operations, paths, and release-integrity suites |

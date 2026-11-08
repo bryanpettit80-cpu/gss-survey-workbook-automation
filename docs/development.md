@@ -96,8 +96,13 @@ The development bootstrap supports Ubuntu 22.04, 24.04, and 26.04 on x64; CI
 exercises 24.04. It installs PowerShell 7.6.6 from Microsoft's official release
 with a pinned SHA-256, then Pester 5.8.0 and PSScriptAnalyzer 1.25.0. Use it only in
 the disposable development environment; it may upgrade an older PowerShell
-package but refuses to downgrade a newer one. Root or passwordless `sudo` is needed when the
-pinned package is absent. See the [official Ubuntu installation guide](https://learn.microsoft.com/en-us/powershell/scripting/install/install-ubuntu)
+package but refuses to downgrade a newer one by default. On a disposable host,
+`--replace-newer-powershell` explicitly permits replacing a newer package with
+the same checksum-verified pin; CI uses this option to handle hosted-image
+updates. It retains the exact installed-version check and forbids package
+removal. Do not use this option on a production or shared workstation.
+Root or passwordless `sudo` is needed when the pinned package is absent.
+See the [official Ubuntu installation guide](https://learn.microsoft.com/en-us/powershell/scripting/install/install-ubuntu)
 and [pinned release](https://github.com/PowerShell/PowerShell/releases/tag/v7.6.6).
 
 From the repository root:
@@ -106,6 +111,10 @@ From the repository root:
 bash ./tools/Setup-GSS-Cloud.sh
 pwsh -NoProfile -File ./tools/Test-GSS-Cloud.ps1
 ```
+
+Run `bash ./tests/Test-GSS-CloudBootstrap.sh` for isolated bootstrap regression
+checks. It mocks package/network commands and OS identity in a temporary copy;
+it does not install anything or change the host runtime.
 
 If a suitable PowerShell 7.2+ is already available and a runtime installation is
 not wanted, run `pwsh -NoProfile -File ./tools/Initialize-GSS-Development.ps1`,

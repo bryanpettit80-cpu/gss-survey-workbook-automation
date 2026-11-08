@@ -1,4 +1,4 @@
-﻿{
+{
     "schema_version":  1,
     "release_version":  "1.2.3",
     "release_tag":  "v1.2.3",
@@ -30,18 +30,25 @@
                       "sha256":  "e3e8c254d22d172a47d8ad5d8f2ae5ba9ce3b081094af6f4b68501d8cb1c6382"
                   },
                   {
+                      "path":  ".github/pull_request_template.md",
+                      "role":  "ci",
+                      "hash_mode":  "utf8_lf",
+                      "canonical_size_bytes":  693,
+                      "sha256":  "2dfc7617886f5a90cf1681c081c33fd4ff8e1922473fb98e71a298413ef28d25"
+                  },
+                  {
                       "path":  ".github/workflows/validation.yml",
                       "role":  "ci",
                       "hash_mode":  "utf8_lf",
-                      "canonical_size_bytes":  2145,
-                      "sha256":  "d11600b94d34c60a6e4ddf5df17cd3b6678ae7ec908e11008d19efca1ac42b80"
+                      "canonical_size_bytes":  2453,
+                      "sha256":  "3bdcb37a7c87e7ff949b54e08c175b02a4692749b18124e2184c21d28d061529"
                   },
                   {
                       "path":  "AGENTS.md",
                       "role":  "documentation",
                       "hash_mode":  "utf8_lf",
-                      "canonical_size_bytes":  2947,
-                      "sha256":  "4e19b6532bf4b29b9836879eca195296567336a717fe3f83af9e6291b0b6e2df"
+                      "canonical_size_bytes":  4932,
+                      "sha256":  "6c58d86990a5b2808ad28dba7338eee950dbe43bdb32e72c47d9eaae44d8fc29"
                   },
                   {
                       "path":  "config/analysis-policy.json",
@@ -68,8 +75,8 @@
                       "path":  "docs/development.md",
                       "role":  "documentation",
                       "hash_mode":  "utf8_lf",
-                      "canonical_size_bytes":  12355,
-                      "sha256":  "d8e6d3d5eb0f6f1b58ba84b2bd07b430e4e4df8110cc41ea63f5180cff88566d"
+                      "canonical_size_bytes":  12904,
+                      "sha256":  "7ed11019da1f0ce981ac2802243b5643f6aa91a4bf5d0c91aec2aa78f1a72390"
                   },
                   {
                       "path":  "docs/future-updates.md",
@@ -331,6 +338,13 @@
                       "sha256":  "6c1b70467e3ef96aaaa5b68095231e5d9fa1f766ba9b2c966c1e25c075764a35"
                   },
                   {
+                      "path":  "tests/Test-GSS-CloudBootstrap.sh",
+                      "role":  "validation",
+                      "hash_mode":  "utf8_lf",
+                      "canonical_size_bytes":  4452,
+                      "sha256":  "dc626484c6d71b0729ce412285e7be7bfa2b80b1d7ec9da5f0d8dedee0faac09"
+                  },
+                  {
                       "path":  "tests/Test-GSS-DriveBackup.ps1",
                       "role":  "validation",
                       "hash_mode":  "utf8_lf",
@@ -383,8 +397,8 @@
                       "path":  "tools/Setup-GSS-Cloud.sh",
                       "role":  "validation",
                       "hash_mode":  "utf8_lf",
-                      "canonical_size_bytes":  2900,
-                      "sha256":  "d3036317a8a37a656581ffb78d473df695ea272dfc4fb4a6aaa7f6e1740e6a6b"
+                      "canonical_size_bytes":  3629,
+                      "sha256":  "b16aa930c8ff7f6b6f0fa4956c022b8438ff75dc12dd77ad987fef94065dfbd6"
                   },
                   {
                       "path":  "tools/Test-GSS-Cloud.ps1",

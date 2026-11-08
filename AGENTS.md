@@ -46,3 +46,18 @@ privacy/publication state, tested commit, runtime versions, commands, and result
 from a fresh task started from the published environment. Local or GitHub Linux
 CI results alone are not that evidence. Current Cloud environments and legacy
 Code Review/integration environments are separate; inspect each when relevant.
+
+## Repository map and pull requests
+
+- `scripts/` owns the runtime and recovery pipeline; `tests/` holds synthetic behavior checks; `tools/` owns development and release validation. Use [docs/operations.md](docs/operations.md) for operator changes and [docs/automation-interface.md](docs/automation-interface.md) for external coordination.
+- Windows setup is `./tools/Initialize-GSS-Development.ps1`; `-CheckOnly` verifies installed modules. Use the Windows PowerShell 5.1 validation sequence in [docs/development.md](docs/development.md) for behavior changes.
+- Follow [.github/pull_request_template.md](.github/pull_request_template.md). Report actual Windows, portable Cloud, and isolated Excel coverage separately, including exclusions and unverified behavior.
+- `release/release-manifest.json` hashes tracked program/documentation files. Refresh affected entries and add new eligible tracked files when these change; validate with `./scripts/Test-GSS-ReleaseIntegrity.ps1 -SkipTagCheck`. This is source-integrity evidence, not a release or installation claim.
+- For documentation-only changes, validate links, commands, the diff, and release-manifest evidence; a live workbook run is unnecessary.
+- Use a task branch and a draft PR. Merge only when requested, after required checks and reviews pass; this file grants no standing merge permission.
+
+## Code Review Rules
+
+- Preserve entity/period completeness and independently specified counts, scores, and percentage-point changes. Missing observations must remain missing; do not average restaurant percentages into vendor population totals.
+- Preserve single-writer exclusion, exact correction decisions, transaction hashes, recoverable local copies, and conflict-aware rollback. A report success must not imply independent remote-backup completion.
+- Keep guest detail out of published email packages and maintain the external consumer's data-root and outbox contract. Changes must not activate schedules or add mail sending.

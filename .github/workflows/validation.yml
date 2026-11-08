@@ -58,7 +58,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Check Linux setup syntax
         run: bash -n ./tools/Setup-GSS-Cloud.sh
+      - name: Test pinned bootstrap behavior without installing packages
+        run: bash ./tests/Test-GSS-CloudBootstrap.sh
       - name: Install pinned Cloud development dependencies
-        run: bash ./tools/Setup-GSS-Cloud.sh
+        # Hosted images may ship a newer PowerShell. This runner is disposable;
+        # explicitly restore the exact, checksum-verified development pin.
+        run: bash ./tools/Setup-GSS-Cloud.sh --replace-newer-powershell
       - name: Run portable synthetic development checks
         run: pwsh -NoProfile -File ./tools/Test-GSS-Cloud.ps1

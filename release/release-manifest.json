@@ -30,6 +30,13 @@
                       "sha256":  "e3e8c254d22d172a47d8ad5d8f2ae5ba9ce3b081094af6f4b68501d8cb1c6382"
                   },
                   {
+                      "path":  ".github/pull_request_template.md",
+                      "role":  "ci",
+                      "hash_mode":  "utf8_lf",
+                      "canonical_size_bytes":  693,
+                      "sha256":  "2dfc7617886f5a90cf1681c081c33fd4ff8e1922473fb98e71a298413ef28d25"
+                  },
+                  {
                       "path":  ".github/workflows/validation.yml",
                       "role":  "ci",
                       "hash_mode":  "utf8_lf",
@@ -40,8 +47,8 @@
                       "path":  "AGENTS.md",
                       "role":  "documentation",
                       "hash_mode":  "utf8_lf",
-                      "canonical_size_bytes":  2947,
-                      "sha256":  "4e19b6532bf4b29b9836879eca195296567336a717fe3f83af9e6291b0b6e2df"
+                      "canonical_size_bytes":  4932,
+                      "sha256":  "6c58d86990a5b2808ad28dba7338eee950dbe43bdb32e72c47d9eaae44d8fc29"
                   },
                   {
                       "path":  "config/analysis-policy.json",

@@ -6,6 +6,14 @@ repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly powershell_version='7.6.6'
 readonly package_sha256='9585f38ab5a026c3fc0995486e26e12050777960fef47a22dca98b577c5d27a7'
 
+replace_newer=false
+for argument in "$@"; do
+    case "$argument" in
+        --replace-newer-powershell) replace_newer=true ;;
+        *) echo "Unknown argument: $argument" >&2; exit 2 ;;
+    esac
+done
+
 if [[ "$(uname -s)" != 'Linux' || "$(uname -m)" != 'x86_64' ]]; then
     echo 'This bootstrap supports Ubuntu x64 development environments only.' >&2
     exit 1
@@ -22,11 +30,16 @@ if [[ "${ID:-}" != 'ubuntu' || ! "${VERSION_ID:-}" =~ ^(22\.04|24\.04|26\.04)$ ]
 fi
 
 installed_version=''
+package_install_options=()
 if command -v pwsh >/dev/null 2>&1; then
     installed_version="$(pwsh -NoLogo -NoProfile -Command '$PSVersionTable.PSVersion.ToString()')"
     if dpkg --compare-versions "$installed_version" gt "$powershell_version"; then
-        echo "PowerShell $installed_version is newer than the reviewed pin $powershell_version; choose a clean environment or review a pin update." >&2
-        exit 1
+        if [[ "$replace_newer" != true ]]; then
+            echo "PowerShell $installed_version is newer than the reviewed pin $powershell_version; use a clean environment or explicitly pass --replace-newer-powershell in a disposable environment." >&2
+            exit 1
+        fi
+        echo "Replacing PowerShell $installed_version with reviewed $powershell_version in this disposable environment."
+        package_install_options=(--allow-downgrades)
     fi
 fi
 if [[ "$installed_version" != "$powershell_version" ]]; then
@@ -48,7 +61,10 @@ if [[ "$installed_version" != "$powershell_version" ]]; then
         "https://github.com/PowerShell/PowerShell/releases/download/v${powershell_version}/powershell_${powershell_version}-1.deb_amd64.deb" \
         --output "$package_file"
     printf '%s  %s\n' "$package_sha256" "$package_file" | sha256sum --check --strict -
-    "${elevate[@]}" apt-get install -y --no-install-recommends "$package_file"
+    # Permit replacement only for this exact, checksum-verified package. Never
+    # allow removal of installed packages as a side effect of the operation.
+    "${elevate[@]}" apt-get install -y --no-install-recommends --no-remove \
+        "${package_install_options[@]}" "$package_file"
 fi
 
 actual_version="$(pwsh -NoLogo -NoProfile -Command '$PSVersionTable.PSVersion.ToString()')"
